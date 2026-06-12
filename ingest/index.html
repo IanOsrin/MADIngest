@@ -1,0 +1,1927 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MAD Music — Track Submission</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #ffffff;
+      --bg-card:   #f0f4ff;
+      --bg-lift:   #e4ecf8;
+      --gold:      #1a6fd4;
+      --gold-dim:  #1254a8;
+      --gold-glow: rgba(26,111,212,0.09);
+      --text:      #1a1a2e;
+      --muted:     #6b7280;
+      --border:    rgba(26,111,212,0.18);
+      --border-hi: rgba(26,111,212,0.42);
+      --amber:     #f0a832;
+      --green:     #2e9e4f;
+      --red:       #d9534f;
+      --radius:    10px;
+    }
+
+    html, body {
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Open Sans', 'Segoe UI', system-ui, sans-serif;
+      font-size: 15px;
+      line-height: 1.5;
+    }
+
+    /* ── Header ─────────────────────────────────────────────── */
+    .site-header {
+      background: linear-gradient(180deg, #dce8f8 0%, var(--bg) 100%);
+      border-bottom: 1px solid var(--border);
+      padding: 18px 32px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .site-header .logo {
+      font-size: 1.3rem;
+      font-weight: 700;
+      color: var(--gold);
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+    .site-header .logo span { color: var(--text); font-weight: 300; }
+    .site-header .badge {
+      margin-left: auto;
+      font-size: 0.68rem;
+      color: var(--gold);
+      border: 1px solid var(--border-hi);
+      padding: 3px 12px;
+      border-radius: 20px;
+      background: var(--gold-glow);
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+    }
+
+    /* ── Page wrapper ───────────────────────────────────────── */
+    .page { max-width: 760px; margin: 0 auto; padding: 36px 24px 80px; }
+
+    .page-title {
+      font-size: 1.5rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 6px;
+    }
+    .page-subtitle {
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin-bottom: 32px;
+    }
+
+    /* ── Invite gate overlay ────────────────────────────────── */
+    #inviteGate {
+      position: fixed; inset: 0;
+      background: rgba(240,244,255,0.97);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 999;
+    }
+    .invite-box {
+      background: var(--bg-card);
+      border: 1px solid var(--border-hi);
+      border-radius: var(--radius);
+      padding: 40px 36px;
+      width: min(400px, 92vw);
+      text-align: center;
+    }
+    .invite-box h2 { font-size: 1.2rem; color: var(--gold); margin-bottom: 10px; }
+    .invite-box p  { color: var(--muted); font-size: 0.88rem; margin-bottom: 24px; }
+    .invite-box input {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 14px;
+      color: var(--text);
+      font-size: 1rem;
+      letter-spacing: 2px;
+      text-align: center;
+      margin-bottom: 14px;
+      outline: none;
+    }
+    .invite-box input:focus { border-color: var(--gold-dim); }
+    .invite-error { color: var(--red); font-size: 0.82rem; margin-bottom: 10px; min-height: 18px; }
+
+    /* ── Cards ──────────────────────────────────────────────── */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      margin-bottom: 20px;
+    }
+    .card-title {
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: var(--gold);
+      margin-bottom: 18px;
+    }
+
+    /* ── Drop zone ──────────────────────────────────────────── */
+    #dropZone {
+      border: 2px dashed var(--border-hi);
+      border-radius: var(--radius);
+      padding: 40px 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      margin-bottom: 20px;
+      position: relative;
+    }
+    #dropZone:hover, #dropZone.drag-over {
+      border-color: var(--gold);
+      background: var(--gold-glow);
+    }
+    #dropZone.has-file {
+      border-style: solid;
+      border-color: var(--border);
+      padding-bottom: 0;
+    }
+    .drop-icon { font-size: 2.4rem; margin-bottom: 12px; opacity: 0.6; }
+    .drop-title { font-size: 1.05rem; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+    .drop-hint  { font-size: 0.82rem; color: var(--muted); margin-bottom: 20px; }
+    #fileInput  { display: none; }
+
+    /* ── File bar (post-drop) ───────────────────────────────── */
+    .form-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px 20px;
+    }
+    .form-group { display: flex; flex-direction: column; gap: 5px; }
+    .form-group.full { grid-column: 1 / -1; }
+
+    label {
+      font-size: 0.72rem;
+      font-weight: 600;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    label .req { color: var(--gold-dim); margin-left: 2px; }
+
+    input[type=text], input[type=email], input[type=number], select, textarea {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 9px 12px;
+      color: var(--text);
+      font-size: 0.9rem;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    input:focus, select:focus, textarea:focus { border-color: var(--gold-dim); }
+    select option { background: var(--bg-card); }
+    textarea { resize: vertical; min-height: 70px; }
+
+    /* ── Divider ────────────────────────────────────────────── */
+    .divider {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 24px 0;
+    }
+
+    /* ── Buttons ────────────────────────────────────────────── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      padding: 11px 26px;
+      border-radius: 7px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: opacity 0.15s, background 0.15s;
+      font-family: inherit;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, var(--gold-dim), #9a5e12);
+      color: #fff;
+      width: 100%;
+      padding: 14px;
+      font-size: 0.95rem;
+      letter-spacing: 0.5px;
+      margin-top: 6px;
+    }
+    .btn-primary:hover:not(:disabled) { opacity: 0.88; }
+    .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-ghost {
+      background: rgba(212,168,67,0.08);
+      color: var(--gold);
+      border: 1px solid var(--border);
+    }
+    .btn-ghost:hover { background: var(--gold-glow); }
+
+    /* ── Error message ──────────────────────────────────────── */
+    #errorMsg {
+      display: none;
+      background: rgba(217,83,79,0.1);
+      border: 1px solid rgba(217,83,79,0.35);
+      border-radius: 6px;
+      color: var(--red);
+      font-size: 0.85rem;
+      padding: 10px 14px;
+      margin-top: 12px;
+    }
+
+    /* ── Confirmation ───────────────────────────────────────── */
+    #confirmation { display: none; }
+    .confirm-box {
+      background: var(--bg-card);
+      border: 1px solid var(--border-hi);
+      border-radius: var(--radius);
+      padding: 40px 32px;
+      text-align: center;
+    }
+    .confirm-check { font-size: 3rem; margin-bottom: 16px; color: var(--green); }
+    .confirm-title { font-size: 1.4rem; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+    .confirm-id {
+      font-size: 2rem;
+      font-weight: 700;
+      color: var(--gold);
+      font-family: 'Courier New', monospace;
+      margin: 16px 0 8px;
+    }
+    .confirm-email { color: var(--muted); font-size: 0.9rem; margin-bottom: 28px; }
+
+    /* ── Multi-track panel ──────────────────────────────────── */
+    #multiTrackPanel { display: none; }
+    .mt-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+    .mt-title  { font-weight: 700; font-size: 0.95rem; color: var(--text); }
+    .mt-title span { color: var(--gold); }
+    .mt-controls { display: flex; align-items: center; gap: 12px; font-size: 0.82rem; color: var(--muted); }
+    .mt-field  { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; font-size: 0.82rem; color: var(--text); font-family: inherit; width: 100%; }
+    .mt-field:focus { outline: none; border-color: var(--gold-dim); }
+    .mt-loading { color: var(--muted); font-size: 0.76rem; }
+    .mt-expand-btn { background: none; border: 1px solid var(--border); border-radius: 4px; color: var(--muted); cursor: pointer; font-size: 0.72rem; padding: 2px 7px; font-family: inherit; }
+    .mt-expand-btn:hover { color: var(--gold); border-color: var(--gold-dim); }
+    .mt-detail-row td { padding: 0 !important; }
+    .mt-detail-inner { padding: 12px 16px 16px; background: var(--bg-card); border-top: 1px solid var(--border); }
+    .mt-detail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+    .mt-detail-group label { display: block; font-size: 0.65rem; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin-bottom: 3px; }
+    .mt-detail-group input, .mt-detail-group select { width: 100%; }
+    .mt-batch-bar { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; margin-bottom: 14px; }
+    .mt-batch-bar h4 { font-size: 0.68rem; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; color: var(--muted); margin-bottom: 12px; }
+    .mt-batch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+    .mt-batch-group { display: flex; flex-direction: column; gap: 4px; }
+    .mt-batch-group label { font-size: 0.65rem; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); }
+    .mt-batch-row { display: flex; gap: 5px; }
+    .mt-batch-row .mt-field { flex: 1; }
+    .mt-fill-btn { background: var(--gold-glow); border: 1px solid var(--border-hi); border-radius: 4px; color: var(--gold); font-size: 0.7rem; font-weight: 700; cursor: pointer; padding: 0 9px; white-space: nowrap; font-family: inherit; }
+    .mt-fill-btn:hover { background: var(--gold); color: #fff; }
+    .mt-submitter { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; margin-bottom: 16px; }
+    .mt-submitter h4 { font-size: 0.78rem; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin-bottom: 12px; }
+    .mt-footer { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .progress-bar-wrap { background: var(--bg-lift); border-radius: 4px; height: 6px; width: 100%; margin-bottom: 8px; overflow: hidden; }
+    .progress-bar { background: var(--gold); height: 100%; width: 0; transition: width 0.3s; border-radius: 4px; }
+    #mtProgress { width: 100%; margin-bottom: 10px; }
+    .mt-progress-text { font-size: 0.8rem; color: var(--muted); }
+    tbody tr.mt-done { background: rgba(46,158,79,0.07); }
+
+    /* ── Track-match warning badge & popover ────────────────── */
+    .mt-warn-badge {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 16px; height: 16px; border-radius: 50%;
+      font-size: 0.68rem; font-weight: 700; cursor: pointer;
+      position: relative; margin-left: 5px; vertical-align: middle;
+      flex-shrink: 0; border: none; font-family: inherit;
+    }
+    .mt-warn-badge.red   { background: rgba(217,48,37,0.15); color: var(--red,#d93025); }
+    .mt-warn-badge.amber { background: rgba(232,160,0,0.15); color: var(--amber,#e8a000); }
+
+    /* Global floating tooltip — lives at body level so table overflow can't clip it */
+    #mt-tooltip {
+      display: none; position: fixed; z-index: 9999;
+      max-width: 280px; background: var(--bg-card,#fff);
+      border: 1px solid var(--border,#ddd); border-radius: 6px;
+      padding: 9px 12px; font-size: 0.74rem; line-height: 1.5;
+      color: var(--text,#222); box-shadow: 0 4px 18px rgba(0,0,0,0.16);
+      pointer-events: none; white-space: normal;
+    }
+    #mt-tooltip::after {
+      content: ''; position: absolute; top: 100%; left: 50%;
+      transform: translateX(-50%); border: 6px solid transparent;
+      border-top-color: var(--border,#ddd);
+    }
+
+    /* ── Table column layout ────────────────────────────────── */
+    #mtTable { table-layout: fixed; width: 100%; }
+    #mtTable th:nth-child(1) { width: 36px; }
+    #mtTable th:nth-child(2) { width: 36px; }
+    #mtTable th:nth-child(3) { width: 16%; }
+    #mtTable th:nth-child(4) { width: 22%; }
+    #mtTable th:nth-child(5) { width: 16%; }
+    #mtTable th:nth-child(6) { width: 58px; }
+    #mtTable th:nth-child(7) { width: 72px; }
+    #mtTable th:nth-child(8) { width: 60px; }
+    #mtTable th:nth-child(9) { width: 54px; }
+    #mtTable td { overflow: hidden; }
+
+    /* ── Responsive ─────────────────────────────────────────── */
+    @media (max-width: 560px) {
+      .form-grid { grid-template-columns: 1fr; }
+      .form-group.full { grid-column: 1; }
+      .site-header { padding: 14px 16px; }
+      .page { padding: 24px 16px 60px; }
+    }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body>
+
+<!-- ── Invite gate ──────────────────────────────────────────────────────── -->
+<div id="inviteGate" style="display:none">
+  <div class="invite-box">
+    <h2>Access Required</h2>
+    <p>Enter your invite token to access the submission portal.</p>
+    <input type="password" id="inviteInput" placeholder="Invite token" autocomplete="off">
+    <div class="invite-error" id="inviteError"></div>
+    <button class="btn btn-primary" onclick="verifyInvite()">Continue</button>
+  </div>
+</div>
+
+<!-- ── Header ───────────────────────────────────────────────────────────── -->
+<header class="site-header">
+  <div class="logo">MAD <span>Music</span></div>
+  <div class="badge">Track Submission</div>
+  <a href="/ingest/admin.html" style="margin-left:auto;background:none;border:1px solid var(--border);border-radius:5px;color:var(--muted);padding:4px 12px;cursor:pointer;font-size:0.78rem;font-family:inherit;text-decoration:none;display:inline-flex;align-items:center;gap:5px">⚙ Admin</a>
+</header>
+
+<!-- ── Server-down banner ─────────────────────────────────────────────── -->
+<div id="serverDownBanner" style="display:none;background:#b91c1c;color:#fff;text-align:center;padding:10px 16px;font-size:0.88rem;font-weight:600;letter-spacing:0.02em;position:sticky;top:0;z-index:999;">
+  ⚠️ Server is not running — start the server with <code style="background:rgba(255,255,255,0.2);padding:1px 6px;border-radius:3px;">node server.js</code> then <a href="javascript:location.reload()" style="color:#fff;text-decoration:underline;">reload this page</a>
+</div>
+
+<main class="page">
+
+  <h1 class="page-title">Submit Tracks</h1>
+  <p class="page-subtitle">Drop a WAV file or folder to get started.</p>
+
+  <!-- ── Metadata lookup ───────────────────────────────────────────────────── -->
+  <div id="metaLookupBar" style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:24px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <span style="font-size:0.8rem;font-weight:600;color:var(--muted);white-space:nowrap">Lookup metadata:</span>
+    <input id="metaLookupInput" type="text" placeholder="Enter ISRC or Catalogue number…"
+      style="flex:1;min-width:200px;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 11px;font-size:0.88rem;color:var(--text);font-family:inherit;outline:none"
+      oninput="metaLookupInput(this.value)"
+      onkeydown="if(event.key==='Enter'){event.preventDefault();metaLookup()}">
+    <button class="btn btn-ghost" onclick="metaLookup()" style="white-space:nowrap">Look up</button>
+    <span id="metaLookupStatus" style="font-size:0.8rem;color:var(--muted)"></span>
+  </div>
+
+  <!-- ── Drop zone ──────────────────────────────────────────────────────── -->
+  <div id="dropZone"
+       ondragover="onDragOver(event)"
+       ondragleave="onDragLeave(event)"
+       ondrop="onDrop(event)"
+       onclick="void 0">
+
+    <input type="file" id="fileInput" accept=".wav,.flac,.mp3,.aif,.aiff,audio/*"
+           onchange="handleFileInput(event)">
+    <input type="file" id="folderInput" webkitdirectory multiple style="display:none"
+           onchange="handleFolderInput(event)">
+
+    <div id="dropPrompt">
+      <div class="drop-icon">🎵</div>
+      <div class="drop-title">Drag a file or folder here, or browse below</div>
+      <div class="drop-hint">Accepted: WAV, FLAC (preferred) · MP3 / AIFF with reviewer approval<br>
+        Drop a folder and artwork will be picked up automatically</div>
+      <div style="display:flex; gap:10px; justify-content:center; flex-wrap:wrap; margin-top:4px">
+        <button class="btn btn-ghost" onclick="event.stopPropagation(); document.getElementById('fileInput').click()">
+          Browse File
+        </button>
+        <button class="btn btn-ghost" onclick="event.stopPropagation(); document.getElementById('folderInput').click()">
+          Browse Folder
+        </button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ── Multi-track folder panel ─────────────────────────────────────────── -->
+  <div id="multiTrackPanel">
+    <div class="mt-header">
+      <div class="mt-title">📁 <span id="mtFolderName"></span> &mdash; <span id="mtFileCount"></span> tracks found</div>
+      <div class="mt-controls">
+        <label style="cursor:pointer"><input type="checkbox" id="mtSelectAll" checked onchange="toggleSelectAll(this.checked)"> &nbsp;Select all</label>
+      </div>
+    </div>
+
+    <!-- Batch tools -->
+    <div class="mt-batch-bar">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+        <h4 style="margin:0">Batch fill</h4>
+        <label style="cursor:pointer;display:flex;align-items:center;gap:8px;background:#1a3a5c;color:#fff;padding:6px 14px;border-radius:6px;font-size:0.8rem;font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,0.25);">
+          📄 Load from spreadsheet
+          <input type="file" id="batchXlsxInput" accept=".xlsx,.xls,.csv" style="display:none" onchange="loadBatchFromSpreadsheet(this)">
+        </label>
+      </div>
+      <input type="hidden" id="batchReleaseDate">
+      <input type="hidden" id="batchOriginalReleaseDate">
+      <input type="hidden" id="batchParental">
+      <input type="hidden" id="batchRightsTerritories">
+      <div id="batchXlsxStatus" style="font-size:0.78rem;color:var(--muted);margin-bottom:4px;min-height:16px;"></div>
+      <div id="xlsxMissingPanel" style="display:none;font-size:0.78rem;background:rgba(217,48,37,0.08);border:1px solid rgba(217,48,37,0.3);border-radius:5px;padding:8px 12px;margin-bottom:8px;color:var(--red,#d93025)"></div>
+      <div class="mt-batch-grid">
+        <div class="mt-batch-group">
+          <label>Album Title — auto-fills all</label>
+          <input class="mt-field" id="batchAlbum" placeholder="e.g. Gold Collection Vol. 1" oninput="fillAll('album','batchAlbum')">
+        </div>
+        <div class="mt-batch-group">
+          <label>Album Artist — auto-fills all</label>
+          <input class="mt-field" id="batchAlbumArtist" placeholder="e.g. Various Artists" oninput="fillAll('album_artist','batchAlbumArtist')">
+        </div>
+        <div class="mt-batch-group">
+          <label>Track Artist — auto-fills all</label>
+          <input class="mt-field" id="batchArtist" placeholder="e.g. Sipho Mabuse" oninput="fillAll('artist','batchArtist')">
+        </div>
+        <div class="mt-batch-group">
+          <label>Year of Release — auto-fills all</label>
+          <input class="mt-field" id="batchYear" type="number" min="1900" max="2099" placeholder="e.g. 2024" oninput="fillAll('year-top','batchYear'); fillAll('year','batchYear')">
+        </div>
+        <div class="mt-batch-group">
+          <label>Genre</label>
+          <div class="mt-batch-row">
+            <select class="mt-field" id="batchGenre"><option value="">Loading genres…</option></select>
+            <button class="mt-fill-btn" onclick="fillAll('genre','batchGenre')">Fill all</button>
+          </div>
+        </div>
+        <div class="mt-batch-group">
+          <label>Language</label>
+          <div class="mt-batch-row">
+            <select class="mt-field" id="batchLang"></select>
+            <button class="mt-fill-btn" onclick="fillAll('lang','batchLang')">Fill all</button>
+          </div>
+        </div>
+        <div class="mt-batch-group">
+          <label>ISRC — first track</label>
+          <div class="mt-batch-row">
+            <input class="mt-field" id="batchIsrc" placeholder="e.g. ZAAB225 00001" maxlength="12">
+            <button class="mt-fill-btn" onclick="generateIsrcSeq()">Generate ↓</button>
+          </div>
+        </div>
+        <div class="mt-batch-group">
+          <label>Catalogue Number — auto-fills all</label>
+          <input class="mt-field" id="batchCatalogueNo" placeholder="e.g. GALCD001" oninput="fillAll('catalogue_no','batchCatalogueNo')">
+        </div>
+        <div class="mt-batch-group">
+          <label>Barcode (UPC / EAN) — auto-fills all</label>
+          <div class="mt-batch-row">
+            <input class="mt-field" id="batchBarcode" placeholder="e.g. 602435612345" oninput="fillAll('barcode','batchBarcode')">
+            <button class="mt-fill-btn" onclick="fillAll('barcode','batchBarcode')">Fill all</button>
+          </div>
+        </div>
+        <div class="mt-batch-group">
+          <label>WAV category <span style="font-weight:400;color:var(--muted)">(for FileMaker audio reference)</span></label>
+          <select class="mt-field" id="batchWavCategory" onchange="updateFmSourcePath()">
+            <option value="">— select —</option>
+          </select>
+        </div>
+        <div class="mt-batch-group">
+          <label>Artist folder <span style="font-weight:400;color:var(--muted)">(auto-filled from album name)</span></label>
+          <input class="mt-field" id="batchArtistFolder" placeholder="e.g. Adam Glasser" oninput="updateFmSourcePath()">
+        </div>
+        <div style="grid-column:1/-1;font-size:0.72rem;font-family:monospace;color:var(--muted);background:rgba(0,0,0,0.15);padding:6px 10px;border-radius:4px;word-break:break-all;min-height:1.4em" id="fmPathPreview">FM path: —</div>
+        <input type="hidden" id="batchSourcePath">
+      </div>
+    </div>
+
+    <div class="table-wrap" style="margin-bottom:20px">
+      <table id="mtTable">
+        <thead>
+          <tr>
+            <th style="width:36px"></th>
+            <th style="width:36px">#</th>
+            <th>File</th>
+            <th>Title</th>
+            <th>Artist</th>
+            <th style="width:70px">Year</th>
+            <th style="width:80px">Duration</th>
+            <th style="width:70px">Format</th>
+            <th style="width:50px"></th>
+          </tr>
+        </thead>
+        <tbody id="mtBody"></tbody>
+      </table>
+    </div>
+
+    <!-- Artwork for the whole batch -->
+    <div class="mt-submitter" style="margin-bottom:14px">
+      <h4 style="margin-bottom:12px">Album Artwork <span style="font-weight:400;color:var(--muted)">(applies to all tracks)</span></h4>
+      <div id="mtArtworkZone"
+           onclick="document.getElementById('mtArtworkInput').click()"
+           ondragover="mtArtDragOver(event)"
+           ondrop="mtArtDrop(event)"
+           style="border:1px dashed var(--border);border-radius:8px;padding:16px;text-align:center;cursor:pointer;font-size:0.83rem;color:var(--muted);transition:border-color 0.2s;display:flex;align-items:center;gap:16px">
+        <img id="mtArtworkPreview" src="" alt="" style="display:none;width:72px;height:72px;object-fit:cover;border-radius:6px;border:1px solid var(--border);flex-shrink:0">
+        <div id="mtArtworkHint">Drop album cover here, or click to browse<br>
+          <small style="color:var(--muted)">JPEG or PNG · replaces any artwork found in the folder</small>
+        </div>
+      </div>
+      <input type="file" id="mtArtworkInput" accept="image/jpeg,image/png,.jpg,.jpeg,.png" style="display:none" onchange="handleMtArtwork(event)">
+    </div>
+
+    <div class="mt-submitter">
+      <h4>Submitter details (applies to all tracks)</h4>
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Your Name *</label>
+          <input type="text" id="mtSubmitterName" class="mt-field" placeholder="Full name">
+        </div>
+        <div class="form-group">
+          <label>Email *</label>
+          <input type="email" id="mtSubmitterEmail" class="mt-field" placeholder="you@example.com">
+        </div>
+        <div class="form-group">
+          <label>Organisation</label>
+          <input type="text" id="mtOrg" class="mt-field" placeholder="Label or distributor">
+        </div>
+      </div>
+    </div>
+
+    <div id="mtErrorMsg" style="color:var(--red);font-size:0.82rem;margin-bottom:10px;min-height:18px"></div>
+    <div id="mtProgress" style="display:none">
+      <div class="progress-bar-wrap"><div class="progress-bar" id="mtProgressBar"></div></div>
+      <div class="mt-progress-text" id="mtProgressText"></div>
+    </div>
+
+    <label style="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:0.85rem;color:var(--muted);cursor:pointer;">
+      <input type="checkbox" id="mtFmOnlyCheck" style="width:16px;height:16px;">
+      FM record only — skip file upload to S3
+    </label>
+
+    <div class="mt-footer" style="margin-top:12px">
+      <button class="btn btn-primary" id="mtSubmitBtn" onclick="submitAllTracks()">
+        Submit <span id="mtSelectedCount">0</span> selected tracks
+      </button>
+      <button class="btn btn-ghost" onclick="resetToFolderDrop()">← Start over</button>
+    </div>
+  </div>
+
+  <!-- ── Confirmation ────────────────────────────────────────────────────── -->
+  <div id="confirmation">
+    <div class="confirm-box">
+      <div class="confirm-check">✓</div>
+      <div class="confirm-title">Submission Received</div>
+      <div style="color:var(--muted);font-size:0.88rem;margin-bottom:10px;">Your submission ID is</div>
+      <div class="confirm-id" id="confirmId"></div>
+      <div class="confirm-email">We'll be in touch at <strong id="confirmEmail"></strong></div>
+      <button class="btn btn-ghost" onclick="location.reload(true)">New Submission</button>
+    </div>
+  </div>
+
+</main>
+
+<script>
+'use strict';
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+
+function fmtDuration(sec) {
+  if (!sec) return '—';
+  const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+function fmtSize(bytes) {
+  if (bytes > 1e6) return (bytes / 1e6).toFixed(1) + ' MB';
+  return (bytes / 1e3).toFixed(0) + ' KB';
+}
+function prefill(id, val) {
+  const el = $(id);
+  if (val && el && !el.value) el.value = val;
+}
+
+// ── Server health + invite gate ────────────────────────────────────────────
+let _serverDownTimer = null;
+
+async function checkInvite() {
+  try {
+    const r = await fetch('/api/ingest/invite-required');
+    // Server is reachable (any HTTP response means it's up)
+    $('serverDownBanner').style.display = 'none';
+    if (_serverDownTimer) { clearInterval(_serverDownTimer); _serverDownTimer = null; }
+    if (r.ok) {
+      const d = await r.json();
+      if (d.required && sessionStorage.getItem('ingestInviteGranted') !== '1') {
+        $('inviteGate').style.display = 'flex';
+      }
+    }
+  } catch (_) {
+    // Network failure — server genuinely not running
+    $('serverDownBanner').style.display = 'block';
+    if (!_serverDownTimer) {
+      _serverDownTimer = setInterval(checkInvite, 5000);
+    }
+  }
+}
+
+async function verifyInvite() {
+  const token = $('inviteInput').value.trim();
+  $('inviteError').textContent = '';
+  try {
+    const r = await fetch('/api/ingest/verify-invite', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token })
+    });
+    const d = await r.json();
+    if (d.valid) {
+      sessionStorage.setItem('ingestInviteGranted', '1');
+      $('inviteGate').style.display = 'none';
+    } else {
+      $('inviteError').textContent = 'Incorrect token — please try again.';
+    }
+  } catch (_) {
+    $('inviteError').textContent = 'Could not connect — please try again.';
+  }
+}
+$('inviteInput').addEventListener('keydown', e => { if (e.key === 'Enter') verifyInvite(); });
+
+// ── Drag/drop ──────────────────────────────────────────────────────────────
+function onDragOver(e) {
+  e.preventDefault();
+  $('dropZone').classList.add('drag-over');
+}
+function onDragLeave(e) {
+  if (!$('dropZone').contains(e.relatedTarget)) {
+    $('dropZone').classList.remove('drag-over');
+  }
+}
+async function onDrop(e) {
+  e.preventDefault();
+  $('dropZone').classList.remove('drag-over');
+  const items = [...(e.dataTransfer?.items || [])];
+  const hasFolder = items.some(i => i.webkitGetAsEntry()?.isDirectory);
+  if (hasFolder || items.length > 1) {
+    const { audioFiles, artworkFile } = await scanFolderItems(items);
+    if (audioFiles.length >= 1) handleFolderTracks(audioFiles, artworkFile);
+  } else {
+    const file = e.dataTransfer?.files?.[0];
+    if (file) handleFolderTracks([file], null);
+  }
+}
+function handleFileInput(e) {
+  const file = e.target.files?.[0];
+  if (file) handleFolderTracks([file], null);
+}
+async function handleFolderInput(e) {
+  const files  = [...e.target.files].filter(f => !f.name.startsWith('.'));
+  const audioExts = ['.wav','.flac','.mp3','.aif','.aiff'];
+  const imageExts = ['.jpg','.jpeg','.png'];
+  const audioFiles  = files.filter(f => audioExts.includes(extOf(f.name)))
+                           .sort((a,b) => a.name.localeCompare(b.name));
+  const artworkFile = files.find(f => imageExts.includes(extOf(f.name))) || null;
+  if (audioFiles.length >= 1) handleFolderTracks(audioFiles, artworkFile);
+}
+
+// ── Folder scanning helpers ─────────────────────────────────────────────────
+function extOf(name) { return '.' + name.split('.').pop().toLowerCase(); }
+
+function readDirEntries(dirEntry) {
+  return new Promise(resolve => {
+    const reader = dirEntry.createReader();
+    const all = [];
+    function batch() {
+      reader.readEntries(entries => {
+        if (!entries.length) { resolve(all); return; }
+        all.push(...entries); batch();
+      });
+    }
+    batch();
+  });
+}
+function fileFromEntry(entry) {
+  return new Promise(resolve => entry.file(resolve));
+}
+async function scanFolderItems(items) {
+  const audioExts = ['.wav','.flac','.mp3','.aif','.aiff'];
+  const imageExts = ['.jpg','.jpeg','.png'];
+  const audioFiles = [];
+  let artworkFile = null;
+
+  async function processEntry(entry) {
+    if (entry.isFile) {
+      const f = await fileFromEntry(entry);
+      if (f.name.startsWith('.')) return;
+      const ext = extOf(f.name);
+      if (audioExts.includes(ext)) audioFiles.push(f);
+      else if (!artworkFile && imageExts.includes(ext)) artworkFile = f;
+    } else if (entry.isDirectory) {
+      const children = await readDirEntries(entry);
+      for (const child of children) await processEntry(child);
+    }
+  }
+
+  for (const item of items) {
+    const entry = item.webkitGetAsEntry?.();
+    if (entry) await processEntry(entry);
+  }
+  audioFiles.sort((a,b) => a.name.localeCompare(b.name));
+  return { audioFiles, artworkFile };
+}
+
+// ── Global badge helper — attach a warning icon next to a track title field ──
+function showTrackNote(i, { icon, text, color }) {
+  const titleEl = $(`mt-title-${i}`)
+  if (!titleEl) return
+  titleEl.style.color = color
+  const existing = titleEl.parentNode.querySelector('.mt-warn-badge')
+  if (existing) existing.remove()
+  const td = titleEl.parentNode
+  td.style.display = 'flex'; td.style.alignItems = 'center'; td.style.gap = '4px'
+  const badge = document.createElement('button')
+  badge.className = `mt-warn-badge ${color.includes('red') ? 'red' : 'amber'}`
+  badge.setAttribute('type', 'button')
+  badge.setAttribute('aria-label', text)
+  badge.textContent = icon
+  badge.dataset.tip = text
+  td.appendChild(badge)
+}
+
+// ── Multi-track folder flow ────────────────────────────────────────────────
+let mtTracks  = [];
+let mtArtwork = null;
+
+function handleFolderTracks(audioFiles, artworkFile) {
+  mtTracks  = audioFiles.map((f, i) => ({ file: f, meta: null, selected: true, index: i }));
+  mtArtwork = artworkFile;
+
+  $('dropPrompt').style.display = 'none';
+  $('dropZone').classList.add('has-file');
+  $('multiTrackPanel').style.display = 'block';
+
+  const firstPath = audioFiles[0]?.webkitRelativePath || '';
+  const folderName = firstPath.includes('/')
+    ? firstPath.split('/')[0]
+    : stripTrackNum(audioFiles[0].name.replace(/\.[^.]+$/, ''));
+  $('mtFolderName').textContent = folderName;
+  autoFillArtistFolder(folderName);
+  $('mtFileCount').textContent  = audioFiles.length;
+
+  // Render rows immediately
+  const tbody = $('mtBody');
+  tbody.innerHTML = '';
+  mtTracks.forEach((t, i) => {
+    const baseName = stripTrackNum(t.file.name.replace(/\.[^.]+$/, ''));
+
+    // Main row
+    const tr = document.createElement('tr');
+    tr.id = `mt-row-${i}`;
+    tr.innerHTML = `
+      <td><input type="checkbox" checked onchange="toggleTrack(${i},this.checked)"></td>
+      <td class="cell-id" id="mt-seq-${i}">${i + 1}</td>
+      <td style="font-size:0.76rem;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${t.file.name}">${t.file.name.replace(/\.[^.]+$/, '')}</td>
+      <td><input class="mt-field" id="mt-title-${i}" value="${baseName}"></td>
+      <td><input class="mt-field" id="mt-artist-${i}" value="" placeholder="Artist"></td>
+      <td><input class="mt-field" id="mt-year-top-${i}" type="number" min="1900" max="2099" placeholder="Year" style="width:64px;padding:3px 6px;font-size:0.8rem;" oninput="syncYear(${i},this.value)"></td>
+      <td class="cell-id" id="mt-dur-${i}"><span class="mt-loading">…</span></td>
+      <td id="mt-fmt-${i}"><span class="mt-loading">…</span></td>
+      <td><button class="mt-expand-btn" onclick="toggleMtDetail(${i})">▸ Edit</button></td>`;
+    tbody.appendChild(tr);
+    t.rowEl = tr;
+
+    // Detail row (hidden by default)
+    const dr = document.createElement('tr');
+    dr.id = `mt-detail-${i}`;
+    dr.className = 'mt-detail-row';
+    dr.style.display = 'none';
+    dr.innerHTML = `<td colspan="8">
+      <div class="mt-detail-inner">
+        <div class="mt-detail-grid">
+          <div class="mt-detail-group"><label>Album</label><input class="mt-field" id="mt-album-${i}" placeholder="Album title"></div>
+          <div class="mt-detail-group"><label>Album Artist</label><input class="mt-field" id="mt-album_artist-${i}" placeholder="e.g. Various Artists"></div>
+          <div class="mt-detail-group"><label>Year</label><input class="mt-field" id="mt-year-${i}" type="number" min="1900" max="2099" placeholder="2024"></div>
+          <div class="mt-detail-group"><label>Genre</label><select class="mt-field" id="mt-genre-${i}">${genreOptionsHtml()}</select></div>
+          <div class="mt-detail-group"><label>ISRC</label><input class="mt-field" id="mt-isrc-${i}" placeholder="e.g. ZA-ABC-24-00001" maxlength="12"></div>
+          <div class="mt-detail-group"><label>BPM</label><input class="mt-field" id="mt-bpm-${i}" type="number" min="1" max="999" placeholder=""></div>
+          <div class="mt-detail-group"><label>Key</label><input class="mt-field" id="mt-key-${i}" placeholder="e.g. Am, F#"></div>
+          <div class="mt-detail-group"><label>Language</label><select class="mt-field" id="mt-lang-${i}">${langOptionsHtml('en')}</select></div>
+          <div class="mt-detail-group"><label>Explicit</label>
+            <select class="mt-field" id="mt-explicit-${i}">
+              <option value="">Unknown</option>
+              <option value="false">Clean</option>
+              <option value="true">Explicit</option>
+            </select>
+          </div>
+          <div class="mt-detail-group"><label>Catalogue No.</label><input class="mt-field" id="mt-catalogue_no-${i}" placeholder="e.g. GALCD001"></div>
+          <div class="mt-detail-group"><label>Barcode (UPC/EAN)</label><input class="mt-field" id="mt-barcode-${i}" placeholder="e.g. 602435612345"></div>
+        </div>
+        <div style="margin-top:10px">
+          <label style="font-size:0.65rem;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:3px">Notes to reviewer</label>
+          <input class="mt-field" id="mt-notes-${i}" placeholder="Any context or special instructions">
+        </div>
+      </div>
+    </td>`;
+    tbody.appendChild(dr);
+    t.detailEl = dr;
+
+    // Mark fields as user-edited if they type anything
+    tr.querySelectorAll('.mt-field').forEach(el => el.addEventListener('input', () => el.dataset.edited = '1'));
+    dr.querySelectorAll('.mt-field').forEach(el => el.addEventListener('input', () => el.dataset.edited = '1'));
+  });
+
+  updateSelectedCount();
+
+  // Fetch metadata in background, 3 at a time
+  fetchMetaBatch([...mtTracks], 3);
+}
+
+async function fetchMetaBatch(tracks, concurrency) {
+  const queue = [...tracks];
+  const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
+    while (queue.length) {
+      const t = queue.shift();
+      await fetchTrackMeta(t);
+    }
+  });
+  await Promise.all(workers);
+}
+
+async function fetchTrackMeta(t) {
+  const i = t.index;
+  try {
+    const fd = new FormData();
+    fd.append('audio', t.file);
+    const r = await fetch('/api/ingest/meta-preview', { method: 'POST', body: fd });
+    const d = await r.json();
+    t.meta = d;
+    const titleEl  = $(`mt-title-${i}`);
+    const artistEl = $(`mt-artist-${i}`);
+    if (d.meta?.title  && titleEl  && !titleEl.dataset.edited)  titleEl.value  = stripTrackNum(d.meta.title);
+    if (d.meta?.artist && artistEl && !artistEl.dataset.edited) artistEl.value = d.meta.artist;
+
+    // Populate detail fields if not already edited
+    const fill = (id, val) => { const el = $(id); if (el && val != null && val !== '' && !el.dataset.edited) el.value = val; };
+    fill(`mt-album-${i}`,    d.meta?.album);
+    fill(`mt-year-${i}`,     d.meta?.year);
+    fill(`mt-year-top-${i}`, d.meta?.year);
+    fill(`mt-isrc-${i}`,     d.meta?.isrc);
+    fill(`mt-bpm-${i}`,      d.meta?.bpm);
+    fill(`mt-key-${i}`,      d.meta?.key_sig);
+    // Genre — match against loaded options
+    if (d.meta?.genre && !$(`mt-genre-${i}`)?.dataset?.edited) {
+      const g   = d.meta.genre;
+      const sel = $(`mt-genre-${i}`);
+      if (sel) {
+        const match = mtGenres.find(x => x.toLowerCase() === g.toLowerCase());
+        if (match) sel.value = match;
+      }
+    }
+    // Language — match code
+    if (d.meta?.language && !$(`mt-lang-${i}`)?.dataset?.edited) {
+      const el = $(`mt-lang-${i}`);
+      if (el) el.value = d.meta.language.toLowerCase().slice(0,3);
+    }
+
+    const durEl = $(`mt-dur-${i}`);
+    if (durEl) durEl.textContent = d.technical?.duration_sec ? fmtDuration(d.technical.duration_sec) : '—';
+    const fmtEl = $(`mt-fmt-${i}`);
+    if (fmtEl) fmtEl.innerHTML = `<span class="badge ${d.accepted ? 'badge-approved' : 'badge-format-flag'}">${(d.format||'?').toUpperCase()}</span>`;
+  } catch(_) {
+    const durEl = $(`mt-dur-${i}`);
+    if (durEl) durEl.textContent = '—';
+  }
+}
+
+// ── Genre + Language option helpers ────────────────────────────────────────
+let mtGenres = [];
+
+async function loadGenreOptions() {
+  try {
+    const r = await fetch('/api/genres');
+    const d = await r.json();
+    mtGenres = (d.genres || []).filter(Boolean).sort((a,b) => a.localeCompare(b));
+  } catch(_) { mtGenres = []; }
+  // Populate batch bar select
+  const sel = $('batchGenre');
+  if (sel) { sel.innerHTML = genreOptionsHtml(); }
+}
+
+function genreOptionsHtml(selected = '') {
+  const base = `<option value="">— select genre —</option>`;
+  return base + mtGenres.map(g =>
+    `<option value="${g}"${g === selected ? ' selected' : ''}>${g}</option>`
+  ).join('');
+}
+
+function langOptionsHtml(selected = 'en') {
+  const langs = [
+    ['','— select language —'],
+    ['en','English'],['af','Afrikaans'],['zu','Zulu'],['xh','Xhosa'],
+    ['st','Sotho'],['tn','Tswana'],['ts','Tsonga'],['ss','Swati'],
+    ['nr','Ndebele'],['ve','Venda'],['nso','Sepedi'],
+    ['yo','Yoruba'],['ig','Igbo'],['ha','Hausa'],['sw','Swahili'],
+    ['am','Amharic'],['so','Somali'],['rw','Kinyarwanda'],['lg','Luganda'],
+    ['mg','Malagasy'],['ny','Chichewa'],['sn','Shona'],
+    ['ar','Arabic'],['fr','French'],['pt','Portuguese'],['es','Spanish'],
+    ['de','German'],['nl','Dutch'],['it','Italian'],
+    ['hi','Hindi'],['zh','Chinese'],['ja','Japanese'],['ko','Korean'],
+  ];
+  return langs.map(([v,l]) =>
+    `<option value="${v}"${v === selected ? ' selected' : ''}>${l}</option>`
+  ).join('');
+}
+
+// Initialise selects and populate language on page load
+(function initSelectDefaults() {
+  // Language batch select — populated immediately from static list
+  const langSel = $('batchLang');
+  if (langSel) langSel.innerHTML = langOptionsHtml('en');
+  // Genre — fetch from server
+  loadGenreOptions();
+})();
+
+// ── Batch fill helpers ─────────────────────────────────────────────────────
+// Strip leading track numbers: "01 ", "02. ", "3 - ", "04_" etc.
+function stripTrackNum(s) {
+  return (s || '').replace(/^\d{1,3}[\s.\-_]+/, '').trim();
+}
+
+function fillAll(fieldSuffix, sourceId) {
+  const val = $(sourceId)?.value || '';
+  mtTracks.forEach((t, i) => {
+    const el = $(`mt-${fieldSuffix}-${i}`);
+    if (el) { el.value = val; el.dataset.edited = '1'; }
+  });
+}
+
+function generateIsrcSeq() {
+  const raw = $('batchIsrc').value.trim().replace(/[-\s]/g, '').toUpperCase();
+  if (raw.length !== 12) {
+    alert('Enter a full 12-character ISRC (e.g. ZAAB22500001) to generate the sequence.');
+    return;
+  }
+  const prefix  = raw.slice(0, 7);   // CC + XXX + YY
+  const startNum = parseInt(raw.slice(7), 10);
+  if (isNaN(startNum)) { alert('Could not parse the sequence number from the ISRC.'); return; }
+  let seq = 0;
+  mtTracks.forEach((t, i) => {
+    if (!t.selected) return;
+    const el = $(`mt-isrc-${i}`);
+    if (el && !el.value.trim()) {
+      el.value = prefix + String(startNum + seq).padStart(5, '0');
+      el.dataset.edited = '1';
+    }
+    seq++;
+  });
+}
+
+function genBarcode() {
+  // Generate a random 13-digit EAN-13 with valid check digit
+  const digits = Array.from({ length: 12 }, (_, i) => i === 0 ? Math.floor(Math.random() * 9) + 1 : Math.floor(Math.random() * 10));
+  const check  = (10 - (digits.reduce((s, d, i) => s + d * (i % 2 === 0 ? 1 : 3), 0) % 10)) % 10;
+  const barcode = digits.join('') + check;
+  $('batchBarcode').value = barcode;
+  fillAll('barcode', 'batchBarcode');
+}
+
+// ── Load batch metadata from spreadsheet (reads "Ingest" sheet) ──────────────
+function loadBatchFromSpreadsheet(input) {
+  console.log('[Spreadsheet] function called, XLSX available:', typeof XLSX !== 'undefined')
+  const file = input.files[0]
+  if (!file) { console.log('[Spreadsheet] no file selected'); return }
+  console.log('[Spreadsheet] file:', file.name, file.size, 'bytes')
+  const status = $('batchXlsxStatus')
+  status.textContent = 'Reading spreadsheet…'
+
+  const reader = new FileReader()
+  reader.onload = e => {
+    try {
+      const wb = XLSX.read(e.target.result, { type: 'array', cellDates: true })
+      console.log('[Spreadsheet] sheets:', wb.SheetNames)
+
+      // Find "Ingest" sheet (case-insensitive)
+      const sheetName = wb.SheetNames.find(n => n.toLowerCase() === 'ingest') || wb.SheetNames[0]
+      console.log('[Spreadsheet] using sheet:', sheetName)
+      const ws   = wb.Sheets[sheetName]
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: '' })
+      console.log('[Spreadsheet] rows found:', rows.length)
+
+      if (!rows.length) { status.textContent = '⚠️ Sheet is empty.'; return }
+
+      // Debug: log column headers so we can verify exact names
+      console.log('[Ingest sheet] columns:', Object.keys(rows[0]).map(k => JSON.stringify(k)))
+
+      // Column name aliases — matches Metadata_Digital Cupboard format
+      // Strip BOM, non-breaking spaces, zero-width chars, surrounding quotes, then lowercase+trim
+      const clean = s => s
+        .replace(/[\uFEFF\u00A0\u200B\u200C\u200D\u2060]/g, '')
+        .replace(/^"|"$/g, '')
+        .toLowerCase().trim()
+      const get = (row, ...keys) => {
+        for (const k of keys) {
+          const match = Object.keys(row).find(c => clean(c) === k.toLowerCase().trim())
+          if (match && row[match] !== '') return String(row[match]).trim()
+        }
+        return ''
+      }
+      // ISRC-specific reader: tries aliases first, then any column whose name contains 'isrc',
+      // then normalises the value (strips dashes/spaces Excel may have formatted in)
+      const getIsrc = row => {
+        const raw = get(row, 'isrc', 'isrc code', 'isrc #', 'isrc number',
+            'international standard recording code', 'isrc_code', 'isrccode')
+          || (() => {
+            const k = Object.keys(row).find(c => clean(c).includes('isrc'))
+            return k && row[k] !== '' ? String(row[k]).trim() : ''
+          })()
+        return raw ? raw.replace(/[\s\-.]/g, '').toUpperCase() : ''
+      }
+
+      // ── Album-level fields from first row ─────────────────────────────────
+      const first = rows[0]
+      const album       = get(first, 'album title', 'album')
+      const albumArtist = get(first, 'album artist', 'artist')
+      const catNo       = get(first, 'cat. #', 'cat #', 'catalogue number', 'catalogue no', 'cat no')
+      const barcode     = get(first, 'barcode', 'upc', 'ean')
+      const language    = get(first, 'language', 'audio language', 'language code')
+      const genre       = get(first, 'album genre', 'genre')
+      // Release date — handle both Date objects (SheetJS cellDates) and plain strings
+      const rawRelease  = (() => {
+        for (const k of ['release date', 'year']) {
+          const match = Object.keys(first).find(c => clean(c) === k)
+          if (match && first[match] !== '') {
+            const v = first[match]
+            if (v instanceof Date) {
+              const mm = String(v.getMonth()+1).padStart(2,'0')
+              const dd = String(v.getDate()).padStart(2,'0')
+              return `${mm}/${dd}/${v.getFullYear()}`
+            }
+            return String(v).trim()
+          }
+        }
+        return ''
+      })()
+      const releaseDate = rawRelease
+      const year        = releaseDate ? releaseDate.match(/\d{4}/)?.[0] || '' : ''
+
+      if (album)       { $('batchAlbum').value      = album;       fillAll('album',      'batchAlbum') }
+      if (year)        { $('batchYear').value        = year;        fillAll('year-top',   'batchYear'); fillAll('year', 'batchYear') }
+      if (releaseDate) { $('batchReleaseDate').value = releaseDate }
+      if (catNo)       { $('batchCatalogueNo').value = catNo;       fillAll('catalogue_no','batchCatalogueNo') }
+      if (barcode)     { $('batchBarcode').value     = barcode;  fillAll('barcode', 'batchBarcode') }
+      if (language)    { const ls = $('batchLang');    if (ls) ls.value = language }
+      if (genre)       { const gs = $('batchGenre');   if (gs) gs.value = genre }
+
+      // Populate Album Artist batch field
+      const baEl = $('batchAlbumArtist')
+      if (baEl && albumArtist) { baEl.value = albumArtist; fillAll('album_artist', 'batchAlbumArtist') }
+
+      // Populate Track Artist batch field — defaults to album artist if no separate track artist column
+      const taEl = $('batchArtist')
+      if (taEl && albumArtist) { taEl.value = albumArtist; fillAll('artist', 'batchArtist') }
+
+      // ── Per-track fields (ISRC, title, sequence) from each row ───────────
+      // Normalise a string for fuzzy title matching: lowercase, strip punctuation/spaces
+      const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '')
+
+      let tracksFilled = 0
+      rows.forEach((row, ri) => {
+        const isrc  = getIsrc(row)
+        const title = get(row,
+          'track name', 'track title', 'title', 'song title', 'song name',
+          'track', 'name', 'recording title', 'work title')
+        const seq   = get(row, '#', 'sequence number', 'track number', 'seq', 'track no', 'no.',
+          'track #', 'disc track', 'position')
+        // Track artist: read per-row; fall back to row's own album artist, then global albumArtist
+        const trackArtist = get(row,
+          'track artist', 'artist', 'performing artist', 'performer',
+          'recording artist', 'featured artist', 'primary artist', 'main artist') ||
+          get(row, 'album artist') || albumArtist
+        const trackAlbumArtist = get(row, 'album artist') || albumArtist
+
+        // ── Match spreadsheet row → track table index ──────────────────────
+        // Priority: 1) explicit sequence number, 2) title match, 3) row index
+        let n = ri  // fallback
+
+        const seqNum = seq ? parseInt(seq, 10) : NaN
+        if (!isNaN(seqNum) && seqNum >= 1 && seqNum <= mtTracks.length) {
+          // Sequence numbers are 1-based; track indices are 0-based
+          n = seqNum - 1
+        } else if (title) {
+          // Try to find a track whose filename (stripped of leading track number)
+          // normalises to the same string as the spreadsheet title
+          const nt = norm(stripTrackNum(title))
+          const hit = mtTracks.findIndex(t => {
+            const fname = stripTrackNum(t.file.name.replace(/\.[^.]+$/, ''))
+            return norm(fname) === nt
+          })
+          if (hit !== -1) n = hit
+        }
+
+        // Each ISRC is read individually from this row — never generated sequentially
+        if ($(`mt-isrc-${n}`)         && isrc)             { $(`mt-isrc-${n}`).value         = isrc;                    $(`mt-isrc-${n}`).dataset.edited         = '1' }
+        if ($(`mt-title-${n}`)        && title)            { $(`mt-title-${n}`).value         = stripTrackNum(title);   $(`mt-title-${n}`).dataset.edited        = '1' }
+        if ($(`mt-artist-${n}`)       && trackArtist)      { $(`mt-artist-${n}`).value        = trackArtist;            $(`mt-artist-${n}`).dataset.edited       = '1' }
+        if ($(`mt-album_artist-${n}`) && trackAlbumArtist) { $(`mt-album_artist-${n}`).value  = trackAlbumArtist;       $(`mt-album_artist-${n}`).dataset.edited = '1' }
+        if ($(`mt-year-top-${n}`)     && year)             { $(`mt-year-top-${n}`).value      = year; syncYear(n, year); $(`mt-year-top-${n}`).dataset.edited    = '1' }
+        if ($(`mt-catalogue_no-${n}`) && catNo)            { $(`mt-catalogue_no-${n}`).value  = catNo;                  $(`mt-catalogue_no-${n}`).dataset.edited = '1' }
+        if (seq && mtTracks[n]) { mtTracks[n].seq_no = seqNum || null }
+        if (isrc || title) tracksFilled++
+      })
+
+      reorderTracksBySeq()
+
+      // ── Mismatch checks ────────────────────────────────────────────────────
+      let warnings = 0
+
+      // 1. Row count vs audio file count
+      if (rows.length !== mtTracks.length) {
+        const diff = rows.length - mtTracks.length
+        status.style.color = 'var(--amber, #e8a020)'
+        status.textContent = `⚠ Spreadsheet has ${rows.length} rows but ${mtTracks.length} audio file${mtTracks.length !== 1 ? 's' : ''} loaded — ${diff > 0 ? diff + ' extra row(s)' : Math.abs(diff) + ' missing row(s)'}`
+        warnings++
+      }
+
+      // 2. Duplicate ISRCs
+      const isrcSeen = {}
+      rows.forEach((row, ri) => {
+        const isrc = getIsrc(row)
+        if (!isrc) return
+        if (isrcSeen[isrc] !== undefined) {
+          ;[isrcSeen[isrc], ri].forEach(idx => {
+            const seqNum = parseInt(get(rows[idx] || row, '#', 'sequence number', 'track number', 'seq', 'track no', 'no.', 'track #', 'disc track', 'position'), 10)
+            const n = !isNaN(seqNum) ? seqNum - 1 : idx
+            if (n >= 0 && n < mtTracks.length)
+              showTrackNote(n, { icon: '⚠', text: `Duplicate ISRC ${isrc} — same code appears on multiple rows. Check the spreadsheet.`, color: 'var(--red,#d93025)' })
+          })
+          warnings++
+        } else {
+          isrcSeen[isrc] = ri
+        }
+      })
+
+      // 3. Title vs filename mismatch for sequence-matched rows
+      rows.forEach((row, ri) => {
+        const title = get(row,
+          'track name', 'track title', 'title', 'song title', 'song name',
+          'track', 'name', 'recording title', 'work title')
+        const seq = get(row, '#', 'sequence number', 'track number', 'seq', 'track no', 'no.', 'track #', 'disc track', 'position')
+        const seqNum = seq ? parseInt(seq, 10) : NaN
+        if (!title || isNaN(seqNum)) return
+        const n = seqNum - 1
+        if (n < 0 || n >= mtTracks.length) return
+        const fname = norm(stripTrackNum(mtTracks[n].file.name.replace(/\.[^.]+$/, '')))
+        const nt    = norm(stripTrackNum(title))
+        const longer = Math.max(fname.length, nt.length)
+        if (longer > 3 && levenshtein(fname, nt) > Math.ceil(longer * 0.5)) {
+          showTrackNote(n, { icon: '⚠', text: `Seq ${seqNum}: spreadsheet title "${title}" looks different from audio filename "${stripTrackNum(mtTracks[n].file.name.replace(/\.[^.]+$/, ''))}". Confirm this is the right file.`, color: 'var(--amber,#e8a020)' })
+          warnings++
+        }
+      })
+
+      // 4. Spreadsheet rows with no matching audio file
+      // Audio files are numbered — extract the leading track number from each filename
+      // and check which sequence numbers from the spreadsheet have no corresponding file
+      const missingPanel = $('xlsxMissingPanel')
+      const missingRows = []
+      const loadedNums = new Set(mtTracks.map(t => parseInt(t.file.name, 10)).filter(n => !isNaN(n)))
+      rows.forEach((row, ri) => {
+        const title  = get(row, 'track name', 'track title', 'title', 'song title', 'song name', 'track', 'name', 'recording title', 'work title')
+        const seq    = get(row, '#', 'sequence number', 'track number', 'seq', 'track no', 'no.', 'track #', 'disc track', 'position')
+        const isrc   = getIsrc(row)
+        const seqNum = seq ? parseInt(seq, 10) : NaN
+        if (isNaN(seqNum)) return
+        if (!loadedNums.has(seqNum)) {
+          missingRows.push({ row: seqNum, title, isrc })
+          warnings++
+        }
+      })
+      if (missingRows.length && missingPanel) {
+        missingPanel.style.display = 'block'
+        missingPanel.innerHTML = `<strong>⚠ ${missingRows.length} row${missingRows.length !== 1 ? 's' : ''} in the spreadsheet have no audio file loaded:</strong><ul style="margin:6px 0 0;padding-left:18px;line-height:1.7">` +
+          missingRows.map(r => `<li>Row ${r.row}${r.title ? ` — ${r.title}` : ''}${r.isrc ? ` <span style="font-family:monospace;opacity:0.85">(${r.isrc})</span>` : ''}</li>`).join('') +
+          `</ul>`
+      } else if (missingPanel) {
+        missingPanel.style.display = 'none'
+      }
+
+      const msg = [`✓ Loaded from "${sheetName}" sheet`]
+      if (album)        msg.push(`Album: ${album}`)
+      if (tracksFilled) msg.push(`${tracksFilled} track(s) filled`)
+      if (warnings)     msg.push(`${warnings} issue${warnings !== 1 ? 's' : ''} flagged — review below`)
+      status.style.color = warnings ? 'var(--amber, #e8a020)' : 'var(--green, #2e9e4f)'
+      status.textContent = msg.join(' · ')
+
+    } catch(err) {
+      status.style.color = 'var(--red, #d93025)'
+      console.error('[Spreadsheet] error:', err)
+      status.textContent = `⚠️ Could not read spreadsheet: ${err.message}`
+    }
+    input.value = '' // reset so same file can be reloaded
+  }
+  reader.readAsArrayBuffer(file)
+}
+
+// Keep top-bar year and detail-panel year in sync
+function syncYear(i, val) {
+  const detail = $(`mt-year-${i}`);
+  if (detail) detail.value = val;
+}
+
+function toggleMtDetail(i) {
+  const dr  = $(`mt-detail-${i}`);
+  const btn = mtTracks[i].rowEl.querySelector('.mt-expand-btn');
+  const open = dr.style.display === 'none';
+  dr.style.display = open ? '' : 'none';
+  btn.textContent  = open ? '▾ Edit' : '▸ Edit';
+}
+
+// Re-order tbody rows by seq_no after spreadsheet or lookup population.
+// Element IDs (and mtTracks indices) are unchanged — only the DOM order moves.
+// seqCell is only updated for tracks that have a known seq_no; unmatched '?' cells are left alone.
+function reorderTracksBySeq() {
+  const tbody = $('mtBody');
+  if (!tbody) return;
+  const hasSeq = mtTracks.some(t => typeof t.seq_no === 'number');
+  if (!hasSeq) return;
+  const sorted = [...mtTracks].sort((a, b) => {
+    const as = typeof a.seq_no === 'number' ? a.seq_no : Infinity;
+    const bs = typeof b.seq_no === 'number' ? b.seq_no : Infinity;
+    return as !== bs ? as - bs : a.index - b.index;
+  });
+  sorted.forEach((t, pos) => {
+    if (typeof t.seq_no === 'number') {
+      const seqCell = document.getElementById(`mt-seq-${t.index}`);
+      if (seqCell) seqCell.textContent = pos + 1;
+    }
+    const row = document.getElementById(`mt-row-${t.index}`);
+    const dr  = document.getElementById(`mt-detail-${t.index}`);
+    if (row) tbody.appendChild(row);
+    if (dr)  tbody.appendChild(dr);
+  });
+}
+
+function toggleTrack(i, checked) {
+  mtTracks[i].selected = checked;
+  mtTracks[i].rowEl.style.opacity = checked ? '1' : '0.45';
+  updateSelectedCount();
+}
+function toggleSelectAll(checked) {
+  mtTracks.forEach((t, i) => {
+    t.selected = checked;
+    t.rowEl.style.opacity = checked ? '1' : '0.45';
+    t.rowEl.querySelector('input[type=checkbox]').checked = checked;
+  });
+  updateSelectedCount();
+}
+function updateSelectedCount() {
+  $('mtSelectedCount').textContent = mtTracks.filter(t => t.selected).length;
+}
+
+async function submitAllTracks() {
+  const name  = $('mtSubmitterName').value.trim();
+  const email = $('mtSubmitterEmail').value.trim();
+  $('mtErrorMsg').textContent = '';
+  if (!name || !email) { $('mtErrorMsg').textContent = 'Please enter your name and email.'; return; }
+  const selected = mtTracks.filter(t => t.selected);
+  if (!selected.length) { $('mtErrorMsg').textContent = 'No tracks selected.'; return; }
+
+  const btn = $('mtSubmitBtn');
+  btn.disabled = true;
+  $('mtProgress').style.display = 'block';
+
+  const mtFmOnly = $('mtFmOnlyCheck')?.checked;
+
+  // Check FM path — warn but don't block (path is optional if S3 URL covers it)
+  const srcPath = $('batchSourcePath')?.value?.trim()
+  console.log('[Submit] batchSourcePath =', JSON.stringify(srcPath))
+  console.log('[Submit] batchWavCategory =', JSON.stringify($('batchWavCategory')?.value))
+  console.log('[Submit] batchArtistFolder =', JSON.stringify($('batchArtistFolder')?.value?.trim()))
+  if (!srcPath) {
+    console.warn('[Submit] FM source path is empty — Pending Audio Path will NOT be set in FileMaker')
+  }
+
+  const s3Results = selected.map((t, qi) => ({ t, key: null, url: null, n: t.index, qi }));
+  let artworkUrl  = null;
+
+  if (!mtFmOnly) {
+    // ── Phase 1: Upload all files to S3 in parallel (3 at a time) ───────────
+    $('mtProgressText').textContent = `Uploading ${selected.length} file${selected.length !== 1 ? 's' : ''} to S3…`;
+
+    // Upload shared artwork once before tracks
+    if (mtArtwork) {
+      try {
+        const firstN = selected[0].index;
+        const v0 = id => $(id)?.value?.trim() || '';
+        const awk = new URLSearchParams({ filename: mtArtwork.name,
+          content_type: mtArtwork.type || 'image/jpeg',
+          artist: v0(`mt-artist-${firstN}`), album: v0(`mt-album-${firstN}`),
+          catalogue_no: v0(`mt-catalogue_no-${firstN}`) });
+        const ar    = await fetch(`/api/ingest/presign-artwork?${awk}`);
+        const artPr = await ar.json();
+        await uploadToS3(artPr.uploadUrl, mtArtwork, mtArtwork.type || 'image/jpeg');
+        artworkUrl = artPr.url;
+      } catch(e) { console.warn('[Artwork upload]', e.message); }
+    }
+
+    let uploaded = 0;
+    const uploadQueue = s3Results.map(r => ({ ...r }));
+    const queueCopy   = [...uploadQueue];
+    await Promise.all(Array.from({ length: Math.min(3, queueCopy.length) }, async () => {
+      while (queueCopy.length) {
+        const item = queueCopy.shift();
+        const { t, qi } = item;
+        const n = t.index;
+        const v = id => $(id)?.value?.trim() || '';
+        try {
+          const aq = new URLSearchParams({ filename: t.file.name,
+            content_type: t.file.type || 'audio/wav',
+            artist: v(`mt-artist-${n}`), album: v(`mt-album-${n}`),
+            title:  v(`mt-title-${n}`) || t.file.name.replace(/\.[^.]+$/, '') });
+          const pr = await fetch(`/api/ingest/presign?${aq}`);
+          const { key, url, uploadUrl } = await pr.json();
+          await uploadToS3(uploadUrl, t.file, t.file.type || 'audio/wav');
+          s3Results[qi].key = key;
+          s3Results[qi].url = url;
+        } catch(e) {
+          console.warn('[S3 upload]', t.file.name, e.message);
+        }
+        uploaded++;
+        $('mtProgressBar').style.width  = `${(uploaded / selected.length) * 50}%`;
+        $('mtProgressText').textContent = `Uploading ${uploaded} of ${selected.length}…`;
+      }
+    }));
+  } else {
+    $('mtProgressText').textContent = 'Creating catalogue records (no upload)…';
+  }
+
+  // ── Phase 2: Register with FileMaker sequentially (avoids FM timeout) ──────
+  $('mtProgressText').textContent = 'Creating catalogue records…';
+  let succeeded = 0;
+  let firstRecord = true;
+
+  for (let qi = 0; qi < s3Results.length; qi++) {
+    const result = s3Results[qi];
+    if (!result) continue;
+    const { t, key, url, n } = result;
+    const v = id => $(id)?.value?.trim() || '';
+    try {
+      const reg = await fetch('/api/ingest/register', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          key, url,
+          artwork_url:     artworkUrl,
+          create_tape_record: firstRecord, // only first track creates Tape Files Master
+          title:           v(`mt-title-${n}`) || t.file.name.replace(/\.[^.]+$/, ''),
+          artist:          v(`mt-artist-${n}`),
+          album_artist:    v(`mt-album_artist-${n}`) || $('batchAlbumArtist')?.value?.trim() || '',
+          album:           v(`mt-album-${n}`),
+          year:            v(`mt-year-${n}`) || v(`mt-year-top-${n}`),
+          release_date:          $('batchReleaseDate')?.value || null,
+          original_release_date: $('batchOriginalReleaseDate')?.value || null,
+          parental:              $('batchParental')?.value || null,
+          rights_territories:    $('batchRightsTerritories')?.value || null,
+          genre:           v(`mt-genre-${n}`),
+          isrc:            v(`mt-isrc-${n}`),
+          bpm:             v(`mt-bpm-${n}`),
+          language:        v(`mt-lang-${n}`),
+          explicit:        v(`mt-explicit-${n}`) === 'true',
+          catalogue_no:    v(`mt-catalogue_no-${n}`),
+          sequence_no:     t.seq_no || null,
+          barcode:         v(`mt-barcode-${n}`),
+          notes:           v(`mt-notes-${n}`),
+          submitter_name:  name,
+          submitter_email: email,
+          org:             $('mtOrg').value.trim(),
+          format:          t.meta?.format || null,
+          duration:        t.meta?.technical?.duration_sec || null,
+          fm_path:         (() => {
+            const src    = ($('batchSourcePath')?.value?.trim() || '').replace(/\/+$/, '') // base/category
+            const artist = ($('batchArtistFolder')?.value?.trim() || '').replace(/\/+$/, '')
+            const rel    = t.file.webkitRelativePath || t.file.name
+            if (!src) return null
+            // Only prepend artist folder if the dropped path doesn't already start with it.
+            // This prevents doubling when the album folder name matches the artist name
+            // e.g. artist="Papercuts", rel="Papercuts/01 The Riddle.wav" → no prefix
+            // but artist="Frans Karoo", rel="Frans Karoo_Album/file.wav" → add prefix
+            const relWithArtist = artist && !rel.startsWith(artist + '/') ? `${artist}/${rel}` : rel
+            return `${src}/${relWithArtist}`
+          })()
+        })
+      });
+      if (reg.ok) {
+        succeeded++;
+        firstRecord = false;
+        t.rowEl.classList.add('mt-done');
+      }
+    } catch(e) { console.warn('[Register]', t.file.name, e.message); }
+
+    const regDone = qi + 1;
+    $('mtProgressBar').style.width  = `${50 + (regDone / s3Results.length) * 50}%`;
+    $('mtProgressText').textContent = `Saving record ${regDone} of ${s3Results.length}…`;
+  }
+
+  $('mtProgressBar').style.width  = '100%';
+  $('mtProgressText').textContent = `Done — ${succeeded} of ${selected.length} submitted`;
+
+  setTimeout(() => {
+    $('multiTrackPanel').style.display = 'none';
+    $('dropZone').style.display        = 'none';
+    $('confirmation').style.display    = 'block';
+    $('confirmId').textContent    = `${succeeded} track${succeeded !== 1 ? 's' : ''}`;
+    $('confirmEmail').textContent = email;
+  }, 1400);
+}
+
+function resetToFolderDrop() {
+  mtTracks = []; mtArtwork = null;
+  $('multiTrackPanel').style.display = 'none';
+  $('dropZone').classList.remove('has-file');
+  $('dropZone').style.display   = 'block';
+  $('dropPrompt').style.display = 'block';
+  $('folderInput').value = '';
+  $('fileInput').value   = '';
+  // Reset artwork zone
+  const img = $('mtArtworkPreview');
+  if (img) { img.src = ''; img.style.display = 'none'; }
+  const hint = $('mtArtworkHint');
+  if (hint) hint.style.display = 'block';
+  const zone = $('mtArtworkZone');
+  if (zone) zone.style.borderColor = '';
+  const inp = $('mtArtworkInput');
+  if (inp) inp.value = '';
+}
+
+// ── Waveform canvas (Web Audio API, client-side) — kept for possible reuse ──
+async function drawWaveformPreview(file) {
+  const canvas = $('waveformCanvas');
+  const wrap   = $('waveformWrap');
+  if (!canvas || !wrap) return;
+
+  try {
+    const dpr  = window.devicePixelRatio || 1;
+    const W    = canvas.offsetWidth  || 700;
+    const H    = 80;
+    canvas.width  = W * dpr;
+    canvas.height = H * dpr;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+
+    wrap.style.display = 'block';
+
+    const arrayBuffer = await file.arrayBuffer();
+    const audioCtx = new OfflineAudioContext(1, 44100, 44100);
+    let decoded;
+    try {
+      decoded = await audioCtx.decodeAudioData(arrayBuffer);
+    } catch (_) {
+      // decodeAudioData failed (e.g. very large file or unsupported codec)
+      wrap.style.display = 'none';
+      return;
+    }
+
+    const raw    = decoded.getChannelData(0);
+    const points = W;
+    const step   = Math.max(1, Math.floor(raw.length / points));
+    const peaks  = [];
+    let maxVal   = 0;
+
+    for (let i = 0; i < points; i++) {
+      const start = i * step;
+      let sum = 0;
+      for (let j = 0; j < step; j++) {
+        sum += raw[start + j] ** 2;
+      }
+      const rms = Math.sqrt(sum / step);
+      peaks.push(rms);
+      if (rms > maxVal) maxVal = rms;
+    }
+
+    const norm = maxVal > 0 ? 1 / maxVal : 1;
+    const mid  = H / 2;
+
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = 'rgba(0,0,0,0)';
+
+    peaks.forEach((p, i) => {
+      const h = (p * norm) * mid * 0.9;
+      const alpha = 0.55 + p * norm * 0.45;
+
+      ctx.fillStyle = `rgba(212,168,67,${alpha.toFixed(2)})`;
+      // above centre
+      ctx.fillRect(i, mid - h, 1, h);
+      // below centre (mirror)
+      ctx.fillStyle = `rgba(196,125,42,${(alpha * 0.6).toFixed(2)})`;
+      ctx.fillRect(i, mid, 1, h);
+    });
+
+    // Centre line
+    ctx.fillStyle = 'rgba(212,168,67,0.2)';
+    ctx.fillRect(0, mid - 0.5, W, 1);
+
+  } catch (_) {
+    wrap.style.display = 'none';
+  }
+}
+
+// ── Multi-track artwork ────────────────────────────────────────────────────
+function mtArtDragOver(e) {
+  e.preventDefault();
+  $('mtArtworkZone').style.borderColor = 'var(--gold-dim)';
+}
+function mtArtDrop(e) {
+  e.preventDefault();
+  $('mtArtworkZone').style.borderColor = '';
+  const file = e.dataTransfer?.files?.[0];
+  if (file && file.type.startsWith('image/')) setMtArtwork(file);
+}
+function handleMtArtwork(e) {
+  const file = e.target.files?.[0];
+  if (file) setMtArtwork(file);
+}
+function setMtArtwork(file) {
+  mtArtwork = file;
+  const url = URL.createObjectURL(file);
+  const img = $('mtArtworkPreview');
+  img.src = url;
+  img.style.display = 'block';
+  $('mtArtworkHint').style.display = 'none';
+  $('mtArtworkZone').style.borderColor = 'var(--border-hi)';
+}
+
+// ── Direct S3 upload via presigned URL ─────────────────────────────────────
+async function uploadToS3(uploadUrl, file, contentType) {
+  const ctrl    = new AbortController();
+  const timer   = setTimeout(() => ctrl.abort(), 10 * 60 * 1000); // 10-min safety timeout
+  try {
+    const res = await fetch(uploadUrl, {
+      method:  'PUT',
+      headers: { 'Content-Type': contentType || file.type || 'audio/wav' },
+      body:    file,
+      signal:  ctrl.signal
+    });
+    if (!res.ok) throw new Error(`S3 upload failed: HTTP ${res.status}`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ── Metadata lookup ────────────────────────────────────────────────────────
+let _metaLookupTimer = null
+
+function metaLookupInput(val) {
+  clearTimeout(_metaLookupTimer)
+  if (val.trim().length >= 3) {
+    _metaLookupTimer = setTimeout(metaLookup, 600)
+  } else {
+    $('metaLookupStatus').textContent = ''
+  }
+}
+
+async function metaLookup() {
+  const raw = $('metaLookupInput').value.trim()
+  if (!raw) return
+  const status = $('metaLookupStatus')
+  status.textContent = '⟳ Looking up…'
+  status.style.color = 'var(--muted)'
+
+  // Detect whether it looks like an ISRC or a cat #
+  const isISRC = /^[A-Z]{2}[A-Z0-9]{3}\d{7}$/.test(raw.replace(/-/g, '').toUpperCase())
+  const params = isISRC
+    ? `isrc=${encodeURIComponent(raw)}`
+    : `cat=${encodeURIComponent(raw)}&isrc=${encodeURIComponent(raw)}`
+
+  try {
+    const res  = await fetch(`/api/ingest/metadata/lookup?${params}`)
+    const data = await res.json()
+
+    if (!data.found) {
+      status.textContent = 'Not found in catalogue'
+      status.style.color = 'var(--muted)'
+      return
+    }
+
+    const d      = data.data
+    const tracks = data.tracks || []   // full per-track list from the cache
+
+    // ── Album-level fields ───────────────────────────────────────────────────
+    const resolvedIsrc = isISRC ? raw.replace(/-/g, '').toUpperCase() : (d.isrc || null)
+
+    // Batch header — set value then cascade to all track rows
+    const batchSet = (id, val, fillSuffix) => {
+      if (!val) return
+      const el = $(id)
+      if (el && !el.value) { el.value = val; if (fillSuffix) fillAll(fillSuffix, id) }
+    }
+    batchSet('batchAlbum',       d.album_title,  'album')
+    batchSet('batchAlbumArtist', d.album_artist, 'album_artist')
+    batchSet('batchArtist',      d.album_artist, 'artist')
+    batchSet('batchCatalogueNo', d.catalogue,    'catalogue_no')
+    batchSet('batchBarcode',     d.barcode,      'barcode')
+    const yearMatch = (d.release_date || '').match(/(\d{4})/)
+    if (yearMatch) {
+      batchSet('batchYear', yearMatch[1], 'year-top')
+      if ($('batchYear')?.value) fillAll('year', 'batchYear')
+    }
+    if (d.release_date) prefill('batchReleaseDate', d.release_date)
+    if (d.original_release_date) prefill('batchOriginalReleaseDate', d.original_release_date)
+    if (d.parental)              prefill('batchParental', d.parental)
+    if (d.rights_territories)    prefill('batchRightsTerritories', d.rights_territories)
+    if (d.language) {
+      const ls = $('batchLang')
+      if (ls && !ls.value) {
+        // d.language is a full name (e.g. 'Zulu'); find the matching option by label
+        const langLower = d.language.toLowerCase()
+        const opt = [...ls.options].find(o => o.textContent.toLowerCase() === langLower)
+        ls.value = opt ? opt.value : d.language
+        fillAll('lang', 'batchLang')
+      }
+    }
+
+    // ── Per-track matching engine ─────────────────────────────────────────────
+    // Only runs in batch mode (mtTracks populated after folder drop)
+    if (tracks.length && mtTracks.length) {
+
+      // ── Helpers ────────────────────────────────────────────────────────────
+      const normStr = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '')
+
+      // Levenshtein distance — catches single-character typos (Beach vs Bench)
+      const levenshtein = (a, b) => {
+        const m = a.length, n = b.length
+        const dp = Array.from({length: m + 1}, (_, i) => [i, ...Array(n).fill(0)])
+        for (let j = 0; j <= n; j++) dp[0][j] = j
+        for (let i = 1; i <= m; i++)
+          for (let j = 1; j <= n; j++)
+            dp[i][j] = a[i-1] === b[j-1] ? dp[i-1][j-1]
+              : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1])
+        return dp[m][n]
+      }
+
+      // Strip version/mix suffix from a title: "Mr Blue (Abba Mix)" → "Mr Blue"
+      const VERSION_RE = /\s*[\(\[]([^\)\]]*\b(mix|remix|version|edit|dub|live|acoustic|instrumental|reprise|radio|extended|club|single|clean|explicit|feat\.?|ft\.?)\b[^\)\]]*|[^\)\]]*\b(mix|remix|version|edit|dub|live|acoustic|instrumental|reprise|radio|extended|club|single)\b[^\)\]]*?)[\)\]]\s*$/gi
+      const stripVersion = s => s.replace(VERSION_RE, '').trim()
+
+      // Set a field value and mark as edited
+      const set = (id, val) => {
+        if (!val) return
+        const el = $(id)
+        if (el) { el.value = val; el.dataset.edited = '1' }
+      }
+
+      // Use the global showTrackNote helper
+      const showNote = showTrackNote
+
+      // Apply metadata + note to a matched row
+      const applyMatch = (n, t, note) => {
+        mtTracks[n].matched = true
+        mtTracks[n].seq_no  = t.seq
+        const seqCell = $(`mt-seq-${n}`)
+        if (seqCell) {
+          seqCell.textContent = t.seq ?? (n + 1)
+          seqCell.style.color = note ? 'var(--amber,#e8a000)' : ''
+        }
+        const row = $(`mt-row-${n}`)
+        if (row) row.style.background = note ? 'rgba(232,160,0,0.07)' : ''
+        set(`mt-isrc-${n}`,         (t.isrc || '').replace(/[\s\-.]/g, '').toUpperCase() || undefined)
+        set(`mt-title-${n}`,        stripTrackNum(t.track_name))
+        set(`mt-artist-${n}`,       t.track_artist || d.album_artist)
+        set(`mt-year-top-${n}`,     yearMatch?.[1])
+        set(`mt-year-${n}`,         yearMatch?.[1])
+        set(`mt-catalogue_no-${n}`, d.catalogue)
+        if (note) showNote(n, { ...note, color: 'var(--amber,#e8a000)' })
+      }
+
+      // ── Reset all rows ─────────────────────────────────────────────────────
+      mtTracks.forEach((tr, i) => {
+        tr.matched = false
+        const row = $(`mt-row-${i}`)
+        if (row) { row.style.background = ''; row.title = '' }
+        const seqCell = $(`mt-seq-${i}`)
+        if (seqCell) { seqCell.textContent = i + 1; seqCell.style.color = '' }
+        const titleEl = $(`mt-title-${i}`)
+        if (titleEl) {
+          titleEl.style.color = ''
+          const td = titleEl.parentNode
+          td.style.display = ''
+          const old = td.querySelector('.mt-warn-badge')
+          if (old) old.remove()
+        }
+      })
+
+      // ── Matching cascade (metadata is source of truth) ─────────────────────
+      // Pass 1 — exact normalised title match
+      tracks.forEach(t => {
+        if (!t.track_name) return
+        const nt = normStr(t.track_name)
+        const n = mtTracks.findIndex(tr =>
+          !tr.matched && normStr(stripTrackNum(tr.file.name.replace(/\.[^.]+$/, ''))) === nt)
+        if (n >= 0) applyMatch(n, t, null)
+      })
+
+      // Pass 2 — strip version suffix from filename then exact match
+      // e.g. "Mr Blue (Abba Mix)" → "mrblue" matches catalogue "Mr. Blue"
+      tracks.forEach(t => {
+        if (!t.track_name) return
+        const nt = normStr(t.track_name)
+        const n = mtTracks.findIndex(tr => {
+          if (tr.matched) return false
+          const base = normStr(stripVersion(stripTrackNum(tr.file.name.replace(/\.[^.]+$/, ''))))
+          return base === nt && base.length > 2
+        })
+        if (n >= 0) {
+          const fname = stripTrackNum(mtTracks[n].file.name.replace(/\.[^.]+$/, ''))
+          applyMatch(n, t, {
+            icon: '🔀',
+            text: `Matched as alternate version of "${t.track_name}" (seq ${t.seq}). Confirm this file should carry ISRC ${t.isrc || '—'}.`
+          })
+        }
+      })
+
+      // Pass 3 — Levenshtein distance ≤ 2 on normalised titles (catches typos)
+      // Only fires for titles longer than 5 chars to avoid false positives
+      tracks.forEach(t => {
+        if (!t.track_name) return
+        const nt = normStr(t.track_name)
+        if (nt.length < 5) return
+        const n = mtTracks.findIndex(tr => {
+          if (tr.matched) return false
+          const fn = normStr(stripTrackNum(tr.file.name.replace(/\.[^.]+$/, '')))
+          return fn.length >= 5 && levenshtein(fn, nt) <= 2
+        })
+        if (n >= 0) {
+          const fname = stripTrackNum(mtTracks[n].file.name.replace(/\.[^.]+$/, ''))
+          applyMatch(n, t, {
+            icon: '✏️',
+            text: `Possible spelling difference — file is "${fname}", catalogue has "${t.track_name}" (seq ${t.seq}). Check and correct whichever is wrong.`
+          })
+        }
+      })
+
+      const matched = mtTracks.filter(tr => tr.matched).length
+
+      // ── Flag remaining unmatched files ─────────────────────────────────────
+      let unknown = 0
+      mtTracks.forEach((tr, i) => {
+        if (tr.matched) return
+        unknown++
+        const row = $(`mt-row-${i}`)
+        if (row) row.style.background = 'rgba(217,48,37,0.08)'
+        const seqCell = $(`mt-seq-${i}`)
+        if (seqCell) { seqCell.textContent = '?'; seqCell.style.color = 'var(--red,#d93025)' }
+
+        const baseName = stripTrackNum(tr.file.name.replace(/\.[^.]+$/, ''))
+        // Determine the most useful reason
+        let icon, text
+        if (VERSION_RE.test(baseName)) {
+          // Has version markers but base title didn't match anything either
+          icon = '🔀'
+          text = `Alternate version/mix not found in catalogue as "${baseName}". Needs its own ISRC — contact the label.`
+        } else {
+          // Check if any catalogue track is a partial substring match (different word count)
+          const nf = normStr(baseName)
+          const partial = tracks.find(t => {
+            const nt = normStr(t.track_name || '')
+            return nt.length > 3 && (nt.includes(nf) || nf.includes(nt))
+          })
+          if (partial) {
+            icon = '✏️'
+            text = `Partial title match — catalogue has "${partial.track_name}" (seq ${partial.seq}). Likely a truncation or subtitle difference.`
+          } else {
+            icon = '❓'
+            text = `Not found in catalogue. Could be a bonus track, unlisted track, or incorrect filename. Verify with the label before submitting.`
+          }
+        }
+        showNote(i, { icon, text, color: 'var(--red,#d93025)' })
+      })
+
+      reorderTracksBySeq()
+
+      const parts = [`✓ ${d.album_title || d.catalogue} — ${matched}/${mtTracks.length} tracks matched`]
+      if (unknown) parts.push(`${unknown} flagged — review notes`)
+      status.textContent = parts.join(' · ')
+    } else {
+      status.textContent = `✓ Filled from catalogue: ${d.album_title || d.catalogue || ''}`
+    }
+    status.style.color = 'var(--green, #2e9e4f)'
+  } catch(err) {
+    status.textContent = 'Lookup failed'
+    status.style.color = 'var(--red)'
+  }
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────
+checkInvite();
+
+// Load FM config and populate WAV category dropdown
+let _fmCfg = { fm_asset_base: '', fm_wav_subpath: '' }
+;(async () => {
+  try {
+    _fmCfg = await fetch('/api/ingest/config').then(r => r.json())
+  } catch(_) {}
+
+  const sel = $('batchWavCategory')
+  if (!sel) return
+  // Build category options from the known folder structure
+  const categories = [
+    { label: 'Licensed WAVs – Local',         path: 'Gallo Record Company Music - WAVs/Licensed WAVs/Licensed WAVs_Local' },
+    { label: 'Licensed WAVs – International', path: 'Gallo Record Company Music - WAVs/Licensed WAVs/Licensed WAVs_International' },
+    { label: 'Owned WAVs',                    path: 'Gallo Record Company Music - WAVs/Owned WAVs' },
+  ]
+  categories.forEach(c => {
+    const opt = document.createElement('option')
+    opt.value = c.path
+    opt.textContent = c.label
+    sel.appendChild(opt)
+  })
+  // Restore last used category (prefer saved, fall back to server default)
+  const savedCat = localStorage.getItem('fm_wav_category')
+  if (savedCat) sel.value = savedCat
+  // If savedCat didn't match any option (stale value), fall back to server default
+  if (!sel.value && _fmCfg.fm_wav_subpath) sel.value = _fmCfg.fm_wav_subpath
+  // Final fallback: pick the first real option
+  if (!sel.value && categories.length) sel.value = categories[0].path
+  sel.addEventListener('change', () => { localStorage.setItem('fm_wav_category', sel.value); updateFmSourcePath() })
+  updateFmSourcePath()
+})()
+
+function updateFmSourcePath() {
+  const base     = (_fmCfg.fm_asset_base || '').replace(/\/+$/, '')
+  const category = ($('batchWavCategory')?.value || '').replace(/\/+$/, '')
+  const artist   = ($('batchArtistFolder')?.value || '').trim()
+  const hidden   = $('batchSourcePath')
+  const preview  = $('fmPathPreview')
+  // batchSourcePath stops at category level — fm_path construction adds artist
+  // intelligently so we don't double-up when artist name = album folder name
+  const path     = (base && category) ? `${base}/${category}` : ''
+  if (hidden)  hidden.value = path
+  if (preview) {
+    if (path && artist) {
+      preview.textContent = `✓ FM path: ${path}/${artist}/…`
+      preview.style.color = '#6dbf7e'
+    } else {
+      let missing = []
+      if (!base)     missing.push('server base path (check .env FM_SERVER_ASSET_PATH)')
+      if (!category) missing.push('WAV category')
+      if (!artist)   missing.push('artist folder')
+      preview.textContent = `⚠ FM path not set — missing: ${missing.join(', ')}`
+      preview.style.color = '#e07b54'
+    }
+  }
+}
+
+// Auto-derive artist folder from the dropped album folder name
+function autoFillArtistFolder(folderName) {
+  // Album folders follow pattern: ArtistName_AlbumTitle_CatalogueNo
+  // Artist is everything before the first underscore
+  const artist = folderName.split('_')[0].trim()
+  const el = $('batchArtistFolder')
+  if (el && artist) {
+    el.value = artist
+    localStorage.setItem('fm_artist_folder', artist)
+    updateFmSourcePath()
+  }
+}
+
+// ── Global floating tooltip for warning badges ──────────────────────────────
+;(() => {
+  const tip = document.createElement('div')
+  tip.id = 'mt-tooltip'
+  document.body.appendChild(tip)
+
+  let hideTimer = null
+
+  document.addEventListener('mouseover', e => {
+    const badge = e.target.closest('.mt-warn-badge')
+    if (!badge) return
+    clearTimeout(hideTimer)
+    tip.textContent = badge.dataset.tip || ''
+    // Render off-screen first so we can measure actual height
+    tip.style.visibility = 'hidden'
+    tip.style.display = 'block'
+    const r  = badge.getBoundingClientRect()
+    const tw = 280
+    const th = tip.offsetHeight
+    // position: fixed uses viewport coords — no scrollY
+    let left = r.left + r.width / 2 - tw / 2
+    left = Math.max(8, Math.min(left, window.innerWidth - tw - 8))
+    tip.style.left       = left + 'px'
+    tip.style.top        = (r.top - th - 10) + 'px'
+    tip.style.visibility = 'visible'
+  })
+
+  document.addEventListener('mouseout', e => {
+    const badge = e.target.closest('.mt-warn-badge')
+    if (!badge) return
+    hideTimer = setTimeout(() => { tip.style.display = 'none' }, 120)
+  })
+})()
+</script>
+</body>
+</html>

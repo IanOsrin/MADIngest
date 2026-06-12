@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Podcast Ingest — Gallo</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg:        #ffffff;
+      --bg-card:   #f0f4ff;
+      --bg-lift:   #e4ecf8;
+      --gold:      #1a6fd4;
+      --gold-dim:  #1254a8;
+      --gold-glow: rgba(26,111,212,0.09);
+      --text:      #1a1a2e;
+      --muted:     #6b7280;
+      --border:    rgba(26,111,212,0.18);
+      --ok:        #15803d;
+      --err:       #b91c1c;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Open Sans', sans-serif; background: var(--bg); color: var(--text); padding: 2rem 1rem 4rem; }
+    .wrap { max-width: 680px; margin: 0 auto; }
+    h1 { font-size: 1.4rem; margin-bottom: .25rem; }
+    .sub { color: var(--muted); font-size: .85rem; margin-bottom: 1.5rem; }
+    fieldset { border: 1px solid var(--border); border-radius: 10px; background: var(--bg-card); padding: 1.1rem; margin-bottom: 1.2rem; }
+    legend { font-weight: 700; font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--gold-dim); padding: 0 .4rem; }
+    label { display: block; font-size: .8rem; font-weight: 600; margin: .8rem 0 .25rem; }
+    label .opt { color: var(--muted); font-weight: 400; }
+    input[type=text], input[type=number], input[type=date], select, textarea {
+      width: 100%; padding: .55rem .7rem; border: 1px solid var(--border); border-radius: 7px;
+      font: inherit; font-size: .9rem; background: #fff; color: var(--text);
+    }
+    textarea { min-height: 80px; resize: vertical; }
+    input:focus, select:focus, textarea:focus { outline: 2px solid var(--gold-glow); border-color: var(--gold); }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: .8rem; }
+    .checks { display: flex; gap: 1.4rem; margin-top: .8rem; font-size: .85rem; }
+    .checks label { display: flex; align-items: center; gap: .4rem; margin: 0; font-weight: 500; }
+    input[type=file] { font-size: .85rem; }
+    button {
+      width: 100%; padding: .8rem; border: 0; border-radius: 8px; background: var(--gold); color: #fff;
+      font: inherit; font-weight: 700; font-size: .95rem; cursor: pointer;
+    }
+    button:hover { background: var(--gold-dim); }
+    button:disabled { opacity: .55; cursor: wait; }
+    #status { margin-top: 1rem; padding: .9rem; border-radius: 8px; font-size: .88rem; display: none; white-space: pre-wrap; }
+    #status.ok  { display: block; background: #ecfdf5; color: var(--ok);  border: 1px solid #a7f3d0; }
+    #status.err { display: block; background: #fef2f2; color: var(--err); border: 1px solid #fecaca; }
+    .artnote { font-size: .75rem; color: var(--muted); margin-top: .3rem; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Podcast Ingest</h1>
+  <div class="sub">Uploads the episode MP3 (and cover) to S3, then creates the episode in MadStreamer FileMaker.</div>
+
+  <form id="form">
+    <fieldset>
+      <legend>Show</legend>
+      <label for="existingShow">Existing show <span class="opt">— or fill in a new one below</span></label>
+      <select id="existingShow">
+        <option value="">— New show —</option>
+      </select>
+      <div class="row">
+        <div>
+          <label for="showTitle">Show title</label>
+          <input type="text" id="showTitle" required>
+        </div>
+        <div>
+          <label for="host">Host</label>
+          <input type="text" id="host">
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label for="category">Category</label>
+          <input type="text" id="category" placeholder="Music History">
+        </div>
+        <div>
+          <label for="languageCode">Language code</label>
+          <input type="text" id="languageCode" placeholder="en">
+        </div>
+      </div>
+      <label for="artwork">Cover image <span class="opt">(jpg/png — required for a new show)</span></label>
+      <input type="file" id="artwork" accept=".jpg,.jpeg,.png,.webp">
+      <div class="artnote" id="artnote"></div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Episode</legend>
+      <div class="row">
+        <div>
+          <label for="episodeTitle">Episode title</label>
+          <input type="text" id="episodeTitle" required>
+        </div>
+        <div>
+          <label for="episodeNumber">Episode number</label>
+          <input type="number" id="episodeNumber" min="1">
+        </div>
+      </div>
+      <label for="description">Description / show notes</label>
+      <textarea id="description"></textarea>
+      <div class="row">
+        <div>
+          <label for="publishDate">Publish date</label>
+          <input type="date" id="publishDate">
+        </div>
+        <div>
+          <label for="audio">Episode audio (MP3)</label>
+          <input type="file" id="audio" accept=".mp3,audio/mpeg" required>
+        </div>
+      </div>
+      <div class="checks">
+        <label><input type="checkbox" id="featured"> Featured</label>
+        <label><input type="checkbox" id="explicit"> Explicit</label>
+        <label><input type="checkbox" id="hidden"> Hide (draft)</label>
+      </div>
+    </fieldset>
+
+    <button type="submit" id="submitBtn">Upload &amp; create episode</button>
+    <div id="status"></div>
+  </form>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const TOKEN_KEY = 'podcastIngestAdminToken';
+
+function adminToken() {
+  let t = localStorage.getItem(TOKEN_KEY);
+  if (!t) {
+    t = prompt('Admin secret (INGEST_ADMIN_SECRET):') || '';
+    if (t) localStorage.setItem(TOKEN_KEY, t.trim());
+  }
+  return (t || '').trim();
+}
+
+let shows = [];
+
+async function loadShows() {
+  try {
+    const res = await fetch('/api/podcasts/shows', { headers: { Authorization: 'Bearer ' + adminToken() } });
+    if (res.status === 401) { localStorage.removeItem(TOKEN_KEY); throw new Error('Bad admin secret — reload to retry'); }
+    const data = await res.json();
+    shows = data.shows || [];
+    for (const s of shows) {
+      const opt = document.createElement('option');
+      opt.value = s.showTitle;
+      opt.textContent = `${s.showTitle} (${s.episodeCount} ep)`;
+      $('existingShow').appendChild(opt);
+    }
+  } catch (e) {
+    showStatus('Could not load existing shows: ' + e.message, true);
+  }
+}
+
+$('existingShow').addEventListener('change', () => {
+  const s = shows.find((x) => x.showTitle === $('existingShow').value);
+  if (s) {
+    $('showTitle').value = s.showTitle;
+    $('host').value = s.host;
+    $('category').value = s.category;
+    $('languageCode').value = s.language;
+    $('episodeNumber').value = s.maxEpisodeNumber + 1;
+    $('artnote').textContent = s.artwork ? 'Reusing existing cover: ' + s.artwork : '';
+  } else {
+    $('artnote').textContent = '';
+  }
+});
+
+function showStatus(msg, isErr) {
+  const el = $('status');
+  el.textContent = msg;
+  el.className = isErr ? 'err' : 'ok';
+}
+
+// Default publish date = today
+$('publishDate').valueAsDate = new Date();
+
+$('form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = $('submitBtn');
+  btn.disabled = true;
+  btn.textContent = 'Uploading…';
+  showStatus('Uploading — large files can take a few minutes…', false);
+
+  try {
+    const existing = shows.find((x) => x.showTitle === $('existingShow').value);
+    const fd = new FormData();
+    fd.append('showTitle', $('showTitle').value);
+    fd.append('host', $('host').value);
+    fd.append('category', $('category').value);
+    fd.append('languageCode', $('languageCode').value);
+    fd.append('episodeTitle', $('episodeTitle').value);
+    fd.append('episodeNumber', $('episodeNumber').value);
+    fd.append('description', $('description').value);
+    fd.append('publishDate', $('publishDate').value);
+    fd.append('featured', $('featured').checked ? 'yes' : '');
+    fd.append('explicit', $('explicit').checked ? 'yes' : '');
+    fd.append('visibility', $('hidden').checked ? 'Hide' : 'Show');
+    if (existing?.artwork && !$('artwork').files[0]) fd.append('existingArtworkUrl', existing.artwork);
+    if ($('artwork').files[0]) fd.append('artwork', $('artwork').files[0]);
+    fd.append('audio', $('audio').files[0]);
+
+    const res = await fetch('/api/podcasts/submit', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + adminToken() },
+      body: fd
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || 'Submit failed');
+
+    showStatus(
+      `✓ Episode created (FM record ${data.recordId})\n` +
+      `Audio:    ${data.audioUrl}\n` +
+      `Artwork:  ${data.artworkUrl}\n` +
+      `Duration: ${Math.floor(data.durationSec / 60)}m ${data.durationSec % 60}s`,
+      false
+    );
+    $('episodeTitle').value = '';
+    $('description').value = '';
+    $('audio').value = '';
+    if ($('episodeNumber').value) $('episodeNumber').value = Number($('episodeNumber').value) + 1;
+  } catch (err) {
+    showStatus('✗ ' + err.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Upload & create episode';
+  }
+});
+
+loadShows();
+</script>
+</body>
+</html>

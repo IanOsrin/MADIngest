@@ -1,0 +1,28 @@
+{
+  "name": "gallo-ingest",
+  "version": "1.0.0",
+  "description": "Gallo Catalogue ingest portal — file upload to S3 + FileMaker record creation",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "sync": "node lib/sync-utility.js",
+    "fix-paths": "node scripts/fix-fm-paths.js",
+    "fix-paths:dry": "node scripts/fix-fm-paths.js --dry-run",
+    "cms2024:smoke": "node scripts/cms2024-smoke.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.0.0",
+    "@aws-sdk/lib-storage": "^3.1040.0",
+    "@aws-sdk/s3-request-presigner": "^3.0.0",
+    "adm-zip": "^0.5.10",
+    "cors": "^2.8.5",
+    "dotenv": "^16.0.0",
+    "express": "^4.18.0",
+    "multer": "^1.4.5-lts.1",
+    "music-metadata": "^9.0.0",
+    "xlsx": "^0.18.5",
+    "xml2js": "^0.6.2"
+  }
+}
