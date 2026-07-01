@@ -20,18 +20,13 @@ app.get('/ingest/', (req, res) => res.redirect('/ingest/admin'))
 
 // Serve ingest portal static files.
 // HTML files are never cached so browsers always pick up code changes.
-app.get('/ingest/admin.html', (req, res) => {
-  res.set('Cache-Control', 'no-store')
-  res.sendFile(path.join(__dirname, 'ingest', 'admin.html'))
-})
-app.get('/ingest/podcasts.html', (req, res) => {
-  res.set('Cache-Control', 'no-store')
-  res.sendFile(path.join(__dirname, 'ingest', 'podcasts.html'))
-})
-app.get('/ingest/index.html', (req, res) => {
-  res.set('Cache-Control', 'no-store')
-  res.sendFile(path.join(__dirname, 'ingest', 'index.html'))
-})
+// Extensionless paths (/ingest/admin) serve the same file as *.html paths.
+for (const page of ['admin', 'podcasts', 'index']) {
+  app.get([`/ingest/${page}`, `/ingest/${page}.html`], (req, res) => {
+    res.set('Cache-Control', 'no-store')
+    res.sendFile(path.join(__dirname, 'ingest', `${page}.html`))
+  })
+}
 app.use('/ingest', express.static(path.join(__dirname, 'ingest')))
 
 // Genre list — pulled live from FileMaker value list, static fallback if FM unavailable
@@ -84,8 +79,10 @@ app.use('/api/podcasts', podcastsRouter)
 // Health check
 app.get('/health', (req, res) => res.json({ ok: true, service: 'gallo-ingest' }))
 
-// Root redirect
+// Root + shorthand redirects
 app.get('/', (req, res) => res.redirect('/ingest/admin'))
+app.get(['/admin', '/admin.html'], (req, res) => res.redirect('/ingest/admin'))
+app.get(['/podcasts', '/podcasts.html'], (req, res) => res.redirect('/ingest/podcasts'))
 
 // Silence favicon requests
 app.get('/favicon.ico', (req, res) => res.status(204).end())
