@@ -312,6 +312,7 @@
           onkeydown="if(event.key==='Enter')searchCatalog(0)"
           oninput="if(this.value==='')clearCatalog()">
         <button class="btn btn-gold" onclick="searchCatalog(0)">Search FM</button>
+        <button class="btn btn-ghost" onclick="searchAllDbs()" title="Search Gallo Catalogue, CMS 2024, MadStreamer and the Metadata Extract in one go">Search All DBs</button>
         <span id="catalogCount" style="margin-left:4px;font-size:0.78rem;color:var(--muted)"></span>
       </div>
       <div id="catalogContent"><div class="empty-state" style="color:var(--muted);padding:40px 0;text-align:center">Enter a search term above to query FileMaker.</div></div>
@@ -1686,6 +1687,79 @@ function renderCatalogResults(tracks, foundCount, offset) {
     html += `</div>`
   }
 
+  $('catalogContent').innerHTML = html
+}
+
+// ── Cross-database search — every source, with per-song DB badges ──────────
+const _DB_BADGE_COLORS = {
+  gallo:       '#c9a227',   // gold
+  cms2024:     '#5b9bd5',   // blue
+  madstreamer: '#7cb342',   // green
+  metadata:    '#9e9e9e',   // grey
+}
+
+async function searchAllDbs() {
+  const q = $('catalogSearch').value.trim()
+  if (!q) return clearCatalog()
+  if (q.length < 2) { showToast('Enter at least 2 characters', 'error'); return }
+
+  $('catalogContent').innerHTML = '<div class="loading-state"><span class="spin">⟳</span> Searching all databases…</div>'
+  $('catalogCount').textContent = ''
+
+  try {
+    const res  = await api(`/api/ingest/catalog/search-all?q=${encodeURIComponent(q)}&limit=100`)
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || 'Search failed')
+    renderSearchAllResults(data.songs || [], data.sources || {})
+  } catch (err) {
+    $('catalogContent').innerHTML = `<div class="empty-state" style="color:var(--red)">Error: ${esc(err.message)}</div>`
+  }
+}
+
+function renderSearchAllResults(songs, sources) {
+  // Per-source summary line (including any DB that errored)
+  const summary = Object.entries(sources).map(([key, s]) => {
+    const color = _DB_BADGE_COLORS[key] || 'var(--muted)'
+    return s.ok
+      ? `<span style="color:${color}">●</span> ${esc(s.label)}: ${s.foundCount}`
+      : `<span style="color:var(--red)">●</span> ${esc(s.label)}: unavailable`
+  }).join(' &nbsp; ')
+
+  $('catalogCount').textContent = songs.length
+    ? `${songs.length} unique song${songs.length !== 1 ? 's' : ''}`
+    : ''
+
+  if (!songs.length) {
+    $('catalogContent').innerHTML = `
+      <div style="font-size:0.78rem;color:var(--muted);margin-bottom:10px">${summary}</div>
+      <div class="empty-state" style="padding:40px 0;text-align:center;color:var(--muted)">No songs found in any database.</div>`
+    return
+  }
+
+  let html = `
+    <div style="font-size:0.78rem;color:var(--muted);margin-bottom:10px">${summary}</div>
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th>Title</th><th>Artist</th><th>Album</th><th>Cat No</th><th>ISRC</th><th>Found in</th>
+      </tr></thead><tbody>`
+
+  songs.forEach(s => {
+    const badges = (s.sources || []).map(src => {
+      const color = _DB_BADGE_COLORS[src.key] || 'var(--muted)'
+      return `<span style="display:inline-block;margin:1px 3px 1px 0;padding:1px 7px;border:1px solid ${color};border-radius:9px;font-size:0.68rem;color:${color};white-space:nowrap">${esc(src.db)}</span>`
+    }).join('')
+    html += `
+      <tr>
+        <td class="cell-title">${esc(s.title || '—')}</td>
+        <td class="cell-artist">${esc(s.artist || '—')}</td>
+        <td style="font-size:0.8rem;color:var(--muted)">${esc(s.album || '—')}</td>
+        <td style="font-family:monospace;font-size:0.76rem;color:var(--muted)">${esc(s.catalogue_no || '—')}</td>
+        <td style="font-family:monospace;font-size:0.76rem;color:var(--muted)">${esc(s.isrc || '—')}</td>
+        <td>${badges || '—'}</td>
+      </tr>`
+  })
+
+  html += `</tbody></table></div>`
   $('catalogContent').innerHTML = html
 }
 

@@ -17,7 +17,7 @@ import { parseTrackSheet } from '../lib/excel-ingest.js'
 import { uploadImport, uploadArtworkImport, presignImport, presignArtworkImport, downloadImport,
          uploadMp3ByGcat, uploadWavByGcat, uploadArtworkByGmvi, downloadAnyKey, keyFromS3Url, downloadByUrl } from '../lib/s3-imports.js'
 import { createGalloRecord, createTapeFileRecord, updateGalloRecord, runGalloScript, runScriptOnRecord, pingGallo, findGalloRecordsByCatalogue, searchGalloRecords, fetchContainerData, getGalloTrack, getGalloLayoutFields, getGalloLayoutFieldSet, reloadGalloLayoutFields, getRecentGalloCreates, clearRecentGalloCreates } from '../lib/fm-gallo.js'
-import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, findArtistBio, upsertArtistBio, listArtistBios, _config as madStreamerConfig } from '../lib/madstreamer.js'
+import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, searchMadStreamerRecords, findArtistBio, upsertArtistBio, listArtistBios, _config as madStreamerConfig } from '../lib/madstreamer.js'
 import {
   pingCms2024,
   findRecord            as findCms2024Record,
@@ -426,6 +426,91 @@ router.get('/catalog/search', adminAuth, async (req, res) => {
   } catch (err) {
     res.status(502).json({ error: err.message })
   }
+})
+
+// ── Cross-database search — queries every source in parallel ─────────────────
+// Merges results by ISRC (fallback: normalised title+artist) and tags each
+// song with the databases it was found in.
+router.get('/catalog/search-all', adminAuth, async (req, res) => {
+  const { q } = req.query
+  const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200)
+  if (!q || q.trim().length < 2) return res.json({ songs: [], count: 0, sources: {} })
+
+  const term = q.trim()
+  const norm = s => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ')
+
+  const SOURCES = [
+    { key: 'gallo',       label: 'Gallo Catalogue',
+      run: () => searchGalloRecords(term, limit) },
+    { key: 'cms2024',     label: 'CMS 2024',
+      run: () => searchCms2024Records(term, { limit }) },
+    { key: 'madstreamer', label: 'MadStreamer',
+      run: () => searchMadStreamerRecords(term, { limit }) },
+    { key: 'metadata',    label: 'Metadata Extract',
+      run: async () => {
+        const rows = searchMetadata(term, limit)
+        return {
+          foundCount: rows.length,
+          tracks: rows.map(r => ({
+            title:        r.track_name,
+            artist_name:  r.track_artist || r.album_artist,
+            album_title:  r.album_title,
+            catalogue_no: r.catalogue,
+            isrc:         r.isrc,
+            sequence_no:  r.seq,
+          })),
+        }
+      } },
+  ]
+
+  const settled = await Promise.allSettled(SOURCES.map(s => s.run()))
+
+  const merged  = new Map()   // mergeKey → song
+  const sources = {}          // per-source result/error summary
+
+  SOURCES.forEach((src, i) => {
+    const outcome = settled[i]
+    if (outcome.status === 'rejected') {
+      console.warn(`[Search-all] ${src.label} failed:`, outcome.reason?.message)
+      sources[src.key] = { label: src.label, ok: false, error: outcome.reason?.message || 'failed' }
+      return
+    }
+    const { tracks = [], foundCount = 0 } = outcome.value || {}
+    sources[src.key] = { label: src.label, ok: true, foundCount, returned: tracks.length }
+
+    for (const t of tracks) {
+      const isrc = (t.isrc || '').trim().toUpperCase()
+      const key  = isrc || `t:${norm(t.title)}|a:${norm(t.artist_name)}`
+      if (!merged.has(key)) {
+        merged.set(key, {
+          title:        t.title        || null,
+          artist:       t.artist_name  || null,
+          album:        t.album_title  || null,
+          catalogue_no: t.catalogue_no || null,
+          isrc:         isrc || null,
+          sequence_no:  t.sequence_no ?? null,
+          sources:      [],
+        })
+      }
+      const song = merged.get(key)
+      if (!song.sources.some(s => s.db === src.label)) {
+        song.sources.push({ db: src.label, key: src.key, fm_record_id: t.fm_record_id || null })
+      }
+      // Backfill blanks from whichever source has the value
+      song.title        ||= t.title        || null
+      song.artist       ||= t.artist_name  || null
+      song.album        ||= t.album_title  || null
+      song.catalogue_no ||= t.catalogue_no || null
+    }
+  })
+
+  const songs = [...merged.values()].sort((a, b) =>
+    (b.sources.length - a.sources.length) ||
+    String(a.artist || '').localeCompare(String(b.artist || '')) ||
+    String(a.title  || '').localeCompare(String(b.title  || ''))
+  )
+
+  res.json({ songs, count: songs.length, sources })
 })
 
 // ── FM serial queue — prevents Thrift pool exhaustion ────────────────────────
