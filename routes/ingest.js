@@ -17,7 +17,7 @@ import { parseTrackSheet } from '../lib/excel-ingest.js'
 import { uploadImport, uploadArtworkImport, presignImport, presignArtworkImport, downloadImport,
          uploadMp3ByGcat, uploadWavByGcat, uploadArtworkByGmvi, downloadAnyKey, keyFromS3Url, downloadByUrl } from '../lib/s3-imports.js'
 import { createGalloRecord, createTapeFileRecord, updateGalloRecord, runGalloScript, runScriptOnRecord, pingGallo, findGalloRecordsByCatalogue, searchGalloRecords, fetchContainerData, getGalloTrack, getGalloLayoutFields, getGalloLayoutFieldSet, reloadGalloLayoutFields, getRecentGalloCreates, clearRecentGalloCreates } from '../lib/fm-gallo.js'
-import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, _config as madStreamerConfig } from '../lib/madstreamer.js'
+import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, findArtistBio, upsertArtistBio, listArtistBios, _config as madStreamerConfig } from '../lib/madstreamer.js'
 import {
   pingCms2024,
   findRecord            as findCms2024Record,
@@ -41,7 +41,7 @@ import { languageNameToCode } from '../lib/language-codes.js'
 import { generateDDEX382 } from '../lib/ddex-generate.js'
 import { buildDdexPackage } from '../lib/ddex-build.js'
 import AdmZip from 'adm-zip'
-import { loadMetadata, lookupByIsrc, lookupByCatalogue, lookupAlbumTracks, searchMetadata, getStatus, appendRow as appendMetadataRow, mergeFromBuffer as mergeMetadataFromBuffer, extractHeaders as extractMetadataHeaders, mergeWithMapping as mergeMetadataWithMapping } from '../lib/metadata-cache.js'
+import { loadMetadata, lookupByIsrc, lookupByCatalogue, lookupAlbumTracks, lookupByFilename, lookupByBarcodeAndSeq, lookupCataloguesByBarcode, searchMetadata, getStatus, appendRow as appendMetadataRow, mergeFromBuffer as mergeMetadataFromBuffer, extractHeaders as extractMetadataHeaders, mergeWithMapping as mergeMetadataWithMapping } from '../lib/metadata-cache.js'
 
 // Load metadata on startup (non-blocking — portal works even if file is missing)
 loadMetadata()
@@ -484,7 +484,7 @@ const upload = multer({
 
 const uploadZip = multer({
   storage,
-  limits: { fileSize: 512 * 1024 * 1024 },
+  limits: { fileSize: 2 * 1024 * 1024 * 1024 }, // 2 GB
   fileFilter: (req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase()
     if (ext === '.zip') cb(null, true)
@@ -1296,20 +1296,22 @@ router.post('/ddex', adminAuth, uploadZip.single('package'), async (req, res) =>
       // Create FileMaker record
       try {
         const fm = await createGalloRecord({
-          title:       track.track_title,
-          artist:      track.artist_name,
-          album:       track.album_title,
-          isrc:        track.isrc,
-          year:        track.year,
-          genre:       track.genre,
-          language:    track.language,
-          duration:    track.duration_sec,
-          explicit:    track.explicit,
-          sequence_no: track.track_number,
+          title:        track.track_title,
+          artist:       track.artist_name,
+          album:        track.album_title,
+          isrc:         track.isrc,
+          year:         track.year,
+          release_date: track.release_date,
+          genre:        track.genre,
+          language:     track.language,
+          duration:     track.duration_sec,
+          explicit:     track.explicit,
+          sequence_no:  track.track_number,
           catalogue_no: track.catalogue_no,
-          barcode:     track.barcode,
+          barcode:      track.barcode,
+          label:        track.label_name,
           s3_url,
-          s3_key:      track.s3_key
+          s3_key:       track.s3_key
         })
         created.push({ title: track.track_title, fmRecordId: fm.fmRecordId })
         console.log(`[DDEX] FM record created: ${fm.fmRecordId} — ${track.track_title}`)
@@ -1359,6 +1361,359 @@ router.post('/metadata/reload', adminAuth, async (req, res) => {
 // Metadata status
 router.get('/metadata/status', adminAuth, async (req, res) => {
   res.json({ ok: true, ...getStatus() })
+})
+
+// ── Filename-based metadata lookup ───────────────────────────────────────────
+// GET  /metadata/lookup-filename?filename=198704266508_011_011.wav
+//   → returns metadata row (no FM write)
+// POST /metadata/lookup-filename  body: { filename, fmRecordId }
+//   → looks up metadata and writes it to an existing FM record
+router.get('/metadata/lookup-filename', async (req, res) => {
+  const { filename } = req.query
+  if (!filename) return res.status(400).json({ error: 'filename required' })
+  const row = lookupByFilename(filename)
+  if (!row) return res.json({ ok: false, found: false, filename })
+  res.json({ ok: true, found: true, filename, data: row })
+})
+
+router.post('/metadata/lookup-filename', adminAuth, express.json(), async (req, res) => {
+  const { filename, fmRecordId } = req.body || {}
+  if (!filename) return res.status(400).json({ error: 'filename required' })
+  if (!fmRecordId) return res.status(400).json({ error: 'fmRecordId required' })
+
+  const row = lookupByFilename(filename)
+  if (!row) return res.json({ ok: false, found: false, filename })
+
+  try {
+    const { updateGalloRecord } = await import('../lib/fm-gallo.js')
+    await updateGalloRecord(fmRecordId, {
+      title:           row.track_name,
+      artist:          row.track_artist,
+      featured_artist: row.featured_artist,
+      album:           row.album_title,
+      album_artist:    row.album_artist,
+      isrc:            row.isrc,
+      catalogue_no:    row.catalogue,
+      barcode:         row.barcode,
+      release_date:    row.release_date,
+      year:            row.release_date ? row.release_date.slice(0, 4) : null,
+      genre:           row.genre,
+      language:        row.language,
+      sequence_no:     row.seq,
+      composer:        row.composer,
+      publisher:       row.publisher,
+      producer:        row.producer,
+      label:           row.label,
+      p_line:          row.p_line,
+      c_line:          row.c_line,
+    })
+    res.json({ ok: true, found: true, filename, data: row })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ── Debug: raw FM record for one barcode ─────────────────────────────────────
+// GET /metadata/fm-debug?barcode=198704266508
+// Returns the raw wav_filename values FM sends back + cache lookup result
+router.get('/metadata/fm-debug', adminAuth, async (req, res) => {
+  const { barcode } = req.query
+  if (!barcode) return res.status(400).json({ error: 'barcode required' })
+  try {
+    const { findGalloRecordsByBarcode, getGalloLayoutFields } = await import('../lib/fm-gallo.js')
+    const { getStatus } = await import('../lib/metadata-cache.js')
+    const LAYOUT = process.env.GALLO_FM_LAYOUT
+
+    // 1. Layout field names containing 'file', 'wav', 'audio', 'barcode'
+    let fieldNames = []
+    try {
+      const meta = await getGalloLayoutFields(LAYOUT)
+      fieldNames = meta.map(f => f.name).filter(n => /file|wav|audio|barcode/i.test(n))
+    } catch (e) { fieldNames = [`(introspection error: ${e.message})`] }
+
+    // 2. Fetch a few raw records so we can see the EXACT Filename field values
+    let rawSample = []
+    try {
+      const { getRawGalloSample } = await import('../lib/fm-gallo.js')
+      rawSample = await getRawGalloSample(3)
+    } catch (e) { rawSample = [{ error: e.message }] }
+
+    // 3. Try the barcode find
+    let findResult = null, findError = null
+    try {
+      const recs = await findGalloRecordsByBarcode(barcode)
+      findResult = {
+        count: recs.length,
+        samples: recs.slice(0, 5).map(r => ({
+          fm_record_id: r.fm_record_id,
+          wav_filename:  r.wav_filename,
+          asset_number:  r.asset_number,
+          title:         r.title,
+        }))
+      }
+    } catch (e) { findError = e.message }
+
+    // 4. Cache lookup on each sample
+    let cacheResults = []
+    if (findResult?.samples?.length) {
+      cacheResults = findResult.samples.map(s => {
+        const match = s.wav_filename ? lookupByFilename(s.wav_filename) : null
+        return { wav_filename: s.wav_filename, cacheFound: !!match, match_title: match?.track_name || null }
+      })
+    }
+
+    res.json({
+      ok: true,
+      layout: LAYOUT,
+      relevantFields: fieldNames,
+      rawSample,
+      findResult,
+      findError,
+      cacheResults,
+      cacheStatus: getStatus(),
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ── Fetch FM records and preview metadata matches ─────────────────────────────
+// GET /metadata/fm-preview?catalogue=CCA_xxx  or  ?barcode=198704266508
+// Queries FileMaker for matching records, checks each Filename.wav against the
+// metadata cache, and returns a preview list without writing anything.
+router.get('/metadata/fm-preview', adminAuth, async (req, res) => {
+  // Accept multiple values: ?catalogue=A&catalogue=B&barcode=X&barcode=Y
+  const catalogues = (req.query.catalogues || req.query.catalogue || '').split(',').map(s => s.trim()).filter(Boolean)
+  const barcodes   = (req.query.barcodes   || req.query.barcode   || '').split(',').map(s => s.trim()).filter(Boolean)
+  if (!catalogues.length && !barcodes.length) {
+    return res.status(400).json({ error: 'catalogue or barcode parameter required' })
+  }
+  // Wait up to 10s for the metadata cache — prevents found=0 on a fresh server restart
+  for (let i = 0; i < 20; i++) {
+    if (getStatus().loaded) break
+    await new Promise(r => setTimeout(r, 500))
+  }
+  if (!getStatus().loaded) {
+    return res.status(503).json({ error: 'Metadata cache is still loading — please retry in a few seconds' })
+  }
+  try {
+    const { findGalloRecordsByCatalogue, findGalloRecordsByBarcode } = await import('../lib/fm-gallo.js')
+
+    // Sequential — one FM query at a time, accuracy over speed.
+    const allRecs = []
+    const fetchErrors = []
+    console.log(`[fm-preview] processing ${barcodes.length} barcodes: ${barcodes.join(', ')}`)
+    for (const c of catalogues) {
+      const recs = await findGalloRecordsByCatalogue(c).catch(e => { fetchErrors.push({ catalogue: c, error: e.message }); return [] })
+      console.log(`[fm-preview] catalogue ${c} → ${recs.length} records`)
+      allRecs.push(...recs)
+    }
+    for (const barcode of barcodes) {
+      const recs = await findGalloRecordsByBarcode(barcode).catch(e => { fetchErrors.push({ barcode, error: e.message }); return [] })
+      console.log(`[fm-preview] barcode ${barcode} → ${recs.length} records`)
+      allRecs.push(...recs)
+    }
+    console.log(`[fm-preview] total before dedup: ${allRecs.length}`)
+    if (fetchErrors.length) console.warn('[fm-preview] FM fetch errors:', JSON.stringify(fetchErrors))
+    const seen = new Set()
+    const fmRecords = allRecs.filter(r => {
+      if (seen.has(r.fm_record_id)) return false
+      seen.add(r.fm_record_id); return true
+    })
+
+    // Match each FM record against the metadata cache.
+    // 1. Try barcode+seq (works for records found via the Barcode field search).
+    // 2. Fall back to filename parse (works for CCA-style records where Filename = barcode_seq_seq).
+    const preview = fmRecords.map(rec => {
+      let meta = null
+
+      // Primary: barcode + sequence number
+      const bc = rec.barcode
+      if (bc && rec.sequence_no != null) {
+        meta = lookupByBarcodeAndSeq(bc, rec.sequence_no)
+      }
+      // Fallback: parse barcode+seq from filename
+      if (!meta) {
+        const filename = rec.wav_filename || null
+        if (filename) meta = lookupByFilename(filename)
+      }
+
+      return {
+        fm_record_id:   rec.fm_record_id,
+        filename:       rec.wav_filename || null,
+        barcode:        rec.barcode      || null,
+        sequence_no:    rec.sequence_no  ?? null,
+        current_title:  rec.title,
+        current_artist: rec.artist_name,
+        current_isrc:   rec.isrc,
+        found:          !!meta,
+        match_title:    meta?.track_name   || null,
+        match_artist:   meta?.track_artist || null,
+        match_cat:      meta?.catalogue    || null,
+        match_isrc:     meta?.isrc         || null,
+      }
+    })
+
+    const found    = preview.filter(p => p.found).length
+    const notFound = preview.length - found
+    res.json({ ok: true, total: preview.length, found, notFound, preview, fetchErrors })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ── Bulk FM update from FileMaker export ─────────────────────────────────────
+// POST /metadata/bulk-filename-update
+// Body: JSON array of { filename, fmRecordId }
+// Looks up each filename in the cache and writes metadata to the FM record.
+// Returns per-row results: { filename, fmRecordId, found, updated, error }
+router.post('/metadata/bulk-filename-update', adminAuth, express.json({ limit: '2mb' }), async (req, res) => {
+  const rows = req.body?.rows
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return res.status(400).json({ error: 'rows array required' })
+  }
+
+  // ── Tape Files Master — create FIRST, before the (slow) per-track loop ──
+  // Use the barcodes the user typed (req.body.barcodes) — these are reliable.
+  // Fall back to deriving from row data in case the client is older.
+  const inputBarcodes  = Array.isArray(req.body.barcodes) ? req.body.barcodes.map(String) : []
+  const rowBarcodes    = rows.filter(r => r.barcode).map(r => String(r.barcode).trim())
+  const uniqueBarcodes = [...new Set([...inputBarcodes, ...rowBarcodes].map(b => b.trim()).filter(Boolean))]
+  const seenCatalogues = new Set()
+  const tapeResults    = []
+
+  for (const barcode of uniqueBarcodes) {
+    const cats = lookupCataloguesByBarcode(barcode)
+    for (const catalogue_no of cats) {
+      if (seenCatalogues.has(catalogue_no)) continue
+      seenCatalogues.add(catalogue_no)
+
+      const tracks = lookupAlbumTracks(catalogue_no)
+      const first  = tracks[0]
+      if (!first) {
+        tapeResults.push({ catalogue_no, ok: false, error: 'no tracks found in cache for this catalogue' })
+        continue
+      }
+
+      try {
+        const tapeMeta = {
+          catalogue_no,
+          album:                 first.album_title,
+          album_artist:          first.album_artist || first.track_artist,
+          barcode:               first.barcode,
+          year:                  first.release_date ? String(first.release_date).slice(0, 4) : undefined,
+          release_date:          first.release_date,
+          original_release_date: first.original_release_date,
+          genre:                 first.genre,
+          local_genre:           first.local_genre,
+          sub_genre:             first.sub_genre,
+          language:              first.language,
+          country:               first.country,
+          rights_territories:    first.rights_territories,
+          parental:              first.parental,
+          label:                 first.label,
+          p_line:                first.p_line,
+          c_line:                first.c_line,
+          publishers:            first.publisher,
+        }
+        const t = await createTapeFileRecord(tapeMeta)
+        tapeResults.push({ catalogue_no, ok: true, tapeRecordId: t.tapeRecordId })
+        console.log(`[BFU] Tape Files Master created for ${catalogue_no}: ${t.tapeRecordId}`)
+      } catch (e) {
+        tapeResults.push({ catalogue_no, ok: false, error: e.message })
+        console.warn(`[BFU] Tape Files Master failed for ${catalogue_no}: ${e.message}`)
+      }
+    }
+  }
+
+  // ── Per-track updates ──────────────────────────────────────────────────────
+  // Introspect layout once — resolves pLine/cLine/Label names AND builds a
+  // full known-field set so we can pre-filter payloads (avoids FM error 102
+  // "field missing" on every record, which would cause a layout re-fetch each
+  // time and make bulk updates extremely slow / time out).
+  const lf = await resolveGalloLineFields()
+  let knownFields = null
+  try {
+    knownFields = await getGalloLayoutFieldSet()
+  } catch (e) {
+    console.warn('[BFU] Layout field set unavailable — will proceed without pre-filtering:', e.message)
+  }
+
+  const results = []
+
+  for (const { filename, fmRecordId, barcode, sequence_no } of rows) {
+    if (!fmRecordId) {
+      results.push({ filename, fmRecordId, found: false, updated: false, error: 'missing fmRecordId' })
+      continue
+    }
+
+    // Try barcode+seq first (reliable for records found via Barcode field search),
+    // then fall back to parsing the filename.
+    let row = null
+    if (barcode && sequence_no != null) row = lookupByBarcodeAndSeq(barcode, sequence_no)
+    if (!row && filename)               row = lookupByFilename(filename)
+    if (!row) {
+      results.push({ filename, fmRecordId, found: false, updated: false })
+      continue
+    }
+
+    try {
+      // Build FM field names exactly as the enrich route does
+      const f = {}
+      if (row.track_name)      f['Track Name']              = row.track_name
+      if (row.track_artist)    f['Track Artist']            = row.track_artist
+      if (row.featured_artist) f['Featured Artist']         = row.featured_artist
+      if (row.album_title)     f['Album Title']             = row.album_title
+      if (row.album_artist)    f['Album Artist']            = row.album_artist
+      if (row.isrc)            f['ISRC']                    = row.isrc
+      if (row.catalogue)     { f['Album Catalogue Number']  = row.catalogue
+                               f['Reference Catalogue Number'] = row.catalogue }
+      if (row.barcode)         f['Barcode']                 = String(row.barcode)
+      if (row.barcode)         f['UPC']                     = String(row.barcode)
+      if (row.seq != null)     f['Sequence Number']         = String(row.seq)
+      if (row.seq != null)     f['Track Number']            = Number(row.seq)
+      if (row.release_date)    f['Release Date']            = row.release_date
+      if (row.release_date)    f['Year of Release']         = String(row.release_date).slice(0, 4)
+      if (row.original_release_date) f['Original Release date'] = row.original_release_date
+      if (row.genre)           f['Genre']                   = row.genre
+      if (row.language) {
+        f['Language'] = row.language
+        const iso = row.language.length <= 3 ? row.language : languageNameToCode(row.language)
+        if (iso) f['Language Code'] = iso
+      }
+      if (row.composer)        f['Composers']               = row.composer
+      if (row.producer)        f['Producers']               = row.producer
+      if (row.publisher)       f['Publishers']              = row.publisher
+      if (row.label && lf.labelOk) f['Label']              = row.label
+      if (row.p_line && lf.pName)  f[lf.pName]             = row.p_line
+      if (row.c_line && lf.cName)  f[lf.cName]             = row.c_line
+
+      // Pre-filter against the layout field set so FM never sees unknown fields.
+      // updateGalloWithDiagnosis is still used as a safety net for any 102 errors.
+      let payload = f
+      let preSkipped = []
+      if (knownFields) {
+        payload = {}
+        for (const [k, v] of Object.entries(f)) {
+          if (knownFields.has(k)) payload[k] = v
+          else preSkipped.push(k)
+        }
+        if (preSkipped.length) console.log(`[BFU] Pre-filtered unknown fields for ${fmRecordId}: ${preSkipped.join(', ')}`)
+      }
+      const { skipped } = await updateGalloWithDiagnosis(fmRecordId, payload)
+      results.push({ filename, fmRecordId, found: true, updated: true,
+                     title: row.track_name, artist: row.track_artist,
+                     skipped_fields: [...preSkipped, ...skipped] })
+    } catch (err) {
+      results.push({ filename, fmRecordId, found: true, updated: false, error: err.message })
+    }
+  }
+
+  const updated  = results.filter(r => r.updated).length
+  const notFound = results.filter(r => !r.found).length
+  const errors   = results.filter(r => r.found && !r.updated).length
+
+  res.json({ ok: true, total: rows.length, updated, notFound, errors, results, tape: tapeResults })
 })
 
 // Return column headers from an uploaded file — used by the mapping UI before committing
@@ -1985,6 +2340,46 @@ router.get('/madstreamer/layout-fields', adminAuth, async (req, res) => {
   try {
     const fields = await getLayoutFields(layout)
     res.json({ ok: true, layout, count: fields.size, fields: [...fields].sort() })
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
+
+/**
+ * Artist Bio (API_Artist_Bio on MadStreamer). Biography tab.
+ * GET  /madstreamer/bios        → all bio rows, for the admin list
+ * GET  /madstreamer/bio?artist= → single bio lookup, for the edit/load flow
+ * POST /madstreamer/bio         → { artistName, bio } — creates or updates
+ *                                  the artist's record and forces Active = 1
+ *                                  on commit.
+ */
+router.get('/madstreamer/bios', adminAuth, async (req, res) => {
+  try {
+    const bios = await listArtistBios()
+    res.json({ ok: true, bios })
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
+
+router.get('/madstreamer/bio', adminAuth, async (req, res) => {
+  const artist = String(req.query.artist || '').trim()
+  if (!artist) return res.status(400).json({ error: 'artist query param required' })
+  try {
+    const bio = await findArtistBio(artist)
+    res.json({ ok: true, bio })
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
+
+router.post('/madstreamer/bio', adminAuth, express.json(), async (req, res) => {
+  const artistName = String(req.body?.artistName || '').trim()
+  const bio         = String(req.body?.bio || '')
+  if (!artistName) return res.status(400).json({ error: 'artistName is required' })
+  try {
+    const result = await upsertArtistBio({ artistName, bio })
+    res.json({ ok: true, ...result })
   } catch (err) {
     res.status(502).json({ error: err.message })
   }

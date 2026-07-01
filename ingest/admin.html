@@ -283,7 +283,10 @@
       <button class="tab-btn" data-tab="generate" onclick="showTab('generate')">Generate DDEX</button>
       <button class="tab-btn" data-tab="ddex" onclick="showTab('ddex')">DDEX</button>
       <button class="tab-btn" data-tab="excel" onclick="showTab('excel')">Excel</button>
+      <button class="tab-btn" data-tab="fmupdate" onclick="showTab('fmupdate')">CCA Update</button>
       <button class="tab-btn" data-tab="dbsync" onclick="showTab('dbsync')">DB Sync</button>
+      <button class="tab-btn" data-tab="podcasts" onclick="showTab('podcasts')">Podcasts</button>
+      <button class="tab-btn" data-tab="biography" onclick="showTab('biography')">Biography</button>
     </nav>
 
     <!-- ── Submissions tab ──────────────────────────────────── -->
@@ -714,6 +717,81 @@
 
     </div>
 
+    <!-- ── FM Update tab ─────────────────────────────────────── -->
+    <div id="tab-fmupdate" class="tab-panel">
+
+      <div class="import-section">
+        <h3>CCA Bulk Metadata Update</h3>
+        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
+          Paste barcodes one per line. The app fetches those records directly from FileMaker,
+          reads the <code>Filename.wav</code> field on each record, matches it against the metadata cache, and writes the metadata back.
+        </p>
+
+        <!-- Step 1: query input -->
+        <div id="bfuStep1">
+          <div style="max-width:400px;margin-bottom:10px">
+            <label style="font-size:0.75rem;color:var(--muted);display:block;margin-bottom:4px">Barcodes — one per line</label>
+            <textarea id="bfuBarcode" rows="6" placeholder="198704266508&#10;123456789012&#10;…"
+              style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:6px 10px;font-size:0.84rem;color:var(--text);font-family:monospace;resize:vertical"></textarea>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-ghost" onclick="bfuFetch()">Fetch from FileMaker →</button>
+            <button class="btn btn-ghost" onclick="bfuDebug()" style="font-size:0.78rem">🔍 Debug first barcode</button>
+            <span id="bfuFetchStatus" style="font-size:0.8rem;color:var(--muted)"></span>
+          </div>
+        </div>
+
+        <!-- Step 2: preview table -->
+        <div id="bfuStep2" style="display:none;margin-top:16px">
+          <div id="bfuSummaryBar" style="font-size:0.82rem;margin-bottom:10px"></div>
+          <div style="overflow-x:auto;max-height:440px;border:1px solid var(--border);border-radius:6px">
+            <table style="width:100%;border-collapse:collapse;font-size:0.8rem">
+              <thead>
+                <tr style="background:var(--surface);position:sticky;top:0">
+                  <th style="padding:7px 10px;text-align:left;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600">Filename.wav (from FM)</th>
+                  <th style="padding:7px 10px;text-align:left;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600">FM Record ID</th>
+                  <th style="padding:7px 10px;text-align:left;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600">Match</th>
+                  <th style="padding:7px 10px;text-align:left;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600">Track (cache)</th>
+                  <th style="padding:7px 10px;text-align:left;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600">Artist (cache)</th>
+                  <th style="padding:7px 10px;text-align:left;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600">Cat #</th>
+                </tr>
+              </thead>
+              <tbody id="bfuPreviewBody"></tbody>
+            </table>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap">
+            <button class="btn btn-blue" id="bfuUpdateBtn" onclick="bfuRunUpdate()">Update FileMaker Records</button>
+            <button class="btn btn-ghost" onclick="bfuReset()">← Start Over</button>
+            <span id="bfuUpdateStatus" style="font-size:0.8rem;color:var(--muted)"></span>
+          </div>
+        </div>
+
+        <!-- Step 3: results after update -->
+        <div id="bfuStep3" style="display:none;margin-top:16px">
+          <div id="bfuResultsSummary" style="font-size:0.82rem;margin-bottom:10px;font-weight:600"></div>
+          <div style="overflow-x:auto;max-height:440px;border:1px solid var(--border);border-radius:6px">
+            <table style="width:100%;border-collapse:collapse;font-size:0.8rem">
+              <thead>
+                <tr style="background:var(--surface);position:sticky;top:0">
+                  <th style="padding:7px 10px;text-align:left;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600">Filename.wav</th>
+                  <th style="padding:7px 10px;text-align:left;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600">FM Record ID</th>
+                  <th style="padding:7px 10px;text-align:left;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600">Result</th>
+                  <th style="padding:7px 10px;text-align:left;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600">Detail</th>
+                </tr>
+              </thead>
+              <tbody id="bfuResultsBody"></tbody>
+            </table>
+          </div>
+          <div style="margin-top:12px">
+            <button class="btn btn-ghost" onclick="bfuReset()">Start New Batch</button>
+          </div>
+        </div>
+
+        <div class="import-log" id="bfuLog"></div>
+      </div>
+
+    </div>
+
     <!-- ── DB Sync tab ─────────────────────────────────────── -->
     <div id="tab-dbsync" class="tab-panel">
 
@@ -776,6 +854,160 @@
         <div id="dbSyncBulkStatus" style="font-size:0.82rem;margin-top:12px;white-space:pre-wrap;font-family:ui-monospace,Menlo,monospace;color:var(--muted)"></div>
       </div>
 
+    </div>
+
+    <!-- ── Podcasts tab ─────────────────────────────────────── -->
+    <div id="tab-podcasts" class="tab-panel">
+      <form id="podForm" onsubmit="return false">
+
+        <div class="import-section" style="margin-bottom:24px">
+          <h3>Show</h3>
+          <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
+            Uploads the episode MP3 (and cover) to S3, then creates the episode in MadStreamer FileMaker.
+            Pick an existing show to autofill its details, or fill in a new one.
+          </p>
+
+          <div style="margin-bottom:12px">
+            <label style="font-size:0.78rem;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:6px">Existing show <span style="font-weight:400;text-transform:none;letter-spacing:0">— or fill in a new one below</span></label>
+            <select id="podExistingShow" onchange="podShowChanged()"
+              style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
+              <option value="">— New show —</option>
+            </select>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+            <div>
+              <label style="font-size:0.78rem;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:6px">Show title</label>
+              <input id="podShowTitle" type="text" required
+                style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
+            </div>
+            <div>
+              <label style="font-size:0.78rem;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:6px">Host</label>
+              <input id="podHost" type="text"
+                style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
+            </div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+            <div>
+              <label style="font-size:0.78rem;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:6px">Category</label>
+              <input id="podCategory" type="text" placeholder="Music History"
+                style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
+            </div>
+            <div>
+              <label style="font-size:0.78rem;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:6px">Language code</label>
+              <input id="podLanguageCode" type="text" placeholder="en"
+                style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
+            </div>
+          </div>
+
+          <div style="display:flex;gap:10px;align-items:center">
+            <label class="btn btn-ghost" style="cursor:pointer">
+              Choose cover image
+              <input type="file" id="podArtwork" accept=".jpg,.jpeg,.png,.webp" style="display:none"
+                onchange="$('podArtworkLabel').textContent = this.files[0] ? this.files[0].name : 'No file chosen'">
+            </label>
+            <span id="podArtworkLabel" style="font-size:0.82rem;color:var(--muted)">No file chosen</span>
+            <span id="podArtNote" style="font-size:0.78rem;color:var(--muted)"></span>
+          </div>
+          <p style="font-size:0.75rem;color:var(--muted);margin-top:6px">jpg/png/webp — required for a new show</p>
+        </div>
+
+        <div class="import-section" style="margin-bottom:24px">
+          <h3>Episode</h3>
+
+          <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px;margin-bottom:12px;margin-top:12px">
+            <div>
+              <label style="font-size:0.78rem;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:6px">Episode title</label>
+              <input id="podEpisodeTitle" type="text" required
+                style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
+            </div>
+            <div>
+              <label style="font-size:0.78rem;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:6px">Episode number</label>
+              <input id="podEpisodeNumber" type="number" min="1"
+                style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
+            </div>
+          </div>
+
+          <div style="margin-bottom:12px">
+            <label style="font-size:0.78rem;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:6px">Description / show notes</label>
+            <textarea id="podDescription" rows="4"
+              style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:8px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;resize:vertical;outline:none"></textarea>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 2fr;gap:12px;margin-bottom:12px">
+            <div>
+              <label style="font-size:0.78rem;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:6px">Publish date</label>
+              <input id="podPublishDate" type="date"
+                style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
+            </div>
+            <div>
+              <label style="font-size:0.78rem;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:6px">Episode audio (MP3)</label>
+              <div style="display:flex;gap:10px;align-items:center">
+                <label class="btn btn-ghost" style="cursor:pointer">
+                  Choose MP3
+                  <input type="file" id="podAudio" accept=".mp3,audio/mpeg" style="display:none"
+                    onchange="$('podAudioLabel').textContent = this.files[0] ? this.files[0].name : 'No file chosen'">
+                </label>
+                <span id="podAudioLabel" style="font-size:0.82rem;color:var(--muted)">No file chosen</span>
+              </div>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:20px;font-size:0.85rem;margin-bottom:16px">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="podFeatured"> Featured</label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="podExplicit"> Explicit</label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="podHidden"> Hide (draft)</label>
+          </div>
+
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-gold" id="podSubmitBtn" onclick="podSubmit()">Upload &amp; create episode</button>
+            <span id="podStatus" style="font-size:0.82rem;white-space:pre-wrap;font-family:ui-monospace,Menlo,monospace;color:var(--muted)"></span>
+          </div>
+        </div>
+
+      </form>
+    </div>
+
+    <!-- ── Biography tab ─────────────────────────────────────── -->
+    <div id="tab-biography" class="tab-panel">
+      <div class="import-section" style="margin-bottom:24px">
+        <h3>Artist Biography</h3>
+        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
+          Writes to the <code>API_Artist_Bio</code> layout on MadStreamer. Look up an artist to
+          edit their existing bio, or enter a new artist name to create one. Saving marks the
+          record <strong>Active</strong> automatically.
+        </p>
+
+        <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px">
+          <input id="bioArtistName" type="text" placeholder="Artist name"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();bioLookup()}"
+            style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
+          <button class="btn btn-ghost" onclick="bioLookup()">Look up</button>
+        </div>
+
+        <div style="margin-bottom:14px">
+          <label style="font-size:0.78rem;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:6px">Bio</label>
+          <textarea id="bioText" rows="8"
+            style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:8px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;resize:vertical;outline:none"></textarea>
+        </div>
+
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <button class="btn btn-gold" id="bioSaveBtn" onclick="bioSave()">Save &amp; Activate</button>
+          <button class="btn btn-ghost" onclick="bioReset()">↺ New</button>
+          <span id="bioStatus" style="font-size:0.82rem;white-space:pre-wrap;font-family:ui-monospace,Menlo,monospace;color:var(--muted)"></span>
+        </div>
+      </div>
+
+      <div class="import-section">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:4px">
+          <h3 style="margin:0">Existing Bios</h3>
+          <button class="btn btn-ghost" style="font-size:0.78rem" onclick="bioListLoad(true)">↺ Refresh</button>
+        </div>
+        <div id="bioListWrap" class="table-wrap" style="margin-top:12px">
+          <div class="loading-state"><span class="spin">⟳</span> Loading…</div>
+        </div>
+      </div>
     </div>
 
   </div>
@@ -869,6 +1101,241 @@ function showTab(name) {
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `tab-${name}`))
   if (name === 'catalog') $('catalogSearch').focus()
   if (name === 'excel') loadMetaStatus()
+  if (name === 'podcasts') podcastsInit()
+  if (name === 'biography') biographyInit()
+}
+
+// ── Podcasts ───────────────────────────────────────────────────────────────
+let podShows = []
+let podShowsLoaded = false
+
+async function podcastsInit() {
+  if (!$('podPublishDate').value) $('podPublishDate').valueAsDate = new Date()
+  if (podShowsLoaded) return
+  try {
+    const res  = await api('/api/podcasts/shows')
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || 'Load failed')
+    podShows = data.shows || []
+    for (const s of podShows) {
+      const opt = document.createElement('option')
+      opt.value = s.showTitle
+      opt.textContent = `${s.showTitle} (${s.episodeCount} ep)`
+      $('podExistingShow').appendChild(opt)
+    }
+    podShowsLoaded = true
+  } catch (err) {
+    showToast('Could not load existing shows: ' + err.message, 'error')
+  }
+}
+
+function podShowChanged() {
+  const s = podShows.find(x => x.showTitle === $('podExistingShow').value)
+  if (s) {
+    $('podShowTitle').value     = s.showTitle
+    $('podHost').value          = s.host
+    $('podCategory').value      = s.category
+    $('podLanguageCode').value  = s.language
+    $('podEpisodeNumber').value = s.maxEpisodeNumber + 1
+    $('podArtNote').textContent = s.artwork ? 'Reusing existing cover' : ''
+  } else {
+    $('podArtNote').textContent = ''
+  }
+}
+
+function podStatus(msg, isErr) {
+  const el = $('podStatus')
+  el.textContent = msg
+  el.style.color = isErr ? 'var(--red, #b91c1c)' : 'var(--muted)'
+}
+
+async function podSubmit() {
+  if (!$('podShowTitle').value.trim())   return podStatus('✗ Show title is required', true)
+  if (!$('podEpisodeTitle').value.trim()) return podStatus('✗ Episode title is required', true)
+  if (!$('podAudio').files[0])            return podStatus('✗ Episode MP3 is required', true)
+
+  const btn = $('podSubmitBtn')
+  btn.disabled = true
+  btn.textContent = 'Uploading…'
+  podStatus('Uploading — large files can take a few minutes…', false)
+
+  try {
+    const existing = podShows.find(x => x.showTitle === $('podExistingShow').value)
+    const fd = new FormData()
+    fd.append('showTitle',     $('podShowTitle').value)
+    fd.append('host',          $('podHost').value)
+    fd.append('category',      $('podCategory').value)
+    fd.append('languageCode',  $('podLanguageCode').value)
+    fd.append('episodeTitle',  $('podEpisodeTitle').value)
+    fd.append('episodeNumber', $('podEpisodeNumber').value)
+    fd.append('description',   $('podDescription').value)
+    fd.append('publishDate',   $('podPublishDate').value)
+    fd.append('featured',      $('podFeatured').checked ? 'yes' : '')
+    fd.append('explicit',      $('podExplicit').checked ? 'yes' : '')
+    fd.append('visibility',    $('podHidden').checked ? 'Hide' : 'Show')
+    if (existing?.artwork && !$('podArtwork').files[0]) fd.append('existingArtworkUrl', existing.artwork)
+    if ($('podArtwork').files[0]) fd.append('artwork', $('podArtwork').files[0])
+    fd.append('audio', $('podAudio').files[0])
+
+    const res = await fetch('/api/podcasts/submit', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: fd
+    })
+    const data = await res.json()
+    if (!res.ok || !data.ok) throw new Error(data.error || 'Submit failed')
+
+    podStatus(
+      `✓ Episode created (FM record ${data.recordId})\n` +
+      `Audio:    ${data.audioUrl}\n` +
+      `Artwork:  ${data.artworkUrl}\n` +
+      `Duration: ${Math.floor(data.durationSec / 60)}m ${data.durationSec % 60}s`,
+      false
+    )
+    showToast('Podcast episode created')
+    podShowsLoaded = false
+    $('podExistingShow').querySelectorAll('option:not([value=""])').forEach(o => o.remove())
+    podcastsInit()
+    $('podEpisodeTitle').value = ''
+    $('podDescription').value = ''
+    $('podAudio').value = ''
+    $('podAudioLabel').textContent = 'No file chosen'
+    if ($('podEpisodeNumber').value) $('podEpisodeNumber').value = Number($('podEpisodeNumber').value) + 1
+  } catch (err) {
+    podStatus('✗ ' + err.message, true)
+    showToast('Podcast submit failed', 'error')
+  } finally {
+    btn.disabled = false
+    btn.textContent = 'Upload & create episode'
+  }
+}
+
+// ── Biography ──────────────────────────────────────────────────────────────
+let bioListLoaded = false
+let bioListData = []   // last-loaded rows from /madstreamer/bios, indexed for Edit clicks
+
+function biographyInit() {
+  bioListLoad(false)
+}
+
+function bioStatus(msg, isErr) {
+  const el = $('bioStatus')
+  el.textContent = msg
+  el.style.color = isErr ? 'var(--red, #b91c1c)' : 'var(--muted)'
+}
+
+function bioReset() {
+  $('bioArtistName').value = ''
+  $('bioText').value = ''
+  bioStatus('', false)
+}
+
+async function bioLookup() {
+  const artist = $('bioArtistName').value.trim()
+  if (!artist) return bioStatus('✗ Enter an artist name to look up', true)
+  bioStatus('Looking up…', false)
+
+  // Prefer the already-loaded list (case/whitespace-insensitive) — it's what
+  // the "Existing Bios" table below already proves works. Falls back to a
+  // direct FileMaker find only if the list hasn't loaded yet.
+  if (!bioListLoaded) await bioListLoad(false)
+  const needle = artist.toLowerCase()
+  const match = bioListData.find(b => (b.artistName || '').trim().toLowerCase() === needle)
+  if (match) {
+    $('bioText').value = match.bio || ''
+    bioStatus(`Loaded existing bio (record ${match.recordId}) — editing will update it on save.`, false)
+    return
+  }
+
+  // Not in the cached list — try FileMaker directly (handles >1000 rows or a
+  // stale cache) before assuming it's genuinely new.
+  try {
+    const res  = await api(`/api/ingest/madstreamer/bio?artist=${encodeURIComponent(artist)}`)
+    const data = await res.json()
+    if (!res.ok || !data.ok) throw new Error(data.error || 'Lookup failed')
+    if (data.bio) {
+      $('bioText').value = data.bio.fieldData?.['Bio'] ?? ''
+      bioStatus(`Loaded existing bio (record ${data.bio.recordId}) — editing will update it on save.`, false)
+    } else {
+      $('bioText').value = ''
+      bioStatus('No existing bio for this artist — saving will create one.', false)
+    }
+  } catch (err) {
+    bioStatus('✗ ' + err.message, true)
+  }
+}
+
+async function bioSave() {
+  const artistName = $('bioArtistName').value.trim()
+  if (!artistName) return bioStatus('✗ Artist name is required', true)
+
+  const btn = $('bioSaveBtn')
+  btn.disabled = true
+  bioStatus('Saving…', false)
+  try {
+    const res  = await api('/api/ingest/madstreamer/bio', 'POST', {
+      artistName,
+      bio: $('bioText').value
+    })
+    const data = await res.json()
+    if (!res.ok || !data.ok) throw new Error(data.error || 'Save failed')
+
+    bioStatus(`✓ Bio ${data.action} (record ${data.recordId}) — Active = 1`, false)
+    showToast(`Bio ${data.action} for ${artistName}`)
+    bioListLoaded = false
+    bioListLoad(false)
+  } catch (err) {
+    bioStatus('✗ ' + err.message, true)
+    showToast('Bio save failed', 'error')
+  } finally {
+    btn.disabled = false
+  }
+}
+
+async function bioListLoad(force) {
+  if (bioListLoaded && !force) return
+  const wrap = $('bioListWrap')
+  wrap.innerHTML = '<div class="loading-state"><span class="spin">⟳</span> Loading…</div>'
+  try {
+    const res  = await api('/api/ingest/madstreamer/bios')
+    const data = await res.json()
+    if (!res.ok || !data.ok) throw new Error(data.error || 'Load failed')
+    bioListLoaded = true
+    const bios = data.bios || []
+    bioListData = bios
+    if (!bios.length) {
+      wrap.innerHTML = '<div class="empty-state">No bios saved yet.</div>'
+      return
+    }
+    // Edit buttons reference the row by index into bioListData rather than
+    // inlining the bio text into the onclick attribute — FileMaker text
+    // fields use bare \r line breaks (not \n) for paragraphs, which broke
+    // the inline JS string literal and made every Edit click silently fail.
+    wrap.innerHTML = `
+      <table>
+        <thead><tr><th>Artist</th><th>Bio</th><th>Active</th><th></th></tr></thead>
+        <tbody>
+          ${bios.map((b, i) => `
+            <tr>
+              <td class="cell-title">${esc(b.artistName)}</td>
+              <td class="cell-artist" style="max-width:420px">${esc((b.bio || '').slice(0, 140))}${(b.bio || '').length > 140 ? '…' : ''}</td>
+              <td>${String(b.active) === '1' ? badge('approved') : badge('pending')}</td>
+              <td><span class="cell-link" onclick="bioEditFromIndex(${i})">Edit</span></td>
+            </tr>`).join('')}
+        </tbody>
+      </table>`
+  } catch (err) {
+    wrap.innerHTML = `<div class="empty-state" style="color:var(--red)">✗ ${esc(err.message)}</div>`
+  }
+}
+
+function bioEditFromIndex(i) {
+  const row = bioListData[i]
+  if (!row) return
+  $('bioArtistName').value = row.artistName || ''
+  $('bioText').value = row.bio || ''
+  bioStatus(`Loaded from list (record ${row.recordId}) — save to update.`, false)
+  window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
 // ── Submissions ────────────────────────────────────────────────────────────
@@ -1629,7 +2096,7 @@ async function runDdexPreview() {
       body: fd
     })
     const data = await res.json()
-    if (!res.ok || !data.ok) throw new Error(data.error || 'Preview failed')
+    if (!res.ok) throw new Error(data.error || 'Preview failed')
 
     ddexPreview = data.tracks || []
     $('ddexVersionBadge').textContent = `ERN ${data.version}`
@@ -1812,6 +2279,7 @@ const META_CACHE_FIELDS = [
   { key: 'producer',           label: 'Producers' },
   { key: 'parental',           label: 'Parental' },
   { key: 'rights_territories', label: 'Rights Territories' },
+  { key: 'featured_artist',    label: 'Featured Artist' },
 ]
 
 // Normalise a string for fuzzy matching
@@ -1845,6 +2313,7 @@ function _autoMapCol(sourceCol) {
     trackgenre: 'genre',
     tracknumber: 'seq', trackno: 'seq', sequence: 'seq', sequencenumber: 'seq',
     upc: 'barcode',
+    featuredartist: 'featured_artist', featuring: 'featured_artist', feat: 'featured_artist',
     plabel: 'p_line', clabel: 'c_line',
     lyricalcontentrating: 'parental', parentaladvisory: 'parental', explicit: 'parental',
     rightsterritories: 'rights_territories', rightsandterritories: 'rights_territories',
@@ -2180,6 +2649,165 @@ async function confirmExcelImport() {
     showToast(err.message, 'error')
   } finally {
     btn.disabled = false; btn.textContent = 'Confirm Import'
+  }
+}
+
+// ── Bulk FileMaker Metadata Update ────────────────────────────────────────
+let _bfuPreview = []   // preview rows from FM query
+
+function bfuReset() {
+  _bfuPreview = []
+  $('bfuBarcode').value = ''
+  $('bfuFetchStatus').textContent = ''
+  $('bfuStep2').style.display = 'none'
+  $('bfuStep3').style.display = 'none'
+  $('bfuLog').style.display = 'none'
+  $('bfuLog').textContent = ''
+}
+
+async function bfuDebug() {
+  const barcodes = $('bfuBarcode').value.split(/[\n,]+/).map(s => s.trim()).filter(Boolean)
+  if (!barcodes.length) { $('bfuFetchStatus').textContent = 'Enter a barcode first'; return }
+  const barcode = barcodes[0]
+  $('bfuFetchStatus').textContent = `Debugging ${barcode}…`
+  try {
+    const res  = await api(`/api/ingest/metadata/fm-debug?barcode=${encodeURIComponent(barcode)}`)
+    const data = await res.json()
+    const log  = $('bfuLog')
+    log.style.display = 'block'
+    log.textContent = JSON.stringify(data, null, 2)
+    $('bfuFetchStatus').textContent = `FM returned ${(data.findResult?.count ?? 0)} record(s) — see log below`
+  } catch (err) {
+    $('bfuFetchStatus').textContent = `Error: ${err.message}`
+  }
+}
+
+async function bfuFetch() {
+  const barcodes = $('bfuBarcode').value.split(/[\n,]+/).map(s => s.trim()).filter(Boolean)
+  if (!barcodes.length) {
+    $('bfuFetchStatus').textContent = 'Enter at least one barcode'
+    return
+  }
+
+  const statusEl = $('bfuFetchStatus')
+  statusEl.textContent = `Fetching ${barcodes.length} barcode${barcodes.length !== 1 ? 's' : ''} from FileMaker…`
+  $('bfuStep2').style.display = 'none'
+  $('bfuStep3').style.display = 'none'
+
+  try {
+    const res  = await api(`/api/ingest/metadata/fm-preview?barcodes=${encodeURIComponent(barcodes.join(','))}`)
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || 'Fetch failed')
+
+    _bfuPreview = data.preview || []
+
+    const errHtml = (data.fetchErrors||[]).length
+      ? ` · <span style="color:var(--red,#f87171)" title="${esc((data.fetchErrors||[]).map(e=>e.barcode||e.catalogue+': '+e.error).join('\n'))}">${data.fetchErrors.length} FM error(s) — hover</span>`
+      : ''
+    $('bfuSummaryBar').innerHTML =
+      `<strong>${data.total}</strong> records from FileMaker · ` +
+      `<span style="color:var(--green,#4ade80)">${data.found} matched in cache</span> · ` +
+      `<span style="color:var(--amber,#f59e0b)">${data.notFound} no match</span>` + errHtml
+
+    const tbody = $('bfuPreviewBody')
+    tbody.innerHTML = ''
+    _bfuPreview.forEach(r => {
+      const tr = document.createElement('tr')
+      tr.style.borderBottom = '1px solid var(--border)'
+      const noFile = !r.filename
+      const tick = noFile
+        ? `<span style="color:var(--muted)">— no filename</span>`
+        : r.found
+          ? `<span style="color:var(--green,#4ade80)">✓ Found</span>`
+          : `<span style="color:var(--amber,#f59e0b)">✗ No match</span>`
+      tr.innerHTML = `
+        <td style="padding:5px 10px;font-family:monospace;font-size:0.76rem">${esc(r.filename || '')}</td>
+        <td style="padding:5px 10px;font-family:monospace;font-size:0.76rem">${esc(r.fm_record_id)}</td>
+        <td style="padding:5px 10px">${tick}</td>
+        <td style="padding:5px 10px">${esc(r.match_title || r.current_title || '')}</td>
+        <td style="padding:5px 10px">${esc(r.match_artist || r.current_artist || '')}</td>
+        <td style="padding:5px 10px">${esc(r.match_cat || '')}</td>
+      `
+      tbody.appendChild(tr)
+    })
+
+    const updateBtn = $('bfuUpdateBtn')
+    updateBtn.disabled = data.found === 0
+    updateBtn.textContent = data.found === 0
+      ? 'No matches to update'
+      : `Update ${data.found} FileMaker Record${data.found !== 1 ? 's' : ''}`
+
+    $('bfuStep2').style.display = 'block'
+    statusEl.textContent = ''
+  } catch (err) {
+    statusEl.textContent = `Error: ${err.message}`
+  }
+}
+
+async function bfuRunUpdate() {
+  const matched = _bfuPreview.filter(r => r.found && r.filename)
+  if (!matched.length) return
+
+  const btn    = $('bfuUpdateBtn')
+  const status = $('bfuUpdateStatus')
+  btn.disabled = true
+  btn.textContent = `⟳ Updating ${matched.length} records…`
+  status.textContent = ''
+
+  try {
+    const inputBarcodes = $('bfuBarcode').value.split(/[\n,]+/).map(s => s.trim()).filter(Boolean)
+    const res  = await api('/api/ingest/metadata/bulk-filename-update', 'POST', {
+      barcodes: inputBarcodes,
+      rows: matched.map(r => ({ filename: r.filename, fmRecordId: r.fm_record_id, barcode: r.barcode, sequence_no: r.sequence_no }))
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || 'Update failed')
+
+    $('bfuResultsSummary').innerHTML =
+      `Updated <strong>${data.updated}</strong> of ${data.total} records` +
+      (data.notFound ? ` · <span style="color:var(--amber,#f59e0b)">${data.notFound} not found in cache</span>` : '') +
+      (data.errors   ? ` · <span style="color:var(--red,#f87171)">${data.errors} error(s)</span>` : '')
+
+    const tbody = $('bfuResultsBody')
+    tbody.innerHTML = ''
+    ;(data.results || []).forEach(r => {
+      const tr = document.createElement('tr')
+      tr.style.borderBottom = '1px solid var(--border)'
+      const result = r.updated
+        ? `<span style="color:var(--green,#4ade80)">✓ Updated</span>`
+        : r.found
+          ? `<span style="color:var(--red,#f87171)">✗ Error</span>`
+          : `<span style="color:var(--amber,#f59e0b)">✗ Not found</span>`
+      const detail = r.updated
+        ? `${esc(r.title || '')}${r.artist ? ' — ' + esc(r.artist) : ''}`
+        : esc(r.error || '')
+      tr.innerHTML = `
+        <td style="padding:5px 10px;font-family:monospace;font-size:0.76rem">${esc(r.filename)}</td>
+        <td style="padding:5px 10px;font-family:monospace;font-size:0.76rem">${esc(r.fmRecordId)}</td>
+        <td style="padding:5px 10px">${result}</td>
+        <td style="padding:5px 10px;color:var(--muted)">${detail}</td>
+      `
+      tbody.appendChild(tr)
+    })
+
+    // Tape Files Master results (one per catalogue)
+    if (data.tape?.length) {
+      const tapeHtml = data.tape.map(t =>
+        t.ok
+          ? `<span style="color:var(--green,#4ade80)">⇒ Tape Files Master created for ${esc(t.catalogue_no)} (record ${esc(t.tapeRecordId)})</span>`
+          : `<span style="color:var(--red,#f87171)">⇒ Tape Files Master failed for ${esc(t.catalogue_no)}: ${esc(t.error)}</span>`
+      ).join('<br>')
+      $('bfuResultsSummary').innerHTML += `<br><small>${tapeHtml}</small>`
+    }
+
+    showToast(`FileMaker updated: ${data.updated} records`)
+    $('bfuStep2').style.display = 'none'
+    $('bfuStep3').style.display = 'block'
+  } catch (err) {
+    status.textContent = `Error: ${err.message}`
+    showToast(err.message, 'error')
+  } finally {
+    btn.disabled = false
   }
 }
 

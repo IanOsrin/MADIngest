@@ -111,11 +111,12 @@ router.post('/submit',
       // 1. Audio → S3 (podcasts/audio/<show-slug>/NNN-<episode-slug>.mp3)
       const audio = await uploadPodcastAudio(audioBuffer, showTitle, episodeNumber, episodeTitle)
 
-      // 2. Artwork → S3 (artwork/podcast-<show-slug>.<ext>) when newly uploaded
+      // 2. Artwork → S3 (artwork/podcast-<show-slug>-epNNN.<ext>) when newly uploaded
       if (artworkFile) {
         const art = await uploadPodcastArtwork(
           fs.readFileSync(artworkFile.path),
           showTitle,
+          episodeNumber,
           path.extname(artworkFile.originalname) || '.jpg',
           artworkFile.mimetype
         )

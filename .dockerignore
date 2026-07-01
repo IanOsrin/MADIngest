@@ -1,0 +1,17 @@
+node_modules
+.git
+.env
+tmp
+covers
+.DS_Store
+*.log
+*.docx
+*.command
+*.sh
+Gallo_Albums.xlsx
+Gallo_Metadata_Template.xlsx
+CCA_DDEX_Combined.xlsx
+cca_merge.py
+make_cover_v3.py
+admin.html
+Ingrooves_DDEX_Audit_Report.md
