@@ -2,7 +2,7 @@ services:
   - type: web
     name: gallo-ingest
     runtime: docker
-    plan: standard # 2GB RAM — metadata xlsx is loaded into memory at boot
+    plan: starter # 512MB — metadata xlsx is pre-converted to JSON at build time
     region: frankfurt # closest to eu-north-1 S3 and EU FileMaker hosts
     healthCheckPath: /health
     autoDeploy: true
@@ -13,27 +13,44 @@ services:
         value: /tmp/gallo-uploads
       - key: INGEST_ADMIN_SECRET
         sync: false
+      # FileMaker — Gallo Catalogue
       - key: GALLO_FM_HOST
-        sync: false
+        value: https://digitalcupboard.app
       - key: GALLO_FM_DB
-        sync: false
+        value: Gallo Catalogue
       - key: GALLO_FM_USER
         sync: false
       - key: GALLO_FM_PASS
         sync: false
       - key: GALLO_FM_LAYOUT
-        sync: false
+        value: API_Album_Songs
       - key: GALLO_FM_TAPE_LAYOUT
-        sync: false
+        value: API_Tape_Files
+      # FileMaker — Gallo CMS 2024 (user/pass fall back to GALLO_FM_*)
+      - key: CMS2024_FM_HOST
+        value: https://digitalcupboard.app
+      - key: CMS2024_FM_DB
+        value: Gallo CMS 2024
+      - key: CMS2024_FM_LAYOUT
+        value: Song Files
+      # FileMaker — MadStreamer
       - key: MADSTREAMER_FM_HOST
-        sync: false
+        value: digitalcupboard.fmcloud.fm
       - key: MADSTREAMER_FM_DB
-        sync: false
+        value: MadStreamer
+      # AWS / S3
       - key: AWS_REGION
         value: eu-north-1
       - key: AWS_ACCESS_KEY_ID
         sync: false
       - key: AWS_SECRET_ACCESS_KEY
         sync: false
+      - key: S3_IMPORTS_BUCKET
+        value: mass-music-audio-files
+      - key: S3_IMPORTS_PREFIX
+        value: AudioImports/
+      - key: S3_IMPORTS_BASE_URL
+        value: https://mass-music-audio-files.s3.eu-north-1.amazonaws.com
+      # FileMaker server-side asset path
       - key: FM_SERVER_ASSET_PATH
-        sync: false
+        value: /Macintosh HD/Users/fmuser/Documents/Vision.localized/gallo-music-files-wavs
