@@ -15,9 +15,9 @@ import { extractAudioMeta, detectAudioFormat, generateWarnings, titleFromFilenam
 import { parseDDEXPackage, parseDDEXXml } from '../lib/ddex.js'
 import { parseTrackSheet } from '../lib/excel-ingest.js'
 import { uploadImport, uploadArtworkImport, presignImport, presignArtworkImport, downloadImport,
-         uploadMp3ByGcat, uploadWavByGcat, uploadArtworkByGmvi, downloadAnyKey, keyFromS3Url, downloadByUrl } from '../lib/s3-imports.js'
+         uploadMp3ByGcat, uploadWavByGcat, uploadArtworkByGmvi, uploadPlaylistArt, downloadAnyKey, keyFromS3Url, downloadByUrl } from '../lib/s3-imports.js'
 import { createGalloRecord, createTapeFileRecord, updateGalloRecord, runGalloScript, runScriptOnRecord, pingGallo, findGalloRecordsByCatalogue, searchGalloRecords, fetchContainerData, getGalloTrack, getGalloLayoutFields, getGalloLayoutFieldSet, reloadGalloLayoutFields, getRecentGalloCreates, clearRecentGalloCreates } from '../lib/fm-gallo.js'
-import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, searchMadStreamerRecords, findArtistBio, upsertArtistBio, listArtistBios, _config as madStreamerConfig } from '../lib/madstreamer.js'
+import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, searchMadStreamerRecords, findArtistBio, upsertArtistBio, listArtistBios, findPlaylistArt, upsertPlaylistArt, listPlaylistArt, _config as madStreamerConfig } from '../lib/madstreamer.js'
 import {
   pingCms2024,
   findRecord            as findCms2024Record,
@@ -2465,6 +2465,59 @@ router.post('/madstreamer/bio', adminAuth, express.json(), async (req, res) => {
   try {
     const result = await upsertArtistBio({ artistName, bio })
     res.json({ ok: true, ...result })
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
+
+/**
+ * Playlist Artwork (API_Playlist_Art on MadStreamer). Playlist Artwork tab.
+ * GET  /madstreamer/playlist-arts      → all rows, for the admin list
+ * GET  /madstreamer/playlist-art?name= → single lookup
+ * POST /madstreamer/playlist-art       → multipart: image (required) + playlistName.
+ *                                        Uploads the cover to S3 (artwork/playlist-<slug>.<ext>),
+ *                                        then upserts the record with Image_S3_URL + Active = 1.
+ */
+const uploadPlaylistImage = multer({
+  storage: multer.memoryStorage(),
+  limits:  { fileSize: 15 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase()
+    const ok = ['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)
+           || ['.jpg', '.jpeg', '.png', '.webp'].includes(ext)
+    cb(ok ? null : new Error(`Cover must be jpg/png/webp, got: ${file.mimetype}`), ok)
+  }
+})
+
+router.get('/madstreamer/playlist-arts', adminAuth, async (req, res) => {
+  try {
+    const items = await listPlaylistArt()
+    res.json({ ok: true, items })
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
+
+router.get('/madstreamer/playlist-art', adminAuth, async (req, res) => {
+  const name = String(req.query.name || '').trim()
+  if (!name) return res.status(400).json({ error: 'name query param required' })
+  try {
+    const item = await findPlaylistArt(name)
+    res.json({ ok: true, item })
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
+
+router.post('/madstreamer/playlist-art', adminAuth, uploadPlaylistImage.single('image'), async (req, res) => {
+  const playlistName = String(req.body?.playlistName || '').trim()
+  if (!playlistName) return res.status(400).json({ error: 'playlistName is required' })
+  if (!req.file)     return res.status(400).json({ error: 'image file is required' })
+  try {
+    const ext = path.extname(req.file.originalname) || '.jpg'
+    const up  = await uploadPlaylistArt(req.file.buffer, playlistName, ext, req.file.mimetype)
+    const result = await upsertPlaylistArt({ playlistName, imageUrl: up.url })
+    res.json({ ok: true, imageUrl: up.url, key: up.key, ...result })
   } catch (err) {
     res.status(502).json({ error: err.message })
   }

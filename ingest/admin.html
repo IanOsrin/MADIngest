@@ -287,6 +287,7 @@
       <button class="tab-btn" data-tab="dbsync" onclick="showTab('dbsync')">DB Sync</button>
       <button class="tab-btn" data-tab="podcasts" onclick="showTab('podcasts')">Podcasts</button>
       <button class="tab-btn" data-tab="biography" onclick="showTab('biography')">Biography</button>
+      <button class="tab-btn" data-tab="playlistart" onclick="showTab('playlistart')">Playlist Art</button>
     </nav>
 
     <!-- ── Submissions tab ──────────────────────────────────── -->
@@ -1011,6 +1012,51 @@
       </div>
     </div>
 
+    <!-- Playlist Artwork -->
+    <div id="tab-playlistart" class="tab-panel">
+      <div class="import-section" style="margin-bottom:24px">
+        <h3>Playlist Artwork</h3>
+        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
+          Uploads a cover to S3 (<code>artwork/playlist-&lt;slug&gt;.jpg</code>) and writes the
+          <code>API_Playlist_Art</code> record on MadStreamer. The <strong>playlist name</strong> must
+          match the <code>PublicPlaylist</code> value. Saving marks the record <strong>Active</strong>.
+        </p>
+
+        <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px">
+          <input id="plArtName" type="text" placeholder="Playlist name (e.g. Salute Lucky Dube)"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();plArtLookup()}"
+            style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
+          <button class="btn btn-ghost" onclick="plArtLookup()">Look up</button>
+        </div>
+
+        <div style="margin-bottom:14px">
+          <label style="font-size:0.78rem;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:6px">Cover image (jpg / png / webp)</label>
+          <input type="file" id="plArtFile" accept=".jpg,.jpeg,.png,.webp" style="display:none" onchange="plArtFileChosen(this.files[0])">
+          <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-ghost" onclick="$('plArtFile').click()">Choose image…</button>
+            <span id="plArtFileName" style="font-size:0.82rem;color:var(--muted)">No file chosen</span>
+            <img id="plArtPreview" style="display:none;width:72px;height:72px;object-fit:cover;border-radius:8px;border:1px solid var(--border)">
+          </div>
+        </div>
+
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <button class="btn btn-gold" id="plArtSaveBtn" onclick="plArtSave()">Upload &amp; Save</button>
+          <button class="btn btn-ghost" onclick="plArtReset()">↺ New</button>
+          <span id="plArtStatus" style="font-size:0.82rem;white-space:pre-wrap;font-family:ui-monospace,Menlo,monospace;color:var(--muted)"></span>
+        </div>
+      </div>
+
+      <div class="import-section">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:4px">
+          <h3 style="margin:0">Existing Playlist Art</h3>
+          <button class="btn btn-ghost" style="font-size:0.78rem" onclick="plArtListLoad(true)">↺ Refresh</button>
+        </div>
+        <div id="plArtListWrap" class="table-wrap" style="margin-top:12px">
+          <div class="loading-state"><span class="spin">⟳</span> Loading…</div>
+        </div>
+      </div>
+    </div>
+
   </div>
 </div>
 
@@ -1104,6 +1150,7 @@ function showTab(name) {
   if (name === 'excel') loadMetaStatus()
   if (name === 'podcasts') podcastsInit()
   if (name === 'biography') biographyInit()
+  if (name === 'playlistart') playlistArtInit()
 }
 
 // ── Podcasts ───────────────────────────────────────────────────────────────
@@ -1336,6 +1383,116 @@ function bioEditFromIndex(i) {
   $('bioArtistName').value = row.artistName || ''
   $('bioText').value = row.bio || ''
   bioStatus(`Loaded from list (record ${row.recordId}) — save to update.`, false)
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
+// ── Playlist Art ─────────────────────────────────────────────────────────────
+let plArtListLoaded = false
+let plArtListData   = []
+let plArtFileObj    = null
+
+function plArtStatus(msg, isErr) {
+  const el = $('plArtStatus')
+  el.textContent = msg
+  el.style.color = isErr ? 'var(--red)' : 'var(--muted)'
+}
+
+function playlistArtInit() { plArtListLoad(false) }
+
+function plArtReset() {
+  $('plArtName').value = ''
+  plArtFileObj = null
+  $('plArtFile').value = ''
+  $('plArtFileName').textContent = 'No file chosen'
+  const pv = $('plArtPreview'); pv.style.display = 'none'; pv.src = ''
+  plArtStatus('', false)
+}
+
+function plArtFileChosen(file) {
+  plArtFileObj = file || null
+  const pv = $('plArtPreview')
+  if (!file) { $('plArtFileName').textContent = 'No file chosen'; pv.style.display = 'none'; return }
+  $('plArtFileName').textContent = file.name
+  pv.src = URL.createObjectURL(file)
+  pv.style.display = ''
+}
+
+async function plArtLookup() {
+  const name = $('plArtName').value.trim()
+  if (!name) return plArtStatus('✗ Enter a playlist name to look up', true)
+  plArtStatus('Looking up…', false)
+  if (!plArtListLoaded) await plArtListLoad(false)
+  const match = plArtListData.find(p => (p.playlistName || '').trim().toLowerCase() === name.toLowerCase())
+  if (match) plArtStatus(`Existing cover (record ${match.recordId}). Choose a new image to replace it.`, false)
+  else       plArtStatus('No cover yet for this playlist — uploading will create one.', false)
+}
+
+async function plArtSave() {
+  const playlistName = $('plArtName').value.trim()
+  if (!playlistName)  return plArtStatus('✗ Playlist name is required', true)
+  if (!plArtFileObj)  return plArtStatus('✗ Choose a cover image', true)
+
+  const btn = $('plArtSaveBtn')
+  btn.disabled = true
+  plArtStatus('Uploading…', false)
+  try {
+    const fd = new FormData()
+    fd.append('playlistName', playlistName)
+    fd.append('image', plArtFileObj)
+    const res  = await fetch('/api/ingest/madstreamer/playlist-art', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: fd
+    })
+    const data = await res.json()
+    if (!res.ok || !data.ok) throw new Error(data.error || 'Save failed')
+    plArtStatus(`✓ Cover ${data.action} (record ${data.recordId}) — Active = 1`, false)
+    showToast(`Playlist art ${data.action} for ${playlistName}`)
+    plArtListLoaded = false
+    plArtListLoad(false)
+  } catch (err) {
+    plArtStatus('✗ ' + err.message, true)
+    showToast('Playlist art save failed', 'error')
+  } finally {
+    btn.disabled = false
+  }
+}
+
+async function plArtListLoad(force) {
+  if (plArtListLoaded && !force) return
+  const wrap = $('plArtListWrap')
+  wrap.innerHTML = '<div class="loading-state"><span class="spin">⟳</span> Loading…</div>'
+  try {
+    const res  = await api('/api/ingest/madstreamer/playlist-arts')
+    const data = await res.json()
+    if (!res.ok || !data.ok) throw new Error(data.error || 'Load failed')
+    plArtListLoaded = true
+    const items = data.items || []
+    plArtListData = items
+    if (!items.length) { wrap.innerHTML = '<div class="empty-state">No playlist art saved yet.</div>'; return }
+    wrap.innerHTML = `
+      <table>
+        <thead><tr><th>Playlist</th><th>S3 image key</th><th>Active</th><th></th></tr></thead>
+        <tbody>
+          ${items.map((p, i) => `
+            <tr>
+              <td class="cell-title">${esc(p.playlistName)}</td>
+              <td class="cell-artist" style="max-width:380px;font-family:ui-monospace,Menlo,monospace;font-size:0.74rem">${esc((p.imageUrl || '').replace(/^https?:\/\/[^/]+\//, '')) || '—'}</td>
+              <td>${String(p.active) === '1' ? badge('approved') : badge('pending')}</td>
+              <td><span class="cell-link" onclick="plArtEditFromIndex(${i})">Edit</span></td>
+            </tr>`).join('')}
+        </tbody>
+      </table>`
+  } catch (err) {
+    wrap.innerHTML = `<div class="empty-state" style="color:var(--red)">✗ ${esc(err.message)}</div>`
+  }
+}
+
+function plArtEditFromIndex(i) {
+  const row = plArtListData[i]
+  if (!row) return
+  $('plArtName').value = row.playlistName || ''
+  plArtStatus(`Editing "${row.playlistName}" (record ${row.recordId}) — choose a new image to replace the cover.`, false)
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
