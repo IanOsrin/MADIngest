@@ -41,7 +41,7 @@ import { languageNameToCode } from '../lib/language-codes.js'
 import { generateDDEX382 } from '../lib/ddex-generate.js'
 import { buildDdexPackage } from '../lib/ddex-build.js'
 import AdmZip from 'adm-zip'
-import { loadMetadata, lookupByIsrc, lookupByCatalogue, lookupAlbumTracks, lookupByFilename, lookupByBarcodeAndSeq, lookupCataloguesByBarcode, searchMetadata, getStatus, appendRow as appendMetadataRow, mergeFromBuffer as mergeMetadataFromBuffer, extractHeaders as extractMetadataHeaders, mergeWithMapping as mergeMetadataWithMapping } from '../lib/metadata-cache.js'
+import { loadMetadata, lookupByIsrc, lookupByCatalogue, lookupAlbumTracks, lookupByFilename, lookupByBarcodeAndSeq, lookupCataloguesByBarcode, searchMetadata, getStatus, getAllRows, appendRow as appendMetadataRow, mergeFromBuffer as mergeMetadataFromBuffer, extractHeaders as extractMetadataHeaders, mergeWithMapping as mergeMetadataWithMapping } from '../lib/metadata-cache.js'
 
 // Load metadata on startup (non-blocking — portal works even if file is missing)
 loadMetadata()
@@ -324,89 +324,6 @@ function _durationForFm(v) {
   return `${pad(h)}:${pad(m)}:${pad(sec)}`
 }
 
-// ── Submissions log (lightweight JSON file store) ─────────────────────────────
-const SUBS_FILE = new URL('../data/submissions.json', import.meta.url).pathname
-
-// Serialise all file writes to avoid race conditions on bulk imports
-let _subsBusy = false
-const _subsQueue = []
-function _enqueueSubWrite(fn) {
-  return new Promise((resolve, reject) => {
-    _subsQueue.push({ fn, resolve, reject })
-    _drainSubsQueue()
-  })
-}
-async function _drainSubsQueue() {
-  if (_subsBusy || _subsQueue.length === 0) return
-  _subsBusy = true
-  const { fn, resolve, reject } = _subsQueue.shift()
-  try   { resolve(await fn()) }
-  catch (e) { reject(e) }
-  finally   { _subsBusy = false; _drainSubsQueue() }
-}
-
-let _subCounter = 0  // tiebreaker within the same millisecond
-
-async function readSubs() {
-  try { return JSON.parse(await readFile(SUBS_FILE, 'utf8')) } catch { return [] }
-}
-
-function writeSub(sub) {
-  return _enqueueSubWrite(async () => {
-    const subs = await readSubs()
-    subs.unshift(sub)
-    mkdirSync(path.dirname(SUBS_FILE), { recursive: true })
-    await writeFile(SUBS_FILE, JSON.stringify(subs, null, 2))
-    console.log(`[Subs] ✓ logged #${sub.id} "${sub.track_title}" (total: ${subs.length})`)
-    return sub
-  })
-}
-
-function updateSub(id, patch) {
-  return _enqueueSubWrite(async () => {
-    const subs = await readSubs()
-    const idx  = subs.findIndex(s => s.id === id)
-    if (idx === -1) return null
-    subs[idx] = { ...subs[idx], ...patch }
-    await writeFile(SUBS_FILE, JSON.stringify(subs, null, 2))
-    return subs[idx]
-  })
-}
-
-// ── Submissions API ────────────────────────────────────────────────────────────
-router.get('/submissions', adminAuth, async (req, res) => {
-  const subs   = await readSubs()
-  const status = req.query.status
-  const result = status ? subs.filter(s => s.status === status) : subs
-  res.json({ submissions: result })
-})
-
-router.get('/submissions/:id', adminAuth, async (req, res) => {
-  const subs = await readSubs()
-  const sub  = subs.find(s => s.id === Number(req.params.id))
-  if (!sub) return res.status(404).json({ error: 'Not found' })
-  res.json(sub)
-})
-
-router.patch('/submissions/:id/approve', adminAuth, express.json(), async (req, res) => {
-  const sub = await updateSub(Number(req.params.id), { status: 'approved', notes: req.body.notes || '' })
-  if (!sub) return res.status(404).json({ error: 'Not found' })
-  res.json({ ok: true, submission: sub })
-})
-
-router.patch('/submissions/:id/reject', adminAuth, express.json(), async (req, res) => {
-  const sub = await updateSub(Number(req.params.id), { status: 'rejected', notes: req.body.notes || '' })
-  if (!sub) return res.status(404).json({ error: 'Not found' })
-  res.json({ ok: true, submission: sub })
-})
-
-router.delete('/submissions', adminAuth, async (req, res) => {
-  mkdirSync(path.dirname(SUBS_FILE), { recursive: true })
-  await writeFile(SUBS_FILE, JSON.stringify([], null, 2))
-  console.log('[Subs] All submissions cleared')
-  res.json({ ok: true })
-})
-
 // ── Catalog live search — queries FileMaker directly ─────────────────────────
 router.get('/catalog/search', adminAuth, async (req, res) => {
   const { q } = req.query
@@ -682,29 +599,6 @@ router.post('/register', express.json(), async (req, res) => {
     artwork_url:     body.artwork_url,
     fm_path:         body.fm_path || null
   }
-
-  // Log to submissions store — suffix counter prevents collisions on bulk imports
-  const subId = Date.now() * 1000 + (_subCounter++ % 1000)
-  writeSub({
-    id:          subId,
-    received_at: new Date().toISOString(),
-    track_title: metadata.title,
-    artist_name: metadata.artist,
-    album_title: metadata.album,
-    genre:       metadata.genre || null,
-    year:        metadata.year  || null,
-    isrc:        metadata.isrc,
-    catalogue_no: metadata.catalogue_no,
-    format:      metadata.format,
-    format_flag: metadata.format_flag,
-    s3_url:      metadata.s3_url,
-    artwork_url: metadata.artwork_url,
-    submitter_name:  metadata.submitter_name,
-    submitter_email: metadata.submitter_email,
-    org:         metadata.org || null,
-    status:      'received',
-    notes:       ''
-  }).catch(e => console.warn('[Subs] log failed:', e.message))
 
   // Respond immediately — FM record creation runs in the background
   res.json({ ok: true, s3_key: body.key, s3_url: body.url,
@@ -1448,6 +1342,22 @@ router.get('/metadata/status', adminAuth, async (req, res) => {
   res.json({ ok: true, ...getStatus() })
 })
 
+// Full cache dump for the admin viewer. Null fields are stripped per row to
+// roughly halve the payload — the viewer treats missing keys as ''.
+router.get('/metadata/rows', adminAuth, async (req, res) => {
+  let status = getStatus()
+  if (!status.loaded) {
+    await loadMetadata()
+    status = getStatus()
+  }
+  const rows = getAllRows().map(r => {
+    const slim = {}
+    for (const [k, v] of Object.entries(r)) if (v != null && v !== '') slim[k] = v
+    return slim
+  })
+  res.json({ ok: true, count: rows.length, loadedAt: status.loadedAt, rows })
+})
+
 // ── Filename-based metadata lookup ───────────────────────────────────────────
 // GET  /metadata/lookup-filename?filename=198704266508_011_011.wav
 //   → returns metadata row (no FM write)
@@ -1874,51 +1784,6 @@ router.post('/excel', adminAuth, uploadSheet.single('sheet'), async (req, res) =
   } catch(err) {
     res.status(400).json({ error: err.message })
   }
-})
-
-// ── Excel confirm ─────────────────────────────────────────────────────────────
-router.post('/excel/confirm', adminAuth, express.json(), async (req, res) => {
-  const rows = req.body.rows
-  if (!Array.isArray(rows)) return res.status(400).json({ error: 'rows array required' })
-
-  const results = []
-  for (const row of rows) {
-    let fmRecordId = null
-    console.log('[Excel] row fields →', JSON.stringify({
-      title: row.title, artist_name: row.artist_name, sequence_no: row.sequence_no,
-      isrc: row.isrc, catalogue: row.catalogue, album_title: row.album_title
-    }))
-    try {
-      // Remap Excel parser field names → createGalloRecord field names
-      const fm = await createGalloRecord({
-        title:        row.title,
-        artist:       row.artist_name,
-        album_artist: row.album_artist,
-        album:        row.album_title,
-        catalogue_no: row.catalogue,
-        isrc:         row.isrc,
-        sequence_no:  row.sequence_no,
-        year:         row.year,
-        genre:        row.genre,
-        language:     row.language,
-        bpm:          row.bpm,
-        duration:     row.duration_sec,
-        explicit:     row.explicit,
-        iswc:         row.iswc,
-        label_name:   row.label_name,
-        publisher:    row.publisher,
-        composers:    row.composer,
-        producers:    row.producer,
-        submitter_email: row.submitter_email,
-        notes:        row.notes
-      })
-      fmRecordId = fm.fmRecordId
-    } catch(fmErr) {
-      console.warn('[Excel] FM record failed:', fmErr.message)
-    }
-    results.push({ title: row.title, fmRecordId })
-  }
-  res.json({ created: results.length, results })
 })
 
 // ── FM-First Enrich: load existing FM records for a catalogue ────────────────
@@ -2531,8 +2396,7 @@ router.post('/madstreamer/sync-metadata-by-catalogue', adminAuth, express.json()
  * GMVi for the artwork. Audio paths are keyed by GCAT (read from Gallo's
  * Filename field). GMVi is used strictly for artwork.
  *
- * Shared between /madstreamer/push/:id (submission-driven) and
- * /madstreamer/push-by-catalogue (direct).
+ * Used by /madstreamer/push-by-catalogue.
  *
  * @param {object} track       — output of getGalloTrack(); must include .gcat
  * @param {string|null} gmvi   — required for artwork; if null, artwork is skipped
@@ -2656,70 +2520,7 @@ async function _runMadStreamerPush(track, gmvi, opts = {}) {
 }
 
 /**
- * Push a single submission across to MadStreamer. The submission must already
- * have a corresponding Gallo Catalogue record (we look it up by catalogue +
- * sequence, falling back to ISRC). Body: { include_wav: bool }.
- */
-router.post('/madstreamer/push/:id', adminAuth, express.json(), async (req, res) => {
-  const id = Number(req.params.id)
-  if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid submission id' })
-  const include_wav = !!req.body?.include_wav
-
-  const subs = await readSubs()
-  const sub  = subs.find(s => s.id === id)
-  if (!sub) return res.status(404).json({ error: 'Submission not found' })
-  if (!sub.catalogue_no) {
-    return res.status(400).json({ error: 'Submission has no catalogue number — required to look up the Gallo record and GMVi' })
-  }
-
-  try {
-    // 1. Find the canonical track record in Gallo.
-    const track = await getGalloTrack({
-      catalogue_no: sub.catalogue_no,
-      sequence_no: sub.sequence_no,
-      isrc:        sub.isrc,
-    })
-    if (!track) {
-      return res.status(409).json({ error: 'Gallo Catalogue record not found yet — finish catalogue ingest before pushing to MadStreamer' })
-    }
-
-    // 2. Look up GMVi from MadStreamer Artwork layout (artwork-only — non-blocking).
-    const gmviRec = await lookupGmviByCatalogue(track.catalogue_no || sub.catalogue_no).catch(e => {
-      console.warn('[MadStreamer push] GMVi lookup error:', e.message)
-      return null
-    })
-    if (!gmviRec) {
-      console.warn(`[MadStreamer push] No GMVi for catalogue "${track.catalogue_no || sub.catalogue_no}" — artwork will be skipped`)
-    }
-
-    // 3. Run the push (audio uses GCAT, artwork uses GMVi if available).
-    const result = await _runMadStreamerPush(track, gmviRec?.gmvi || null, { include_wav })
-
-    // 4. Stamp the submission with audit info.
-    await updateSub(id, {
-      madstreamer: {
-        pushed_at:      new Date().toISOString(),
-        gcat:           result.gcat,
-        gmvi:           result.gmvi,
-        mp3_key:        result.mp3.key,
-        wav_key:        result.wav?.key      || null,
-        artwork_key:    result.artwork?.key  || null,
-        fm_record_id:   result.fm.recordId,
-        action:         result.fm.action,
-        gallo_record_id: result.gallo_record_id,
-      }
-    })
-
-    res.json({ ok: true, ...result })
-  } catch (err) {
-    console.error('[MadStreamer push]', err)
-    res.status(500).json({ error: err.message })
-  }
-})
-
-/**
- * Push by catalogue + sequence (or ISRC) directly — no submission required.
- * For pushing existing catalogue items that pre-date the ingest portal.
+ * Push by catalogue + sequence (or ISRC) directly.
  * Body: { catalogue_no, sequence_no?, isrc?, include_wav? }
  */
 router.post('/madstreamer/push-by-catalogue', adminAuth, express.json(), async (req, res) => {

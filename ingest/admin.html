@@ -634,29 +634,28 @@
       </div>
 
       <div class="import-section">
-        <h3>Excel / CSV Bulk Preview</h3>
-        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">Upload an .xlsx, .xls, or .csv with one row per track. Column names are matched flexibly. Preview validates before you confirm.</p>
+        <h3>Cache Viewer</h3>
+        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
+          Browse the embedded metadata extract like a spreadsheet — click a column header to sort,
+          filter per column, or search across everything. View only.
+        </p>
 
-        <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px">
-          <label class="btn btn-ghost" style="cursor:pointer">
-            Choose File
-            <input type="file" id="excelFileInput" accept=".xlsx,.xls,.csv" style="display:none" onchange="excelFileChosen(this.files[0])">
-          </label>
-          <span id="excelFileLabel" style="font-size:0.82rem;color:var(--muted)">No file selected</span>
+        <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+          <button class="btn btn-ghost" id="xvLoadBtn" onclick="xvLoadCache()">Open Cache Viewer</button>
+          <span id="xvFileLabel" style="font-size:0.82rem;color:var(--muted)"></span>
         </div>
 
-        <div id="excelSummary" style="display:none;margin-bottom:12px;font-size:0.82rem"></div>
-
-        <div id="excelPreviewWrap" class="preview-table-wrap" style="display:none;max-height:480px">
-          <div id="excelPreviewContent"></div>
+        <div id="xvToolbar" style="display:none;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+          <input id="xvGlobal" type="text" placeholder="Search all columns…" oninput="xvGlobalChanged(this.value)"
+            style="flex:1;min-width:200px;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:6px 11px;color:var(--text);font-family:inherit;font-size:0.84rem;outline:none">
+          <button class="btn btn-ghost" style="font-size:0.78rem" onclick="xvClearFilters()">✕ Clear filters</button>
+          <span id="xvCount" style="font-size:0.78rem;color:var(--muted)"></span>
         </div>
 
-        <div style="margin-top:14px;display:none" id="excelActions">
-          <button class="btn btn-gold" onclick="confirmExcelImport()">Confirm Import</button>
-          <span style="font-size:0.78rem;color:var(--muted);margin-left:10px" id="excelActionLabel"></span>
+        <div id="xvWrap" style="display:none;max-height:600px;overflow:auto;border:1px solid var(--border);border-radius:var(--radius)"></div>
+        <div id="xvMoreBar" style="display:none;margin-top:10px">
+          <button class="btn btn-ghost" style="font-size:0.78rem" onclick="xvShowMore()">Show 500 more</button>
         </div>
-
-        <div class="import-log" id="excelLog"></div>
       </div>
 
     </div>
@@ -978,9 +977,13 @@
         <div id="plsResults"></div>
 
         <div id="plsAssignBar" style="display:none;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap">
-          <input id="plsName" type="text" list="plsNameList" placeholder="Playlist name…"
-            style="flex:1;min-width:220px;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
-          <datalist id="plsNameList"></datalist>
+          <select id="plsSelect" onchange="plsSelectChanged()"
+            style="min-width:220px;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
+            <option value="">Add to playlist…</option>
+            <option value="__new__">＋ New playlist…</option>
+          </select>
+          <input id="plsName" type="text" placeholder="New playlist name…"
+            style="display:none;flex:1;min-width:180px;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
           <button class="btn btn-gold" id="plsAssignBtn" onclick="plsAssign()" disabled>Add 0 selected</button>
           <span id="plsAssignStatus" style="font-size:0.82rem;color:var(--muted)"></span>
         </div>
@@ -1436,7 +1439,13 @@ async function plsLoadPlaylists(force) {
     if (!res.ok) throw new Error(data.error || 'Load failed')
     const playlists = data.playlists || []
     _plsNamesLoaded = true
-    $('plsNameList').innerHTML = playlists.map(p => `<option value="${esc(p.name)}">`).join('')
+    const sel  = $('plsSelect')
+    const prev = sel.value
+    sel.innerHTML = '<option value="">Add to playlist…</option>' +
+      playlists.map(p => `<option value="${esc(p.name)}">${esc(p.name)} (${p.trackCount})</option>`).join('') +
+      '<option value="__new__">＋ New playlist…</option>'
+    sel.value = [...sel.options].some(o => o.value === prev) ? prev : ''
+    plsSelectChanged()
     if (!playlists.length) {
       $('plsListWrap').innerHTML = '<div class="empty-state" style="color:var(--muted)">No public playlists yet — build one above.</div>'
       return
@@ -1522,9 +1531,20 @@ function plsUpdateAssign() {
   $('plsAssignBtn').disabled    = !n
 }
 
+function plsSelectChanged() {
+  const isNew = $('plsSelect').value === '__new__'
+  $('plsName').style.display = isNew ? 'block' : 'none'
+  if (isNew) $('plsName').focus()
+}
+
 async function plsAssign() {
-  const name = $('plsName').value.trim()
-  if (!name) { showToast('Enter a playlist name', 'error'); $('plsName').focus(); return }
+  const sel  = $('plsSelect').value
+  const name = sel === '__new__' ? $('plsName').value.trim() : sel
+  if (!name) {
+    showToast(sel === '__new__' ? 'Enter a name for the new playlist' : 'Pick a playlist from the dropdown', 'error')
+    ;(sel === '__new__' ? $('plsName') : $('plsSelect')).focus()
+    return
+  }
   if (!_plsChecked.size) return
 
   const moving = _plsSongs.filter(s => _plsChecked.has(s.recordId) && s.playlist && s.playlist !== name)
@@ -1556,7 +1576,11 @@ async function plsAssign() {
     for (const s of _plsSongs) if (okIds.has(s.recordId)) s.playlist = name
     _plsChecked.clear()
     plsRenderResults()
-    plsLoadPlaylists(true)
+    await plsLoadPlaylists(true)
+    // Keep the dropdown on the playlist just used (a new one now has an option)
+    $('plsName').value = ''
+    $('plsSelect').value = name
+    plsSelectChanged()
     if (_plsOpenName) plsOpenPlaylist(_plsOpenName)
   } catch (err) {
     status.textContent = `✗ ${err.message}`
@@ -1589,7 +1613,9 @@ async function plsOpenPlaylist(name) {
     if (!res.ok) throw new Error(data.error || 'Load failed')
     const songs = data.songs || []
     _plsOpenSongs = songs
-    if (!$('plsName').value.trim()) $('plsName').value = name
+    // Default the bulk-add dropdown to the playlist being viewed
+    const sel = $('plsSelect')
+    if (!sel.value && [...sel.options].some(o => o.value === name)) { sel.value = name; plsSelectChanged() }
     let html = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
       <h4 style="margin:0;font-size:0.95rem">${esc(name)} <span style="color:var(--muted);font-weight:400">· ${songs.length} song(s)</span></h4>
       <button class="btn btn-ghost" style="font-size:0.76rem;margin-left:auto" onclick="plsRename()">✎ Rename</button>
@@ -2554,67 +2580,137 @@ async function runDdexImport() {
   }
 }
 
-// ── Excel ───────────────────────────────────────────────────────────────────
-let excelParsedRows = []
+// ── Cache Viewer ─────────────────────────────────────────────────────────────
+// Spreadsheet-style browser for the embedded metadata extract (the same cache
+// the lookups use). View-only: click a header to sort, per-column filters,
+// global search. Rendering is capped at XV_PAGE rows per click of "Show more"
+// so ~60k rows don't lock the DOM — but sorting/filtering always cover ALL
+// rows (data-model, not DOM; the generic click-to-sort skips this table
+// because its headers have their own onclick).
+const XV_PAGE = 500
+const XV_COLS = [
+  ['catalogue', 'Cat #'], ['barcode', 'Barcode'], ['album_title', 'Album'],
+  ['album_artist', 'Album Artist'], ['seq', '#'], ['track_name', 'Track'],
+  ['track_artist', 'Track Artist'], ['isrc', 'ISRC'], ['duration', 'Duration'],
+  ['genre', 'Genre'], ['release_date', 'Released'], ['original_release_date', 'Orig. Released'],
+  ['language', 'Language'], ['audio_language', 'Audio Lang'], ['label', 'Label'],
+  ['p_line', '℗ line'], ['c_line', '© line'], ['composer', 'Composers'],
+  ['producer', 'Producers'], ['publisher', 'Publishers'], ['parental', 'Parental'],
+  ['rights_territories', 'Territories'], ['featured_artist', 'Featured'],
+]
+let _xvSheet   = null   // { headers:[], rows:[[]] }
+let _xvSortCol = -1
+let _xvSortDir = 1
+let _xvGlobal  = ''
+let _xvFilters = {}     // colIdx → lowercase needle
+let _xvShown   = XV_PAGE
 
-function excelFileChosen(file) {
-  if (!file) return
-  $('excelFileLabel').textContent = `${file.name} (${(file.size / 1024).toFixed(0)} KB)`
-  $('excelLog').style.display = 'none'
-  _excelSortCol = null   // reset to default sort on new file
-  _excelSortDir = 1
-  runExcelPreview(file)
-}
-
-async function runExcelPreview(file) {
-  $('excelSummary').style.display = 'none'
-  $('excelPreviewWrap').style.display = 'none'
-  $('excelActions').style.display = 'none'
-  $('excelFileLabel').textContent += ' — parsing…'
-
-  const fd = new FormData()
-  fd.append('sheet', file)
-
+async function xvLoadCache() {
+  const btn = $('xvLoadBtn')
+  btn.disabled = true; btn.textContent = '⟳ Loading cache…'
   try {
-    const res  = await fetch('/api/ingest/excel', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${adminToken}` },
-      body: fd
-    })
+    const res  = await api('/api/ingest/metadata/rows')
     const data = await res.json()
-    if (!res.ok || !data.ok) throw new Error(data.error || 'Parse failed')
-
-    excelParsedRows = data.rows || []
-    $('excelFileLabel').textContent = $('excelFileLabel').textContent.replace(' — parsing…', '')
-    renderExcelSummary(data)
-    renderExcelTable(data.rows)
-    $('excelPreviewWrap').style.display = 'block'
-    if (data.errors.length === 0 && excelParsedRows.length > 0) {
-      $('excelActions').style.display = 'block'
-      $('excelActionLabel').textContent = `${excelParsedRows.length} row(s) will be imported as metadata-only submissions`
+    if (!res.ok) throw new Error(data.error || 'Cache load failed')
+    _xvSheet = {
+      headers: XV_COLS.map(([, label]) => label),
+      rows:    (data.rows || []).map(r => XV_COLS.map(([key]) => r[key] == null ? '' : String(r[key]))),
     }
+    _xvSortCol = -1; _xvSortDir = 1; _xvGlobal = ''; _xvFilters = {}; _xvShown = XV_PAGE
+    $('xvGlobal').value = ''
+    $('xvFileLabel').textContent = `${data.count.toLocaleString()} rows · loaded ${data.loadedAt ? fmtDate(data.loadedAt) : '—'}`
+    $('xvToolbar').style.display = 'flex'
+    btn.textContent = '↺ Reload'
+    xvBuildTable()
   } catch (err) {
-    console.error('[Excel preview]', err)
+    console.error('[Cache viewer]', err)
     showToast(err.message, 'error')
-    $('excelFileLabel').textContent = $('excelFileLabel').textContent.replace(' — parsing…', '')
+    $('xvFileLabel').textContent = `✗ ${err.message}`
+    btn.textContent = 'Open Cache Viewer'
+  } finally {
+    btn.disabled = false
   }
 }
 
-function renderExcelSummary(data) {
-  const errors   = data.errors   || []
-  const warnings = data.warnings || []
-  const parts = []
-  parts.push(`<strong>${data.rows.length}</strong> row(s) parsed`)
-  if (errors.length)   parts.push(`<span style="color:var(--red)">${errors.length} error(s)</span>`)
-  if (warnings.length) parts.push(`<span style="color:var(--amber)">${warnings.length} warning(s)</span>`)
-
-  let html = `<div>${parts.join(' · ')}</div>`
-  if (errors.length)   html += `<div style="color:var(--red);font-size:0.78rem;margin-top:6px">${errors.map(esc).join('<br>')}</div>`
-  if (warnings.length) html += `<div style="color:var(--amber);font-size:0.78rem;margin-top:4px">${warnings.map(esc).join('<br>')}</div>`
-
-  $('excelSummary').innerHTML = html
-  $('excelSummary').style.display = 'block'
+function xvBuildTable() {
+  const sheet = _xvSheet
+  $('xvWrap').innerHTML = `<table style="font-size:0.78rem"><thead>
+    <tr>${sheet.headers.map((h, i) =>
+      `<th id="xvTh${i}" style="position:sticky;top:0;z-index:2" onclick="xvSortBy(${i})">${esc(h)}</th>`).join('')}</tr>
+    <tr>${sheet.headers.map((_, i) =>
+      `<th class="xv-filter-th" style="position:sticky;z-index:2;background:var(--bg-lift);padding:4px 8px">
+        <input type="text" class="xv-filter" data-col="${i}" placeholder="filter…" oninput="xvFilterChanged(${i}, this.value)"
+          style="width:100%;min-width:70px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:3px 7px;font-size:0.74rem;color:var(--text);font-family:inherit;outline:none">
+      </th>`).join('')}</tr>
+  </thead><tbody id="xvBody"></tbody></table>`
+  $('xvWrap').style.display = 'block'
+  // Pin the filter row just below the header row (its real rendered height)
+  const headerH = $('xvTh0')?.offsetHeight || 34
+  document.querySelectorAll('.xv-filter-th').forEach(th => th.style.top = headerH + 'px')
+  xvRenderBody()
 }
+
+function xvFilteredRows() {
+  const sheet  = _xvSheet
+  const global = _xvGlobal.toLowerCase()
+  const cols   = Object.entries(_xvFilters).filter(([, v]) => v)
+  let rows = sheet.rows.filter(r =>
+    (!global || r.some(c => c.toLowerCase().includes(global))) &&
+    cols.every(([i, v]) => (r[i] || '').toLowerCase().includes(v))
+  )
+  if (_xvSortCol >= 0) {
+    const idx = _xvSortCol, dir = _xvSortDir
+    const asNum = s => {
+      const n = parseFloat(String(s).replace(/[,%\s]/g, ''))
+      return isNaN(n) || !/^[\s,.%\d+-]+$/.test(s) ? null : n
+    }
+    rows = [...rows].sort((a, b) => {
+      const av = a[idx] || '', bv = b[idx] || ''
+      if (!av && !bv) return 0
+      if (!av) return 1
+      if (!bv) return -1
+      const an = asNum(av), bn = asNum(bv)
+      if (an !== null && bn !== null) return (an - bn) * dir
+      return av.localeCompare(bv, undefined, { sensitivity: 'base', numeric: true }) * dir
+    })
+  }
+  return rows
+}
+
+function xvRenderBody() {
+  const sheet = _xvSheet
+  const rows  = xvFilteredRows()
+  const slice = rows.slice(0, _xvShown)
+  $('xvBody').innerHTML = slice.map(r =>
+    `<tr>${r.map(c =>
+      `<td style="white-space:nowrap;max-width:340px;overflow:hidden;text-overflow:ellipsis" title="${esc(c)}">${esc(c)}</td>`
+    ).join('')}</tr>`
+  ).join('') || `<tr><td colspan="${sheet.headers.length}" style="padding:16px;color:var(--muted);text-align:center">No rows match the filters.</td></tr>`
+  const filtered = rows.length !== sheet.rows.length ? ` (filtered from ${sheet.rows.length})` : ''
+  $('xvCount').textContent = `showing ${slice.length} of ${rows.length} row(s)${filtered}`
+  $('xvMoreBar').style.display = rows.length > _xvShown ? 'block' : 'none'
+}
+
+function xvSortBy(i) {
+  if (_xvSortCol === i) _xvSortDir *= -1
+  else { _xvSortCol = i; _xvSortDir = 1 }
+  document.querySelectorAll('#xvWrap thead .sort-arrow').forEach(a => a.remove())
+  $(`xvTh${i}`).insertAdjacentHTML('beforeend', `<span class="sort-arrow"> ${_xvSortDir === 1 ? '↑' : '↓'}</span>`)
+  _xvShown = XV_PAGE
+  xvRenderBody()
+}
+
+function xvGlobalChanged(v) { _xvGlobal = v.trim(); _xvShown = XV_PAGE; xvRenderBody() }
+function xvFilterChanged(i, v) { _xvFilters[i] = v.trim().toLowerCase(); _xvShown = XV_PAGE; xvRenderBody() }
+
+function xvClearFilters() {
+  _xvGlobal = ''; _xvFilters = {}; _xvShown = XV_PAGE
+  $('xvGlobal').value = ''
+  document.querySelectorAll('#xvWrap .xv-filter').forEach(inp => inp.value = '')
+  xvRenderBody()
+}
+
+function xvShowMore() { _xvShown += XV_PAGE; xvRenderBody() }
 
 // ── Metadata cache ─────────────────────────────────────────────────────────
 function toggleMetaAddForm() {
@@ -2915,113 +3011,6 @@ async function loadMetaStatus() {
       el.style.color = 'var(--muted)'
     }
   } catch(_) {}
-}
-
-// ── Excel table sort state ─────────────────────────────────────────────────
-const EXCEL_COLS   = ['catalogue','artist_name','album_title','sequence_no','title','isrc','genre','year','bpm','duration_sec','explicit']
-const EXCEL_LABELS = { catalogue:'Cat #', artist_name:'Artist', album_title:'Album', sequence_no:'Seq', title:'Title', isrc:'ISRC', genre:'Genre', year:'Year', bpm:'BPM', duration_sec:'Duration', explicit:'Explicit' }
-
-// Default: artist → album → seq
-let _excelSortCol = null   // null = default multi-key sort
-let _excelSortDir = 1      // 1 = asc, -1 = desc
-
-function _str(v)  { return String(v == null ? '' : v).toLowerCase() }
-function _num(v)  { const n = parseFloat(v); return isNaN(n) ? Infinity : n }
-
-function _excelSortRows(rows) {
-  try {
-    return [...rows].sort((a, b) => {
-      if (_excelSortCol) {
-        const av = a[_excelSortCol], bv = b[_excelSortCol]
-        const aIsNum = typeof av === 'number', bIsNum = typeof bv === 'number'
-        if (aIsNum || bIsNum) return (_num(av) - _num(bv)) * _excelSortDir
-        return _str(av).localeCompare(_str(bv)) * _excelSortDir
-      }
-      // Default: artist → album → seq
-      const ac = _str(a.artist_name).localeCompare(_str(b.artist_name))
-      if (ac !== 0) return ac
-      const bc = _str(a.album_title).localeCompare(_str(b.album_title))
-      if (bc !== 0) return bc
-      return _num(a.sequence_no) - _num(b.sequence_no)
-    })
-  } catch(e) {
-    console.error('[Excel sort]', e)
-    return [...rows]  // fall back to original order
-  }
-}
-
-function excelSortBy(col) {
-  if (_excelSortCol === col) {
-    _excelSortDir *= -1   // toggle direction
-  } else {
-    _excelSortCol = col
-    _excelSortDir = 1
-  }
-  renderExcelTable(excelParsedRows)
-}
-
-function renderExcelTable(rows) {
-  if (!rows.length) {
-    $('excelPreviewContent').innerHTML = '<div style="padding:12px;color:var(--muted)">No rows found.</div>'
-    return
-  }
-
-  const sorted = _excelSortRows(rows)
-
-  const thStyle = 'cursor:pointer;user-select:none;white-space:nowrap'
-  let html = `<table style="font-size:0.78rem"><thead><tr>`
-  EXCEL_COLS.forEach(c => {
-    const active = _excelSortCol === c
-    const arrow  = active ? (_excelSortDir === 1 ? ' ↑' : ' ↓') : ''
-    const style  = active ? `${thStyle};color:var(--gold)` : thStyle
-    html += `<th style="${style}" onclick="excelSortBy('${c}')">${EXCEL_LABELS[c] || c}${arrow}</th>`
-  })
-  html += `</tr></thead><tbody>`
-
-  sorted.forEach(row => {
-    const hasMissing = !row.title || !row.artist_name
-    html += `<tr style="${hasMissing ? 'background:rgba(217,83,79,0.06)' : ''}">`
-    EXCEL_COLS.forEach(c => {
-      const val      = row[c]
-      const required = c === 'title' || c === 'artist_name'
-      const missing  = required && !val
-      const cellStyle = missing ? 'color:var(--red);font-style:italic' : 'color:var(--text)'
-      const display  = c === 'duration_sec' ? fmtDur(val)
-        : c === 'explicit'    ? (val ? 'E' : '')
-        : esc(val ?? '')
-      html += `<td style="${cellStyle}">${display || (missing ? 'REQUIRED' : '<span style="color:var(--muted)">—</span>')}</td>`
-    })
-    html += '</tr>'
-  })
-  html += '</tbody></table>'
-  $('excelPreviewContent').innerHTML = html
-}
-
-async function confirmExcelImport() {
-  if (!excelParsedRows.length) return
-  const btn = document.querySelector('#excelActions .btn-gold')
-  const log = $('excelLog')
-  btn.disabled = true; btn.textContent = '⟳ Importing…'
-  log.style.display = 'block'
-  log.textContent = `Creating ${excelParsedRows.length} submission(s)…\n`
-
-  try {
-    const res  = await api('/api/ingest/excel/confirm', 'POST', { rows: excelParsedRows })
-    const data = await res.json()
-    if (!res.ok) throw new Error(data.error || 'Confirm failed')
-
-    log.textContent += `Done — ${data.created} submission(s) created (metadata only, no audio yet).\n`
-    if (data.errors?.length) {
-      log.textContent += `Errors:\n` + data.errors.map(e => `  Row ${e.row}: ${e.error}`).join('\n')
-    }
-    showToast(`Excel import complete — ${data.created} submissions created`)
-    $('excelActions').style.display = 'none'
-  } catch (err) {
-    log.textContent += `\nError: ${err.message}`
-    showToast(err.message, 'error')
-  } finally {
-    btn.disabled = false; btn.textContent = 'Confirm Import'
-  }
 }
 
 // ── Bulk FileMaker Metadata Update ────────────────────────────────────────
