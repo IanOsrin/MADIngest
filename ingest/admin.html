@@ -287,6 +287,7 @@
       <button class="tab-btn" data-tab="dbsync" onclick="showTab('dbsync')">DB Sync</button>
       <button class="tab-btn" data-tab="podcasts" onclick="showTab('podcasts')">Podcasts</button>
       <button class="tab-btn" data-tab="biography" onclick="showTab('biography')">Biography</button>
+      <button class="tab-btn" data-tab="artwork" onclick="showTab('artwork')">Artwork</button>
       <button class="tab-btn" data-tab="playlists" onclick="showTab('playlists')">Playlists</button>
       <button class="tab-btn" data-tab="playlistart" onclick="showTab('playlistart')">Playlist Art</button>
     </nav>
@@ -953,6 +954,53 @@
       </div>
     </div>
 
+    <!-- Album Artwork -->
+    <div id="tab-artwork" class="tab-panel">
+      <div class="import-section">
+        <h3>Album Artwork</h3>
+        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
+          Enter a catalogue number. If it has no Artwork record yet, one is created and
+          <strong>FileMaker allocates the GMVi</strong> — this tool never invents numbers.
+          Images live at <code>artwork/&lt;GMVi&gt;</code> on S3; replacing keeps the old
+          version recoverable (bucket versioning), and the site's <code>_300</code>/<code>_800</code>
+          thumbnails refresh on the next derivatives cron run.
+        </p>
+
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px">
+          <input id="awCat" type="text" placeholder="Catalogue number, e.g. CDGURB 104"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();awFind()}"
+            style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
+          <button class="btn btn-gold" id="awFindBtn" onclick="awFind()">Find / Create</button>
+          <span id="awStatus" style="font-size:0.82rem;color:var(--muted)"></span>
+        </div>
+
+        <div id="awPanel" style="display:none">
+          <div id="awInfo" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px"></div>
+
+          <div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:14px">
+            <div>
+              <div style="font-size:0.75rem;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:6px">Current artwork</div>
+              <div id="awCurrentWrap"></div>
+            </div>
+            <div id="awNewWrap" style="display:none">
+              <div style="font-size:0.75rem;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:6px">New image</div>
+              <img id="awNewImg" style="width:220px;height:220px;object-fit:cover;border-radius:8px;border:1px solid var(--border)">
+              <div id="awNewMeta" style="font-size:0.76rem;color:var(--muted);margin-top:6px"></div>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <label class="btn btn-ghost" style="cursor:pointer">
+              Choose image…
+              <input type="file" id="awFile" accept=".jpg,.jpeg,.png,.webp" style="display:none" onchange="awFileChosen(this.files[0])">
+            </label>
+            <button class="btn btn-gold" id="awUploadBtn" onclick="awUpload()" disabled>Upload</button>
+            <span id="awUpStatus" style="font-size:0.82rem;color:var(--muted)"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Public Playlists -->
     <div id="tab-playlists" class="tab-panel">
       <div class="import-section" style="margin-bottom:24px">
@@ -1417,6 +1465,145 @@ function bioEditFromIndex(i) {
   $('bioText').value = row.bio || ''
   bioStatus(`Loaded from list (record ${row.recordId}) — save to update.`, false)
   window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
+// ── Album Artwork ────────────────────────────────────────────────────────────
+let _awState   = null   // last /artwork/ensure response
+let _awNewFile = null
+
+async function awFind(createIfMissing = false) {
+  const cat = $('awCat').value.trim()
+  if (!cat) { showToast('Enter a catalogue number', 'error'); $('awCat').focus(); return }
+  const btn = $('awFindBtn'), status = $('awStatus')
+  btn.disabled = true
+  btn.textContent = createIfMissing ? '⟳ Creating…' : '⟳ Looking up…'
+  status.textContent = ''; status.style.color = 'var(--muted)'
+  try {
+    const res  = await api('/api/ingest/madstreamer/artwork/ensure', 'POST',
+      { catalogue_no: cat, create: createIfMissing })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+
+    if (!data.record) {
+      $('awPanel').style.display = 'none'
+      const ctx = data.streamer
+        ? `${data.streamer.trackCount} streamer track(s)${data.streamer.artist ? ' by ' + data.streamer.artist : ''}`
+        : 'NOT found in streamer songs — double-check for typos'
+      if (confirm(`No Artwork record for "${cat}" (${ctx}).\n\nCreate one? FileMaker will allocate the GMVi.`)) {
+        return awFind(true)
+      }
+      status.textContent = 'No record — nothing created.'
+      return
+    }
+
+    _awState = data
+    if (data.created) showToast(`Artwork record created — GMVi ${data.record.gmvi || 'PENDING'}`)
+    awRenderPanel()
+  } catch (err) {
+    status.textContent = `✗ ${err.message}`
+    status.style.color = 'var(--red)'
+    showToast(err.message, 'error')
+  } finally {
+    btn.disabled = false
+    btn.textContent = 'Find / Create'
+  }
+}
+
+function awRenderPanel() {
+  const d = _awState
+  _awNewFile = null
+  $('awFile').value = ''
+  $('awNewWrap').style.display = 'none'
+  $('awUpStatus').textContent  = ''
+
+  const chip = (txt, colour) =>
+    `<span style="background:var(--bg-lift);border:1px solid var(--border);border-radius:4px;padding:4px 10px;font-size:0.8rem;${colour ? `color:${colour}` : ''}">${txt}</span>`
+  const chips = [
+    chip(`GMVi: <strong style="font-family:monospace">${esc(d.record.gmvi || '—')}</strong>`, d.record.gmvi ? 'var(--gold)' : 'var(--red)'),
+    chip(`<span style="font-family:monospace">${esc(d.catalogue_no)}</span>`),
+    chip(d.created ? 'record created ✓' : 'existing record', d.created ? 'var(--green)' : 'var(--muted)'),
+    d.streamer
+      ? chip(`${d.streamer.trackCount} streamer track(s)${d.streamer.artist ? ' · ' + esc(d.streamer.artist) : ''}`, 'var(--muted)')
+      : chip('⚠ no streamer tracks for this catalogue', 'var(--amber)'),
+  ]
+  $('awInfo').innerHTML = chips.join('')
+
+  if (!d.record.gmvi) {
+    $('awCurrentWrap').innerHTML =
+      `<div style="width:220px;padding:20px;border:1px dashed var(--border);border-radius:8px;font-size:0.8rem;color:var(--amber)">
+        FileMaker did not allocate a GMVi — check the Artwork layout's auto-enter, then Find again.</div>`
+    $('awUploadBtn').disabled = true
+    $('awPanel').style.display = 'block'
+    return
+  }
+
+  if (d.file?.exists) {
+    $('awCurrentWrap').innerHTML =
+      `<img src="${esc(d.file.url)}?t=${Date.now()}" style="width:220px;height:220px;object-fit:cover;border-radius:8px;border:1px solid var(--border)"
+         onerror="this.outerHTML='<div style=&quot;width:220px;padding:20px;border:1px dashed var(--border);border-radius:8px;font-size:0.8rem;color:var(--red)&quot;>File exists but failed to load</div>'">
+       <div style="font-size:0.76rem;color:var(--muted);margin-top:6px">${esc(d.file.key)} · ${(d.file.size / 1024).toFixed(0)} KB · ${fmtDate(d.file.lastModified)}</div>`
+    $('awUploadBtn').textContent = 'Replace Artwork'
+  } else {
+    $('awCurrentWrap').innerHTML =
+      `<div style="width:220px;height:220px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;border:1px dashed var(--border);border-radius:8px;color:var(--muted);font-size:0.8rem;text-align:center">
+        No image in S3 yet<br><span style="font-family:monospace;font-size:0.72rem">${esc(d.file.key)}</span></div>`
+    $('awUploadBtn').textContent = 'Upload Artwork'
+  }
+  $('awUploadBtn').disabled = true
+  $('awPanel').style.display = 'block'
+}
+
+function awFileChosen(file) {
+  if (!file || !_awState?.record?.gmvi) return
+  _awNewFile = file
+  const reader = new FileReader()
+  reader.onload = e => {
+    const img = $('awNewImg')
+    img.src = e.target.result
+    img.onload = () => {
+      const w = img.naturalWidth, h = img.naturalHeight
+      const warns = []
+      if (w !== h)  warns.push('⚠ not square')
+      if (w < 1400) warns.push('⚠ below 1400px')
+      $('awNewMeta').innerHTML =
+        `${esc(file.name)} · ${(file.size / 1024).toFixed(0)} KB · ${w}×${h}` +
+        (warns.length ? ` <span style="color:var(--amber)">${warns.join(' · ')}</span>` : '')
+    }
+  }
+  reader.readAsDataURL(file)
+  $('awNewWrap').style.display = 'block'
+  $('awUploadBtn').disabled = false
+}
+
+async function awUpload() {
+  if (!_awNewFile || !_awState?.record?.gmvi) return
+  const btn = $('awUploadBtn'), status = $('awUpStatus')
+  const replacing = !!_awState.file?.exists
+  if (replacing && !confirm(`Replace the current artwork for GMVi ${_awState.record.gmvi}?\n\nThe old file stays recoverable via S3 versioning.`)) return
+  btn.disabled = true; btn.textContent = '⟳ Uploading…'
+  status.textContent = ''; status.style.color = 'var(--muted)'
+  try {
+    const fd = new FormData()
+    fd.append('image', _awNewFile)
+    fd.append('gmvi', _awState.record.gmvi)
+    const res  = await fetch('/api/ingest/madstreamer/artwork/upload', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: fd
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    status.textContent = `✓ ${data.replaced ? 'Replaced' : 'Uploaded'} ${data.key}`
+    status.style.color = 'var(--green)'
+    showToast(`Artwork ${data.replaced ? 'replaced' : 'uploaded'} — ${data.key}`)
+    awFind(false)   // refresh the current-image panel
+  } catch (err) {
+    status.textContent = `✗ ${err.message}`
+    status.style.color = 'var(--red)'
+    showToast(err.message, 'error')
+    btn.disabled = false
+    btn.textContent = replacing ? 'Replace Artwork' : 'Upload Artwork'
+  }
 }
 
 // ── Public Playlists ─────────────────────────────────────────────────────────

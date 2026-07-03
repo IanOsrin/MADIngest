@@ -15,9 +15,10 @@ import { extractAudioMeta, detectAudioFormat, generateWarnings, titleFromFilenam
 import { parseDDEXPackage, parseDDEXXml } from '../lib/ddex.js'
 import { parseTrackSheet } from '../lib/excel-ingest.js'
 import { uploadImport, uploadArtworkImport, presignImport, presignArtworkImport, downloadImport,
-         uploadMp3ByGcat, uploadWavByGcat, uploadArtworkByGmvi, uploadPlaylistArt, downloadAnyKey, keyFromS3Url, downloadByUrl } from '../lib/s3-imports.js'
+         uploadMp3ByGcat, uploadWavByGcat, uploadArtworkByGmvi, uploadPlaylistArt, downloadAnyKey, keyFromS3Url, downloadByUrl,
+         artworkKeyForGmvi, headAnyKey, deleteAnyKey, urlForKey } from '../lib/s3-imports.js'
 import { createGalloRecord, createTapeFileRecord, updateGalloRecord, runGalloScript, runScriptOnRecord, pingGallo, findGalloRecordsByCatalogue, searchGalloRecords, fetchContainerData, getGalloTrack, getGalloLayoutFields, getGalloLayoutFieldSet, reloadGalloLayoutFields, getRecentGalloCreates, clearRecentGalloCreates } from '../lib/fm-gallo.js'
-import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, searchMadStreamerRecords, findArtistBio, upsertArtistBio, listArtistBios, findPlaylistArt, upsertPlaylistArt, listPlaylistArt, findStreamerSongsByArtist, listPublicPlaylists, findSongsByPlaylist, setPublicPlaylist, getStreamerSongAudioUrl, _config as madStreamerConfig } from '../lib/madstreamer.js'
+import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, searchMadStreamerRecords, findArtistBio, upsertArtistBio, listArtistBios, findPlaylistArt, upsertPlaylistArt, listPlaylistArt, findStreamerSongsByArtist, listPublicPlaylists, findSongsByPlaylist, setPublicPlaylist, getStreamerSongAudioUrl, findArtworkByCatalogue, createArtworkRecord, _config as madStreamerConfig } from '../lib/madstreamer.js'
 import {
   pingCms2024,
   findRecord            as findCms2024Record,
@@ -2248,6 +2249,93 @@ router.post('/madstreamer/public-playlists/assign', adminAuth, express.json(), a
   const tagged = results.filter(r => r.ok).length
   console.log(`[Playlists] ${playlistName ? `Tagged ${tagged} record(s) as "${playlistName}"` : `Untagged ${tagged} record(s)`}${tagged < results.length ? ` (${results.length - tagged} failed)` : ''}`)
   res.json({ ok: tagged === results.length, playlistName, tagged, failed: results.length - tagged, results })
+})
+
+/**
+ * Album Artwork (Artwork layout on MadStreamer + S3 artwork/<GMVi>). Artwork tab.
+ * POST /madstreamer/artwork/ensure { catalogue_no, create? }
+ *   → looks up the Artwork record for the catalogue. With create:true and no
+ *     record, creates one carrying only the catalogue number — FileMaker
+ *     allocates the GMVi (we poll it back, never compute it). Response always
+ *     includes the S3 file state and a streamer-songs sanity check so the UI
+ *     can warn about typo'd catalogues before anything is created.
+ * POST /madstreamer/artwork/upload (multipart image + gmvi)
+ *   → uploads/replaces artwork/<GMVi>.<ext>. If the previous file lived under
+ *     a different extension it is deleted (bucket versioning keeps a copy) so
+ *     lookups and the derivatives cron never see two variants.
+ */
+const ARTWORK_EXTS = ['.jpg', '.jpeg', '.png', '.webp']
+
+async function artworkFileState(gmvi) {
+  for (const ext of ARTWORK_EXTS) {
+    const key  = artworkKeyForGmvi(gmvi, ext)
+    const head = await headAnyKey(key)
+    if (head.exists) {
+      return { exists: true, key, url: urlForKey(key), size: head.size, lastModified: head.lastModified }
+    }
+  }
+  return { exists: false, key: artworkKeyForGmvi(gmvi, '.jpg') }
+}
+
+router.post('/madstreamer/artwork/ensure', adminAuth, express.json(), async (req, res) => {
+  const cat    = String(req.body?.catalogue_no || '').trim()
+  const create = !!req.body?.create
+  if (!cat) return res.status(400).json({ error: 'catalogue_no required' })
+  try {
+    const songs   = await findStreamerRecordsByCatalogue(cat).catch(() => [])
+    const streamer = songs.length ? { trackCount: songs.length, artist: songs[0].artist || null } : null
+
+    let rec = await findArtworkByCatalogue(cat)
+    let created = false
+    if (!rec && create) {
+      rec = await createArtworkRecord(cat)
+      created = true
+      console.log(`[Artwork] Created record for "${cat}" → GMVi ${rec.gmvi || '(not allocated!)'} (recordId ${rec.recordId})`)
+    }
+
+    const file = rec?.gmvi ? await artworkFileState(rec.gmvi) : null
+    res.json({
+      ok: true,
+      catalogue_no: cat,
+      created,
+      record: rec ? { recordId: rec.recordId, gmvi: rec.gmvi } : null,
+      file,
+      streamer,
+    })
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
+
+const uploadAlbumArtImage = multer({
+  storage: multer.memoryStorage(),
+  limits:  { fileSize: 15 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase()
+    const ok = ['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)
+           || ['.jpg', '.jpeg', '.png', '.webp'].includes(ext)
+    cb(ok ? null : new Error(`Artwork must be jpg/png/webp, got: ${file.mimetype}`), ok)
+  }
+})
+
+router.post('/madstreamer/artwork/upload', adminAuth, uploadAlbumArtImage.single('image'), async (req, res) => {
+  const gmvi = String(req.body?.gmvi || '').trim()
+  if (!gmvi)     return res.status(400).json({ error: 'gmvi required' })
+  if (!req.file) return res.status(400).json({ error: 'image file required' })
+  try {
+    const prev = await artworkFileState(gmvi)
+    const ext  = (path.extname(req.file.originalname) || '.jpg').toLowerCase()
+    const up   = await uploadArtworkByGmvi(req.file.buffer, gmvi, ext, req.file.mimetype)
+    let removedOld = null
+    if (prev.exists && prev.key !== up.key) {
+      await deleteAnyKey(prev.key)
+      removedOld = prev.key
+    }
+    console.log(`[Artwork] ${prev.exists ? 'Replaced' : 'Uploaded'} ${up.key}${removedOld ? ` (removed old ${removedOld})` : ''}`)
+    res.json({ ok: true, key: up.key, url: up.url, replaced: prev.exists, removedOld })
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
 })
 
 router.get('/madstreamer/audition/:recordId', async (req, res) => {
