@@ -276,8 +276,7 @@
 
     <!-- Tabs -->
     <nav class="admin-tabs">
-      <button class="tab-btn active" data-tab="submissions" onclick="showTab('submissions')">Submissions</button>
-      <button class="tab-btn" data-tab="catalog" onclick="showTab('catalog')">Catalog</button>
+      <button class="tab-btn active" data-tab="catalog" onclick="showTab('catalog')">Catalog</button>
       <button class="tab-btn" data-tab="fmenrich" onclick="showTab('fmenrich')">FM Submit</button>
       <button class="tab-btn" data-tab="generate" onclick="showTab('generate')">Generate DDEX</button>
       <button class="tab-btn" data-tab="ddex" onclick="showTab('ddex')">DDEX</button>
@@ -285,23 +284,8 @@
       <button class="tab-btn" data-tab="dbsync" onclick="showTab('dbsync')">DB Sync</button>
     </nav>
 
-    <!-- ── Submissions tab ──────────────────────────────────── -->
-    <div id="tab-submissions" class="tab-panel active">
-      <div class="filter-bar">
-        <button class="filter-btn active" onclick="filterSubs(this,'')">All</button>
-        <button class="filter-btn" onclick="filterSubs(this,'received')">Received</button>
-        <button class="filter-btn" onclick="filterSubs(this,'processing')">Processing</button>
-        <button class="filter-btn" onclick="filterSubs(this,'awaiting_review')">Awaiting Review</button>
-        <button class="filter-btn" onclick="filterSubs(this,'approved')">Approved</button>
-        <button class="filter-btn" onclick="filterSubs(this,'rejected')">Rejected</button>
-        <button class="btn btn-ghost" style="margin-left:auto;font-size:0.78rem" onclick="loadSubmissions()">↺ Refresh</button>
-        <button class="btn btn-ghost" style="font-size:0.78rem;color:var(--red);border-color:rgba(217,83,79,0.3)" onclick="clearAllSubmissions()">🗑 Clear All</button>
-      </div>
-      <div id="subsContent"><div class="loading-state"><span class="spin">⟳</span> Loading…</div></div>
-    </div>
-
     <!-- ── Catalog tab ──────────────────────────────────────── -->
-    <div id="tab-catalog" class="tab-panel">
+    <div id="tab-catalog" class="tab-panel active">
       <div style="display:flex;gap:8px;margin-bottom:16px;align-items:center">
         <input id="catalogSearch" type="text" placeholder="Search artist, title, catalogue number, ISRC…"
           style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none"
@@ -744,8 +728,6 @@
 
 // ── State ──────────────────────────────────────────────────────────────────
 let adminToken       = sessionStorage.getItem('admin_token') || ''
-let activeSubStatus  = ''
-let expandedSubId    = null
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id)
@@ -802,7 +784,6 @@ function showLogin() {
 function showDashboard() {
   $('loginScreen').style.display = 'none'
   $('dashboard').style.display = 'block'
-  loadSubmissions()
 }
 function login() {
   adminToken = $('tokenInput').value.trim()
@@ -824,272 +805,6 @@ function showTab(name) {
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `tab-${name}`))
   if (name === 'catalog') $('catalogSearch').focus()
   if (name === 'excel') loadMetaStatus()
-}
-
-// ── Submissions ────────────────────────────────────────────────────────────
-function filterSubs(btn, status) {
-  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'))
-  btn.classList.add('active')
-  activeSubStatus = status
-  expandedSubId = null
-  loadSubmissions()
-}
-
-async function loadSubmissions() {
-  $('subsContent').innerHTML = '<div class="loading-state"><span class="spin">⟳</span> Loading…</div>'
-  try {
-    const url = `/api/ingest/submissions${activeSubStatus ? `?status=${activeSubStatus}` : ''}`
-    const res  = await api(url)
-    const data = await res.json()
-    if (!res.ok) throw new Error(data.error || 'Load failed')
-    renderSubsTable(data.submissions || [])
-  } catch (err) {
-    $('subsContent').innerHTML = `<div class="empty-state">Error: ${esc(err.message)}</div>`
-  }
-}
-
-async function clearAllSubmissions() {
-  if (!confirm('Delete all submission records? This cannot be undone.')) return
-  const res = await api('/api/ingest/submissions', 'DELETE')
-  if (res.ok) { showToast('All submissions cleared'); expandedSubId = null; loadSubmissions() }
-  else showToast('Clear failed', 'error')
-}
-
-function renderSubsTable(subs) {
-  if (!subs.length) {
-    $('subsContent').innerHTML = '<div class="empty-state">No submissions found.</div>'
-    return
-  }
-  let html = `
-    <div class="table-wrap">
-    <table>
-      <thead><tr>
-        <th>ID</th><th>Submitted</th><th>Artist</th><th>Title</th>
-        <th>Format</th><th>Status</th><th></th>
-      </tr></thead>
-      <tbody>`
-  subs.forEach(s => {
-    const isExp = expandedSubId === s.id
-    html += `
-      <tr class="clickable-row${isExp?' expanded':''}" onclick="toggleSub(${s.id})">
-        <td class="cell-id">#${s.id}</td>
-        <td style="white-space:nowrap;font-size:0.78rem;color:var(--muted)">${fmtDate(s.received_at)}</td>
-        <td class="cell-artist">${esc(s.artist_name)}</td>
-        <td class="cell-title">${esc(s.track_title)}</td>
-        <td>${s.format_flag ? `<span class="badge badge-format-flag">${esc(s.format_flag)} ⚠</span>` : '<span style="color:var(--muted);font-size:0.76rem">WAV</span>'}</td>
-        <td>${badge(s.status)}</td>
-        <td style="font-size:0.76rem;color:var(--muted)">${isExp?'▲':'▼'}</td>
-      </tr>
-      <tr class="detail-row" id="detail-row-${s.id}" style="display:${isExp?'table-row':'none'}">
-        <td colspan="7"><div class="detail-panel" id="detail-panel-${s.id}">
-          <div class="loading-state"><span class="spin">⟳</span></div>
-        </div></td>
-      </tr>`
-  })
-  html += '</tbody></table></div>'
-  $('subsContent').innerHTML = html
-  if (expandedSubId !== null) loadSubDetail(expandedSubId)
-}
-
-async function toggleSub(id) {
-  if (expandedSubId === id) {
-    expandedSubId = null
-  } else {
-    expandedSubId = id
-  }
-  loadSubmissions()
-}
-
-async function loadSubDetail(id) {
-  try {
-    const res  = await api(`/api/ingest/submissions/${id}`)
-    const data = await res.json()
-    if (!res.ok) throw new Error(data.error)
-    // Backend returns the sub object directly (not wrapped in {submission:…})
-    renderSubDetail(data)
-  } catch (err) {
-    const panel = $(`detail-panel-${id}`)
-    if (panel) panel.innerHTML = `<div style="color:var(--red)">Error: ${esc(err.message)}</div>`
-  }
-}
-
-function renderSubDetail(s) {
-  const panel = $(`detail-panel-${s.id}`)
-  if (!panel) return
-
-  const canApprove = ['received','awaiting_review'].includes(s.status)
-  const canReject  = ['received','awaiting_review','processing'].includes(s.status)
-
-  const audioSrc = `/api/ingest/submissions/${s.id}/audio-preview?token=${encodeURIComponent(adminToken)}`
-
-  // Extract technical spec from notes field
-  const techMatch = (s.notes || '').match(/\[Technical: ([^\]]+)\]/)
-  const techStr   = techMatch ? techMatch[1] : null
-
-  panel.innerHTML = `
-    <div class="detail-grid">
-      <div class="detail-field"><label>Submitter</label><span>${esc(s.submitter_name)} &lt;${esc(s.submitter_email)}&gt;</span></div>
-      <div class="detail-field"><label>Organisation</label><span class="${s.org?'':'empty'}">${s.org ? esc(s.org) : 'not provided'}</span></div>
-      <div class="detail-field"><label>Received</label><span>${fmtDate(s.received_at)}</span></div>
-      <div class="detail-field"><label>Track Title</label><span>${esc(s.track_title)}</span></div>
-      <div class="detail-field"><label>Artist</label><span>${esc(s.artist_name)}</span></div>
-      <div class="detail-field"><label>Album</label><span class="${s.album_title?'':'empty'}">${s.album_title ? esc(s.album_title) : 'single'}</span></div>
-      <div class="detail-field"><label>Genre</label><span class="${s.genre?'':'empty'}">${s.genre ? esc(s.genre) : '—'}</span></div>
-      <div class="detail-field"><label>Year</label><span class="${s.year?'':'empty'}">${s.year || '—'}</span></div>
-      <div class="detail-field"><label>Status</label><span>${badge(s.status)}</span></div>
-    </div>
-
-    ${s.notes ? `<div style="font-size:0.8rem;color:var(--muted);margin-bottom:12px;padding:8px 10px;background:rgba(0,0,0,0.2);border-radius:4px">${esc(s.notes.replace(/\[Technical:[^\]]+\]/,'').trim())}</div>` : ''}
-    ${techStr ? `<div class="tech-spec">⚙ ${esc(techStr)}</div>` : ''}
-
-    <audio id="audio-${s.id}" controls preload="none" style="display:block">
-      <source src="${esc(audioSrc)}">
-      Your browser does not support audio playback.
-    </audio>
-    <div style="font-size:0.72rem;color:var(--muted);margin-bottom:10px">Audio file — click play to preview before approving</div>
-
-    ${s.format_flag ? `
-      <div style="background:rgba(240,168,50,0.08);border:1px solid rgba(240,168,50,0.3);border-radius:5px;padding:10px 14px;margin-bottom:14px;font-size:0.84rem;color:var(--amber)">
-        ⚠ Non-standard format: <strong>${esc(s.format_flag)}</strong> — a format override reason is required before approving.
-      </div>
-      <div class="override-form" id="override-${s.id}" style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px">
-        <label class="override-label">Format override reason (required):</label>
-        <textarea id="override-reason-${s.id}" placeholder="e.g. Master WAV unavailable — high-quality MP3 approved by label"></textarea>
-      </div>` : ''}
-
-    <div class="action-row" id="actions-${s.id}">
-      ${canApprove ? `<button class="btn btn-green" id="approve-btn-${s.id}" onclick="approve(${s.id})">✓ Approve</button>` : ''}
-      ${canReject  ? `<button class="btn btn-red"   onclick="toggleRejectForm(${s.id})">✗ Reject</button>` : ''}
-      ${s.reviewer_notes ? `<span style="font-size:0.8rem;color:var(--muted)">Reviewer notes: ${esc(s.reviewer_notes)}</span>` : ''}
-
-      ${s.status === 'approved' ? `
-        <div class="madstreamer-block" id="mad-block-${s.id}">
-          <div class="row">
-            <button class="btn btn-blue" id="mad-btn-${s.id}" onclick="pushMadStreamer(${s.id})">⤴ Push to MadStreamer</button>
-            <label class="checkbox"><input type="checkbox" id="mad-wav-${s.id}"> Also upload WAV</label>
-            <span class="madstreamer-status ${s.madstreamer ? 'ok' : ''}" id="mad-status-${s.id}">${
-              s.madstreamer
-                ? `✓ Pushed ${fmtDate(s.madstreamer.pushed_at)} — ${esc(s.madstreamer.gcat || '')}${s.madstreamer.gmvi ? ` (artwork ${esc(s.madstreamer.gmvi)})` : ''} · ${s.madstreamer.action}`
-                : 'Not yet pushed'
-            }</span>
-          </div>
-          <div style="font-size:0.72rem;color:var(--muted)">Reads the canonical track + WAV from Gallo Catalogue, transcodes to 320 kbps MP3, uploads keyed by GMVi, and upserts in MadStreamer's API_Album_Songs.</div>
-        </div>` : ''}
-    </div>
-
-    <div class="reject-form" id="reject-form-${s.id}">
-      <textarea id="reject-notes-${s.id}" placeholder="Reason for rejection (sent to submitter)…"></textarea>
-      <div style="display:flex;gap:8px">
-        <button class="btn btn-red" onclick="reject(${s.id})">Confirm Rejection</button>
-        <button class="btn btn-ghost" onclick="toggleRejectForm(${s.id})">Cancel</button>
-      </div>
-    </div>
-
-    <div id="job-status-${s.id}" style="margin-top:10px;font-size:0.82rem;color:var(--muted)"></div>
-  `
-}
-
-function toggleRejectForm(id) {
-  const form = $(`reject-form-${id}`)
-  form.style.display = form.style.display === 'flex' ? 'none' : 'flex'
-}
-
-async function approve(id) {
-  const btn = $(`approve-btn-${id}`)
-  if (btn) { btn.disabled = true; btn.textContent = '⟳ Queuing…' }
-
-  const overrideEl = $(`override-reason-${id}`)
-  const overrideReason = overrideEl?.value.trim() || null
-
-  const body = overrideReason ? { format_override_reason: overrideReason } : {}
-  const res  = await api(`/api/ingest/submissions/${id}/approve`, 'PATCH', body)
-  const data = await res.json()
-
-  if (!res.ok) {
-    showToast(data.error || 'Approve failed', 'error')
-    if (btn) { btn.disabled = false; btn.textContent = '✓ Approve' }
-    return
-  }
-  showToast('Queued for processing')
-  pollJobStatus(id)
-}
-
-async function pushMadStreamer(id) {
-  const btn      = $(`mad-btn-${id}`)
-  const wavCb    = $(`mad-wav-${id}`)
-  const statusEl = $(`mad-status-${id}`)
-  if (btn) { btn.disabled = true; btn.textContent = '⟳ Pushing…' }
-  if (statusEl) { statusEl.className = 'madstreamer-status busy'; statusEl.textContent = 'Looking up GMVi, transcoding, uploading…' }
-
-  const body = { include_wav: !!wavCb?.checked }
-  let res, data
-  try {
-    res  = await api(`/api/ingest/madstreamer/push/${id}`, 'POST', body)
-    data = await res.json().catch(() => ({}))
-  } catch (e) {
-    if (btn) { btn.disabled = false; btn.textContent = '⤴ Push to MadStreamer' }
-    if (statusEl) { statusEl.className = 'madstreamer-status fail'; statusEl.textContent = 'Network error: ' + e.message }
-    showToast('MadStreamer push failed', 'error')
-    return
-  }
-
-  if (!res.ok) {
-    if (btn) { btn.disabled = false; btn.textContent = '⤴ Push to MadStreamer' }
-    if (statusEl) { statusEl.className = 'madstreamer-status fail'; statusEl.textContent = '✗ ' + (data.error || `HTTP ${res.status}`) }
-    showToast(data.error || 'MadStreamer push failed', 'error')
-    return
-  }
-
-  const idLabel = data.gcat + (data.gmvi ? ` · artwork ${data.gmvi}` : '')
-  showToast(`Pushed to MadStreamer: ${idLabel} (${data.fm.action})`, 'success')
-  if (btn) { btn.disabled = false; btn.textContent = `↻ Re-push (${data.gcat})` }
-  if (statusEl) {
-    statusEl.className = 'madstreamer-status ok'
-    statusEl.textContent = `✓ ${idLabel} (${data.fm.action}) — MP3 ${data.mp3.key}${data.wav ? ', WAV ' + data.wav.key : ''}${data.artwork ? ', artwork ' + data.artwork.key : ''}`
-  }
-}
-
-function pollJobStatus(id) {
-  const statusEl = $(`job-status-${id}`)
-  if (statusEl) statusEl.textContent = '⟳ Processing…'
-
-  const interval = setInterval(async () => {
-    try {
-      const res  = await api(`/api/ingest/submissions/${id}`)
-      const data = await res.json()
-      const status = data.status  // backend returns sub directly, not wrapped
-
-      if (statusEl) {
-        statusEl.textContent = status === 'approved'
-          ? '✓ Track is live'
-          : status === 'rejected'
-          ? '✗ Processing failed'
-          : `Status: ${status}`
-      }
-
-      // Refresh the row badge in the table
-      const rowBadge = document.querySelector(`#detail-row-${id}`)?.previousElementSibling?.querySelector('.badge')
-      if (rowBadge) { rowBadge.className = `badge badge-${status}`; rowBadge.textContent = status }
-
-      if (status === 'approved' || status === 'rejected') {
-        clearInterval(interval)
-        showToast(status === 'approved' ? 'Track is live ✓' : 'Processing failed', status === 'approved' ? 'success' : 'error')
-        loadSubmissions()
-      }
-    } catch (_) {}
-  }, 3000)
-}
-
-async function reject(id) {
-  const notes = $(`reject-notes-${id}`)?.value.trim() || null
-  const res   = await api(`/api/ingest/submissions/${id}/reject`, 'PATCH', { notes })
-  if (res.ok) {
-    showToast('Submission rejected')
-    expandedSubId = null
-    loadSubmissions()
-  } else {
-    showToast('Reject failed', 'error')
-  }
 }
 
 // ── Catalog live search ────────────────────────────────────────────────────
