@@ -285,6 +285,7 @@
       <button class="tab-btn" data-tab="dbsync" onclick="showTab('dbsync')">DB Sync</button>
       <button class="tab-btn" data-tab="podcasts" onclick="showTab('podcasts')">Podcasts</button>
       <button class="tab-btn" data-tab="biography" onclick="showTab('biography')">Biography</button>
+      <button class="tab-btn" data-tab="playlists" onclick="showTab('playlists')">Playlists</button>
       <button class="tab-btn" data-tab="playlistart" onclick="showTab('playlistart')">Playlist Art</button>
     </nav>
 
@@ -951,6 +952,49 @@
       </div>
     </div>
 
+    <!-- Public Playlists -->
+    <div id="tab-playlists" class="tab-panel">
+      <div class="import-section" style="margin-bottom:24px">
+        <h3>Build a Public Playlist</h3>
+        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
+          Search the streamer catalogue by artist, tick songs, then tag them into a public playlist
+          (writes <code>PublicPlaylist</code> on MadStreamer's <code>API_Album_Songs</code>).
+          A song can be in <strong>one</strong> public playlist at a time — tagging moves it.
+          Covers are uploaded in the <strong>Playlist Art</strong> tab under the same name.
+          The live site reads the Postgres mirror, so changes appear there after the next metadata sync.
+        </p>
+
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px">
+          <input id="plsQuery" type="text" placeholder="Artist name, e.g. Lucky Dube"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();plsSearch()}"
+            style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
+          <button class="btn btn-gold" onclick="plsSearch()">Search Streamer</button>
+          <span id="plsCount" style="font-size:0.78rem;color:var(--muted)"></span>
+        </div>
+
+        <div id="plsResults"></div>
+
+        <div id="plsAssignBar" style="display:none;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap">
+          <input id="plsName" type="text" list="plsNameList" placeholder="Playlist name…"
+            style="flex:1;min-width:220px;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
+          <datalist id="plsNameList"></datalist>
+          <button class="btn btn-gold" id="plsAssignBtn" onclick="plsAssign()" disabled>Add 0 selected</button>
+          <span id="plsAssignStatus" style="font-size:0.82rem;color:var(--muted)"></span>
+        </div>
+      </div>
+
+      <div class="import-section">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:4px">
+          <h3 style="margin:0">Existing Public Playlists</h3>
+          <button class="btn btn-ghost" style="font-size:0.78rem" onclick="plsLoadPlaylists(true)">↺ Refresh</button>
+        </div>
+        <div id="plsListWrap" style="margin-top:12px">
+          <div class="loading-state"><span class="spin">⟳</span> Loading…</div>
+        </div>
+        <div id="plsTracksWrap" style="display:none;margin-top:14px"></div>
+      </div>
+    </div>
+
     <!-- Playlist Artwork -->
     <div id="tab-playlistart" class="tab-panel">
       <div class="import-section" style="margin-bottom:24px">
@@ -1086,6 +1130,7 @@ function showTab(name) {
   if (name === 'excel') loadMetaStatus()
   if (name === 'podcasts') podcastsInit()
   if (name === 'biography') biographyInit()
+  if (name === 'playlists') playlistsInit()
   if (name === 'playlistart') playlistArtInit()
 }
 
@@ -1320,6 +1365,242 @@ function bioEditFromIndex(i) {
   $('bioText').value = row.bio || ''
   bioStatus(`Loaded from list (record ${row.recordId}) — save to update.`, false)
   window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
+// ── Public Playlists ─────────────────────────────────────────────────────────
+let _plsSongs        = []        // last artist-search results
+let _plsChecked      = new Set() // ticked recordIds
+let _plsNamesLoaded  = false
+let _plsAudio        = null      // shared audition player
+let _plsPlayingId    = null
+let _plsPlayingBtn   = null
+let _plsOpenName     = null      // playlist open in the manage view
+
+function playlistsInit() { if (!_plsNamesLoaded) plsLoadPlaylists(false) }
+
+async function plsLoadPlaylists(force) {
+  if (_plsNamesLoaded && !force) return
+  $('plsListWrap').innerHTML = '<div class="loading-state"><span class="spin">⟳</span> Loading…</div>'
+  try {
+    const res  = await api('/api/ingest/madstreamer/public-playlists')
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || 'Load failed')
+    const playlists = data.playlists || []
+    _plsNamesLoaded = true
+    $('plsNameList').innerHTML = playlists.map(p => `<option value="${esc(p.name)}">`).join('')
+    if (!playlists.length) {
+      $('plsListWrap').innerHTML = '<div class="empty-state" style="color:var(--muted)">No public playlists yet — build one above.</div>'
+      return
+    }
+    $('plsListWrap').innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:8px">` + playlists.map(p =>
+      `<button class="btn btn-ghost" style="font-size:0.82rem" onclick="plsOpenPlaylist('${esc(p.name).replace(/'/g, '&#39;')}')">
+        ${esc(p.name)} <span style="color:var(--muted)">· ${p.trackCount}</span>
+      </button>`
+    ).join('') + `</div>`
+  } catch (err) {
+    $('plsListWrap').innerHTML = `<div class="empty-state" style="color:var(--red)">Error: ${esc(err.message)}</div>`
+  }
+}
+
+async function plsSearch() {
+  const q = $('plsQuery').value.trim()
+  if (q.length < 2) { showToast('Enter at least 2 characters', 'error'); return }
+  plsStopAudition()
+  _plsChecked.clear()
+  $('plsCount').textContent  = ''
+  $('plsResults').innerHTML  = '<div class="loading-state"><span class="spin">⟳</span> Searching streamer…</div>'
+  try {
+    const res  = await api(`/api/ingest/madstreamer/playlist-songs?q=${encodeURIComponent(q)}`)
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || 'Search failed')
+    _plsSongs = data.songs || []
+    $('plsCount').textContent = `${_plsSongs.length} song(s)`
+    plsRenderResults()
+  } catch (err) {
+    $('plsResults').innerHTML = `<div class="empty-state" style="color:var(--red)">Error: ${esc(err.message)}</div>`
+    $('plsAssignBar').style.display = 'none'
+  }
+}
+
+function plsRenderResults() {
+  if (!_plsSongs.length) {
+    $('plsResults').innerHTML = '<div class="empty-state" style="color:var(--muted);padding:20px 0">No streamer tracks matched.</div>'
+    $('plsAssignBar').style.display = 'none'
+    return
+  }
+  let html = `<div class="table-wrap"><table>
+    <thead><tr>
+      <th style="width:30px"><input type="checkbox" id="plsCheckAll" onchange="plsToggleAll(this.checked)"></th>
+      <th style="width:40px"></th><th style="width:36px">#</th>
+      <th>Title</th><th>Artist</th><th>Album</th><th>Catalogue</th><th>Playlist</th>
+    </tr></thead><tbody>`
+  for (const s of _plsSongs) {
+    const noAudio = !s.has_audio
+    html += `<tr${noAudio ? ' style="opacity:0.45"' : ''}>
+      <td><input type="checkbox" data-rid="${esc(s.recordId)}" ${noAudio ? 'disabled title="No audio on this record"' : ''}
+        ${_plsChecked.has(s.recordId) ? 'checked' : ''} onchange="plsTick('${esc(s.recordId)}', this.checked)"></td>
+      <td><button class="btn btn-ghost" style="padding:1px 8px;font-size:0.8rem" ${noAudio ? 'disabled' : ''}
+        onclick="plsAudition('${esc(s.recordId)}', this)">▶</button></td>
+      <td style="color:var(--muted);font-size:0.78rem">${s.sequence_no ?? ''}</td>
+      <td>${esc(s.title || '—')}</td>
+      <td>${esc(s.artist || '—')}</td>
+      <td style="color:var(--muted)">${esc(s.album || '—')}</td>
+      <td style="font-family:monospace;font-size:0.78rem;color:var(--muted)">${esc(s.catalogue_no || '')}</td>
+      <td>${s.playlist ? `<span style="background:var(--gold-glow);border:1px solid var(--border-hi);border-radius:4px;padding:2px 8px;font-size:0.76rem;white-space:nowrap">${esc(s.playlist)}</span>` : ''}</td>
+    </tr>`
+  }
+  html += '</tbody></table></div>'
+  $('plsResults').innerHTML = html
+  $('plsAssignBar').style.display = 'flex'
+  plsUpdateAssign()
+}
+
+function plsTick(recordId, on) {
+  if (on) _plsChecked.add(recordId); else _plsChecked.delete(recordId)
+  plsUpdateAssign()
+}
+
+function plsToggleAll(on) {
+  _plsChecked.clear()
+  if (on) for (const s of _plsSongs) if (s.has_audio) _plsChecked.add(s.recordId)
+  document.querySelectorAll('#plsResults input[data-rid]').forEach(cb => { if (!cb.disabled) cb.checked = on })
+  plsUpdateAssign()
+}
+
+function plsUpdateAssign() {
+  const n = _plsChecked.size
+  $('plsAssignBtn').textContent = `Add ${n} selected → playlist`
+  $('plsAssignBtn').disabled    = !n
+}
+
+async function plsAssign() {
+  const name = $('plsName').value.trim()
+  if (!name) { showToast('Enter a playlist name', 'error'); $('plsName').focus(); return }
+  if (!_plsChecked.size) return
+
+  const moving = _plsSongs.filter(s => _plsChecked.has(s.recordId) && s.playlist && s.playlist !== name)
+  let msg = `Tag ${_plsChecked.size} song(s) as "${name}"?`
+  if (moving.length) msg += `\n\n${moving.length} of them are already in another playlist and will be MOVED.`
+  if (!confirm(msg)) return
+
+  const btn    = $('plsAssignBtn')
+  const status = $('plsAssignStatus')
+  btn.disabled = true; btn.textContent = '⟳ Tagging…'
+  status.textContent = ''; status.style.color = 'var(--muted)'
+  try {
+    const res  = await api('/api/ingest/madstreamer/public-playlists/assign', 'POST',
+      { recordIds: [..._plsChecked], playlistName: name })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+
+    if (data.failed) {
+      status.textContent = `⚠ ${data.tagged} tagged, ${data.failed} failed`
+      status.style.color = 'var(--amber)'
+      showToast(`${data.failed} song(s) failed — see server log`, 'error')
+    } else {
+      status.textContent = `✓ ${data.tagged} song(s) tagged as "${name}"`
+      status.style.color = 'var(--green)'
+      showToast(`Playlist "${name}" updated (${data.tagged} songs)`)
+    }
+    // Reflect the new tags locally, refresh the playlist chips
+    const okIds = new Set(data.results.filter(r => r.ok).map(r => r.recordId))
+    for (const s of _plsSongs) if (okIds.has(s.recordId)) s.playlist = name
+    _plsChecked.clear()
+    plsRenderResults()
+    plsLoadPlaylists(true)
+    if (_plsOpenName) plsOpenPlaylist(_plsOpenName)
+  } catch (err) {
+    status.textContent = `✗ ${err.message}`
+    status.style.color = 'var(--red)'
+    showToast(err.message, 'error')
+  } finally {
+    btn.disabled = !_plsChecked.size
+    plsUpdateAssign()
+  }
+}
+
+async function plsOpenPlaylist(name) {
+  _plsOpenName = name
+  const wrap = $('plsTracksWrap')
+  wrap.style.display = 'block'
+  wrap.innerHTML = '<div class="loading-state"><span class="spin">⟳</span> Loading…</div>'
+  try {
+    const res  = await api(`/api/ingest/madstreamer/public-playlists/tracks?name=${encodeURIComponent(name)}`)
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || 'Load failed')
+    const songs = data.songs || []
+    let html = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+      <h4 style="margin:0;font-size:0.95rem">${esc(name)} <span style="color:var(--muted);font-weight:400">· ${songs.length} song(s)</span></h4>
+      <button class="btn btn-ghost" style="font-size:0.76rem;margin-left:auto" onclick="plsClosePlaylist()">✕ Close</button>
+    </div>`
+    if (!songs.length) {
+      html += '<div class="empty-state" style="color:var(--muted)">Empty — the last song was removed.</div>'
+    } else {
+      html += `<div class="table-wrap"><table>
+        <thead><tr><th style="width:40px"></th><th style="width:36px">#</th><th>Title</th><th>Artist</th><th>Album</th><th style="width:80px"></th></tr></thead><tbody>`
+      for (const s of songs) {
+        html += `<tr>
+          <td><button class="btn btn-ghost" style="padding:1px 8px;font-size:0.8rem" ${s.has_audio ? '' : 'disabled'}
+            onclick="plsAudition('${esc(s.recordId)}', this)">▶</button></td>
+          <td style="color:var(--muted);font-size:0.78rem">${s.sequence_no ?? ''}</td>
+          <td>${esc(s.title || '—')}</td>
+          <td>${esc(s.artist || '—')}</td>
+          <td style="color:var(--muted)">${esc(s.album || '—')}</td>
+          <td><button class="btn btn-ghost" style="font-size:0.74rem;color:var(--red);border-color:rgba(217,83,79,0.3)"
+            onclick="plsRemove('${esc(s.recordId)}')">Remove</button></td>
+        </tr>`
+      }
+      html += '</tbody></table></div>'
+    }
+    wrap.innerHTML = html
+  } catch (err) {
+    wrap.innerHTML = `<div class="empty-state" style="color:var(--red)">Error: ${esc(err.message)}</div>`
+  }
+}
+
+function plsClosePlaylist() {
+  _plsOpenName = null
+  plsStopAudition()
+  $('plsTracksWrap').style.display = 'none'
+  $('plsTracksWrap').innerHTML = ''
+}
+
+async function plsRemove(recordId) {
+  if (!_plsOpenName) return
+  if (!confirm(`Remove this song from "${_plsOpenName}"?`)) return
+  try {
+    const res  = await api('/api/ingest/madstreamer/public-playlists/assign', 'POST',
+      { recordIds: [recordId], playlistName: '' })
+    const data = await res.json()
+    if (!res.ok || data.failed) throw new Error(data.error || 'Remove failed')
+    showToast('Song removed')
+    for (const s of _plsSongs) if (s.recordId === recordId) s.playlist = null
+    if (_plsSongs.length) plsRenderResults()
+    plsOpenPlaylist(_plsOpenName)
+    plsLoadPlaylists(true)
+  } catch (err) {
+    showToast(err.message, 'error')
+  }
+}
+
+function plsAudition(recordId, btn) {
+  if (_plsPlayingId === recordId) { plsStopAudition(); return }
+  plsStopAudition()
+  if (!_plsAudio) _plsAudio = new Audio()
+  _plsAudio.src = `/api/ingest/madstreamer/audition/${encodeURIComponent(recordId)}?token=${encodeURIComponent(adminToken)}`
+  _plsAudio.onended = () => plsStopAudition()
+  _plsAudio.onerror = () => { showToast('Audio failed to load — check the record has audio', 'error'); plsStopAudition() }
+  _plsAudio.play().catch(err => { showToast('Playback failed: ' + err.message, 'error'); plsStopAudition() })
+  _plsPlayingId  = recordId
+  _plsPlayingBtn = btn
+  btn.textContent = '◼'
+}
+
+function plsStopAudition() {
+  if (_plsAudio) { _plsAudio.pause(); _plsAudio.removeAttribute('src') }
+  if (_plsPlayingBtn) _plsPlayingBtn.textContent = '▶'
+  _plsPlayingId  = null
+  _plsPlayingBtn = null
 }
 
 // ── Playlist Art ─────────────────────────────────────────────────────────────

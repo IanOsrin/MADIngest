@@ -17,7 +17,7 @@ import { parseTrackSheet } from '../lib/excel-ingest.js'
 import { uploadImport, uploadArtworkImport, presignImport, presignArtworkImport, downloadImport,
          uploadMp3ByGcat, uploadWavByGcat, uploadArtworkByGmvi, uploadPlaylistArt, downloadAnyKey, keyFromS3Url, downloadByUrl } from '../lib/s3-imports.js'
 import { createGalloRecord, createTapeFileRecord, updateGalloRecord, runGalloScript, runScriptOnRecord, pingGallo, findGalloRecordsByCatalogue, searchGalloRecords, fetchContainerData, getGalloTrack, getGalloLayoutFields, getGalloLayoutFieldSet, reloadGalloLayoutFields, getRecentGalloCreates, clearRecentGalloCreates } from '../lib/fm-gallo.js'
-import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, searchMadStreamerRecords, findArtistBio, upsertArtistBio, listArtistBios, findPlaylistArt, upsertPlaylistArt, listPlaylistArt, _config as madStreamerConfig } from '../lib/madstreamer.js'
+import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, searchMadStreamerRecords, findArtistBio, upsertArtistBio, listArtistBios, findPlaylistArt, upsertPlaylistArt, listPlaylistArt, findStreamerSongsByArtist, listPublicPlaylists, findSongsByPlaylist, setPublicPlaylist, getStreamerSongAudioUrl, _config as madStreamerConfig } from '../lib/madstreamer.js'
 import {
   pingCms2024,
   findRecord            as findCms2024Record,
@@ -2314,6 +2314,92 @@ router.post('/madstreamer/playlist-art', adminAuth, uploadPlaylistImage.single('
     const up  = await uploadPlaylistArt(req.file.buffer, playlistName, ext, req.file.mimetype)
     const result = await upsertPlaylistArt({ playlistName, imageUrl: up.url })
     res.json({ ok: true, imageUrl: up.url, key: up.key, ...result })
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
+
+/**
+ * Public Playlists (PublicPlaylist tag on MadStreamer API_Album_Songs). Playlists tab.
+ * GET  /madstreamer/playlist-songs?q=              → artist search across streamer tracks
+ * GET  /madstreamer/public-playlists               → distinct playlist names + track counts
+ * GET  /madstreamer/public-playlists/tracks?name=  → songs currently tagged with that name
+ * POST /madstreamer/public-playlists/assign        → { recordIds:[], playlistName } tags each
+ *                                                    record; playlistName '' clears the tag.
+ * GET  /madstreamer/audition/:recordId?token=      → streams the track MP3 from S3
+ *                                                    (query-token auth: <audio> can't send headers)
+ */
+router.get('/madstreamer/playlist-songs', adminAuth, async (req, res) => {
+  const q = String(req.query.q || '').trim()
+  if (q.length < 2) return res.status(400).json({ error: 'Search term must be at least 2 characters' })
+  try {
+    const songs = await findStreamerSongsByArtist(q)
+    res.json({ ok: true, songs })
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
+
+router.get('/madstreamer/public-playlists', adminAuth, async (req, res) => {
+  try {
+    const playlists = await listPublicPlaylists()
+    res.json({ ok: true, playlists })
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
+
+router.get('/madstreamer/public-playlists/tracks', adminAuth, async (req, res) => {
+  const name = String(req.query.name || '').trim()
+  if (!name) return res.status(400).json({ error: 'name query param required' })
+  try {
+    const songs = await findSongsByPlaylist(name)
+    res.json({ ok: true, songs })
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
+
+router.post('/madstreamer/public-playlists/assign', adminAuth, express.json(), async (req, res) => {
+  const { recordIds } = req.body || {}
+  const playlistName  = String(req.body?.playlistName ?? '').trim() // '' = untag
+  if (!Array.isArray(recordIds) || !recordIds.length) {
+    return res.status(400).json({ error: 'recordIds array required' })
+  }
+  if (recordIds.length > 500) {
+    return res.status(400).json({ error: 'Too many records in one request (max 500)' })
+  }
+
+  const results = []
+  for (const id of recordIds) {
+    try {
+      await setPublicPlaylist(String(id), playlistName)
+      results.push({ recordId: String(id), ok: true })
+    } catch (err) {
+      results.push({ recordId: String(id), ok: false, error: err.message })
+      console.warn(`[Playlists] ✗ ${id} → "${playlistName}": ${err.message}`)
+    }
+  }
+  const tagged = results.filter(r => r.ok).length
+  console.log(`[Playlists] ${playlistName ? `Tagged ${tagged} record(s) as "${playlistName}"` : `Untagged ${tagged} record(s)`}${tagged < results.length ? ` (${results.length - tagged} failed)` : ''}`)
+  res.json({ ok: tagged === results.length, playlistName, tagged, failed: results.length - tagged, results })
+})
+
+router.get('/madstreamer/audition/:recordId', async (req, res) => {
+  const token = (req.query.token || req.headers.authorization?.replace('Bearer ', '') || '').trim()
+  if (!token || token !== process.env.INGEST_ADMIN_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+  try {
+    const url = await getStreamerSongAudioUrl(req.params.recordId)
+    if (!url) return res.status(404).json({ error: 'No audio on this record' })
+    const key = keyFromS3Url(url)
+    if (!key) return res.redirect(url) // not our bucket — let the browser fetch it directly
+    const { buffer, contentType } = await downloadAnyKey(key)
+    res.set('Content-Type', contentType || 'audio/mpeg')
+    res.set('Content-Length', String(buffer.length))
+    res.set('Cache-Control', 'private, max-age=3600')
+    res.send(buffer)
   } catch (err) {
     res.status(502).json({ error: err.message })
   }
