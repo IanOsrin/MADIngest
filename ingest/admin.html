@@ -150,8 +150,10 @@
       background: var(--bg-lift); color: var(--muted); font-size: 0.68rem;
       font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase;
       padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border);
-      white-space: nowrap;
+      white-space: nowrap; cursor: pointer; user-select: none;
     }
+    thead th:hover { color: var(--text); }
+    thead th .sort-arrow { color: var(--gold); }
     tbody tr { border-bottom: 1px solid var(--border); transition: background 0.1s; }
     tbody tr:last-child { border-bottom: none; }
     tbody tr:hover { background: rgba(255,255,255,0.02); }
@@ -969,6 +971,7 @@
             onkeydown="if(event.key==='Enter'){event.preventDefault();plsSearch()}"
             style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
           <button class="btn btn-gold" onclick="plsSearch()">Search Streamer</button>
+          <button class="btn btn-ghost" onclick="plsClearSearch()" title="Clear the search results">✕ Clear</button>
           <span id="plsCount" style="font-size:0.78rem;color:var(--muted)"></span>
         </div>
 
@@ -1077,6 +1080,50 @@ async function api(path, method = 'GET', body = null) {
   if (body !== null) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body) }
   return fetch(path, opts)
 }
+
+// ── Sortable columns ────────────────────────────────────────────────────────
+// Click any table header to sort its column (click again to flip). Delegated,
+// so it covers every table on every tab — including ones rendered later.
+// Sorting reorders <tr>s in the DOM only; all row actions carry their identity
+// inline (recordId / data-idx / parallel arrays), so DOM order is presentation-
+// only everywhere. Skips: headers with their own onclick (the Excel preview
+// has a data-model sorter), header cells holding controls (select-all
+// checkboxes), and unlabelled action/play columns.
+document.addEventListener('click', e => {
+  const th = e.target.closest('th')
+  if (!th || th.getAttribute('onclick')) return
+  if (th.querySelector('input,button,select') || e.target.closest('input,button,select,a')) return
+  if (!th.textContent.replace(/[↑↓]/g, '').trim()) return
+  const table = th.closest('table')
+  if (!table || !table.tHead?.contains(th)) return
+  const tbody = table.tBodies[0]
+  if (!tbody || tbody.rows.length < 2) return
+
+  const idx = [...th.parentNode.children].indexOf(th)
+  const dir = th.dataset.sortDir === 'asc' ? -1 : 1
+  for (const sib of th.parentNode.children) {
+    delete sib.dataset.sortDir
+    sib.querySelector('.sort-arrow')?.remove()
+  }
+  th.dataset.sortDir = dir === 1 ? 'asc' : 'desc'
+  th.insertAdjacentHTML('beforeend', `<span class="sort-arrow"> ${dir === 1 ? '↑' : '↓'}</span>`)
+
+  const cellText = tr => (tr.cells[idx]?.textContent || '').trim()
+  const asNum = s => {
+    const n = parseFloat(String(s).replace(/[,%\s]/g, ''))
+    return isNaN(n) || !/^[\s,.%\d+-]+$/.test(s) ? null : n
+  }
+  const rows = [...tbody.rows].sort((a, b) => {
+    const av = cellText(a), bv = cellText(b)
+    if (!av && !bv) return 0
+    if (!av) return 1   // empty cells always last
+    if (!bv) return -1
+    const an = asNum(av), bn = asNum(bv)
+    if (an !== null && bn !== null) return (an - bn) * dir
+    return av.localeCompare(bv, undefined, { sensitivity: 'base', numeric: true }) * dir
+  })
+  rows.forEach(r => tbody.appendChild(r))
+})
 
 // ── Toast ──────────────────────────────────────────────────────────────────
 function showToast(msg, type = 'success') {
@@ -1375,6 +1422,8 @@ let _plsAudio        = null      // shared audition player
 let _plsPlayingId    = null
 let _plsPlayingBtn   = null
 let _plsOpenName     = null      // playlist open in the manage view
+let _plsOpenSongs    = []        // its tracks (for rename / clear-all)
+let _plsAddSongs     = []        // results of the in-playlist "Add songs" search
 
 function playlistsInit() { if (!_plsNamesLoaded) plsLoadPlaylists(false) }
 
@@ -1519,6 +1568,16 @@ async function plsAssign() {
   }
 }
 
+function plsClearSearch() {
+  plsStopAudition()
+  _plsSongs = []
+  _plsChecked.clear()
+  $('plsQuery').value        = ''
+  $('plsCount').textContent  = ''
+  $('plsResults').innerHTML  = ''
+  $('plsAssignBar').style.display = 'none'
+}
+
 async function plsOpenPlaylist(name) {
   _plsOpenName = name
   const wrap = $('plsTracksWrap')
@@ -1529,10 +1588,21 @@ async function plsOpenPlaylist(name) {
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || 'Load failed')
     const songs = data.songs || []
-    let html = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+    _plsOpenSongs = songs
+    if (!$('plsName').value.trim()) $('plsName').value = name
+    let html = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
       <h4 style="margin:0;font-size:0.95rem">${esc(name)} <span style="color:var(--muted);font-weight:400">· ${songs.length} song(s)</span></h4>
-      <button class="btn btn-ghost" style="font-size:0.76rem;margin-left:auto" onclick="plsClosePlaylist()">✕ Close</button>
-    </div>`
+      <button class="btn btn-ghost" style="font-size:0.76rem;margin-left:auto" onclick="plsRename()">✎ Rename</button>
+      <button class="btn btn-ghost" style="font-size:0.76rem;color:var(--red);border-color:rgba(217,83,79,0.3)" onclick="plsClearPlaylist()">🗑 Clear playlist</button>
+      <button class="btn btn-ghost" style="font-size:0.76rem" onclick="plsClosePlaylist()">✕ Close</button>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+      <input id="plsAddQuery" type="text" placeholder="＋ Add songs — search artist or title…"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();plsAddSearch()}"
+        style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:6px 11px;color:var(--text);font-family:inherit;font-size:0.84rem;outline:none">
+      <button class="btn btn-ghost" style="font-size:0.78rem" onclick="plsAddSearch()">Search</button>
+    </div>
+    <div id="plsAddResults" style="margin-bottom:12px"></div>`
     if (!songs.length) {
       html += '<div class="empty-state" style="color:var(--muted)">Empty — the last song was removed.</div>'
     } else {
@@ -1559,10 +1629,124 @@ async function plsOpenPlaylist(name) {
 }
 
 function plsClosePlaylist() {
-  _plsOpenName = null
+  _plsOpenName  = null
+  _plsOpenSongs = []
+  _plsAddSongs  = []
   plsStopAudition()
   $('plsTracksWrap').style.display = 'none'
   $('plsTracksWrap').innerHTML = ''
+}
+
+async function plsAddSearch() {
+  const q = $('plsAddQuery').value.trim()
+  if (q.length < 2) { showToast('Enter at least 2 characters', 'error'); return }
+  $('plsAddResults').innerHTML = '<div class="loading-state"><span class="spin">⟳</span> Searching…</div>'
+  try {
+    const res  = await api(`/api/ingest/madstreamer/playlist-songs?q=${encodeURIComponent(q)}`)
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || 'Search failed')
+    _plsAddSongs = data.songs || []
+    plsRenderAddResults()
+  } catch (err) {
+    $('plsAddResults').innerHTML = `<div style="font-size:0.8rem;color:var(--red)">Error: ${esc(err.message)}</div>`
+  }
+}
+
+function plsRenderAddResults() {
+  const box = $('plsAddResults')
+  if (!box) return
+  if (!_plsAddSongs.length) {
+    box.innerHTML = '<div style="font-size:0.8rem;color:var(--muted)">No streamer tracks matched.</div>'
+    return
+  }
+  box.innerHTML = `<div style="border:1px solid var(--border);border-radius:var(--radius);max-height:260px;overflow-y:auto">` +
+    _plsAddSongs.map(s => {
+      const inThis = s.playlist === _plsOpenName
+      let action
+      if (!s.has_audio)   action = `<span style="font-size:0.74rem;color:var(--muted)">no audio</span>`
+      else if (inThis)    action = `<span style="font-size:0.74rem;color:var(--green)">✓ In playlist</span>`
+      else if (s.playlist) action = `<button class="btn btn-ghost" style="font-size:0.74rem;padding:2px 10px" title="Currently in &quot;${esc(s.playlist)}&quot; — adding moves it" onclick="plsAddOne('${esc(s.recordId)}')">+ Move here</button>`
+      else                action = `<button class="btn btn-gold" style="font-size:0.74rem;padding:2px 10px" onclick="plsAddOne('${esc(s.recordId)}')">+ Add</button>`
+      return `<div style="display:flex;gap:10px;align-items:center;padding:6px 12px;border-bottom:1px solid var(--border)">
+        <button class="btn btn-ghost" style="padding:1px 8px;font-size:0.78rem" ${s.has_audio ? '' : 'disabled'}
+          onclick="plsAudition('${esc(s.recordId)}', this)">▶</button>
+        <span style="flex:1;font-size:0.82rem;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          <strong>${esc(s.title || '—')}</strong>
+          <span style="color:var(--muted)"> — ${esc(s.artist || '—')} · ${esc(s.album || '—')}</span>
+        </span>
+        ${action}
+      </div>`
+    }).join('') + `</div>`
+}
+
+async function plsAddOne(recordId) {
+  if (!_plsOpenName) return
+  const song = _plsAddSongs.find(s => s.recordId === recordId)
+  if (!song) return
+  if (song.playlist && song.playlist !== _plsOpenName &&
+      !confirm(`"${song.title}" is in "${song.playlist}" — move it to "${_plsOpenName}"?`)) return
+  const name  = _plsOpenName
+  const query = $('plsAddQuery')?.value || ''
+  try {
+    const res  = await api('/api/ingest/madstreamer/public-playlists/assign', 'POST',
+      { recordIds: [recordId], playlistName: name })
+    const data = await res.json()
+    if (!res.ok || data.failed) throw new Error(data.error || data.results?.[0]?.error || 'Add failed')
+    showToast(`Added to "${name}"`)
+    song.playlist = name
+    for (const s of _plsSongs) if (s.recordId === recordId) s.playlist = name
+    if (_plsSongs.length) plsRenderResults()
+    await plsOpenPlaylist(name)          // refresh the tracks table…
+    $('plsAddQuery').value = query       // …then restore the add-search state
+    plsRenderAddResults()
+    plsLoadPlaylists(true)
+  } catch (err) {
+    showToast(err.message, 'error')
+  }
+}
+
+async function plsRename() {
+  if (!_plsOpenName || !_plsOpenSongs.length) return
+  const oldName = _plsOpenName
+  const newName = (prompt(`New name for "${oldName}":`, oldName) || '').trim()
+  if (!newName || newName === oldName) return
+  const msg = `Rename "${oldName}" to "${newName}"? All ${_plsOpenSongs.length} song(s) will be retagged.` +
+    `\n\nIf this playlist has a cover, re-save it under the new name in the Playlist Art tab — covers are matched by name.`
+  if (!confirm(msg)) return
+  try {
+    const res  = await api('/api/ingest/madstreamer/public-playlists/assign', 'POST',
+      { recordIds: _plsOpenSongs.map(s => s.recordId), playlistName: newName })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    if (data.failed) showToast(`Renamed, but ${data.failed} song(s) failed — see server log`, 'error')
+    else showToast(`Renamed to "${newName}" (${data.tagged} songs)`)
+    for (const s of _plsSongs) if (s.playlist === oldName) s.playlist = newName
+    if (_plsSongs.length) plsRenderResults()
+    plsLoadPlaylists(true)
+    plsOpenPlaylist(newName)
+  } catch (err) {
+    showToast(err.message, 'error')
+  }
+}
+
+async function plsClearPlaylist() {
+  if (!_plsOpenName || !_plsOpenSongs.length) return
+  const name = _plsOpenName
+  if (!confirm(`Remove all ${_plsOpenSongs.length} song(s) from "${name}"?\n\nThe playlist will disappear from the streamer. The songs themselves are not touched.`)) return
+  try {
+    const res  = await api('/api/ingest/madstreamer/public-playlists/assign', 'POST',
+      { recordIds: _plsOpenSongs.map(s => s.recordId), playlistName: '' })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    if (data.failed) showToast(`${data.failed} song(s) failed to untag — see server log`, 'error')
+    else showToast(`Playlist "${name}" cleared (${data.tagged} songs untagged)`)
+    for (const s of _plsSongs) if (s.playlist === name) s.playlist = null
+    if (_plsSongs.length) plsRenderResults()
+    plsClosePlaylist()
+    plsLoadPlaylists(true)
+  } catch (err) {
+    showToast(err.message, 'error')
+  }
 }
 
 async function plsRemove(recordId) {
@@ -1575,8 +1759,14 @@ async function plsRemove(recordId) {
     if (!res.ok || data.failed) throw new Error(data.error || 'Remove failed')
     showToast('Song removed')
     for (const s of _plsSongs) if (s.recordId === recordId) s.playlist = null
+    for (const s of _plsAddSongs) if (s.recordId === recordId) s.playlist = null
     if (_plsSongs.length) plsRenderResults()
-    plsOpenPlaylist(_plsOpenName)
+    const query = $('plsAddQuery')?.value || ''
+    await plsOpenPlaylist(_plsOpenName)
+    if (_plsAddSongs.length) {
+      $('plsAddQuery').value = query
+      plsRenderAddResults()
+    }
     plsLoadPlaylists(true)
   } catch (err) {
     showToast(err.message, 'error')
