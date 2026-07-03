@@ -983,6 +983,7 @@
             <option value="__new__">＋ New playlist…</option>
           </select>
           <input id="plsName" type="text" placeholder="New playlist name…"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();plsAssign()}"
             style="display:none;flex:1;min-width:180px;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
           <button class="btn btn-gold" id="plsAssignBtn" onclick="plsAssign()" disabled>Add 0 selected</button>
           <span id="plsAssignStatus" style="font-size:0.82rem;color:var(--muted)"></span>
@@ -990,8 +991,9 @@
       </div>
 
       <div class="import-section">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:4px">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:4px">
           <h3 style="margin:0">Existing Public Playlists</h3>
+          <button class="btn btn-gold" style="font-size:0.78rem;margin-left:auto" onclick="plsStartNew()">＋ New playlist</button>
           <button class="btn btn-ghost" style="font-size:0.78rem" onclick="plsLoadPlaylists(true)">↺ Refresh</button>
         </div>
         <div id="plsListWrap" style="margin-top:12px">
@@ -1442,8 +1444,8 @@ async function plsLoadPlaylists(force) {
     const sel  = $('plsSelect')
     const prev = sel.value
     sel.innerHTML = '<option value="">Add to playlist…</option>' +
-      playlists.map(p => `<option value="${esc(p.name)}">${esc(p.name)} (${p.trackCount})</option>`).join('') +
-      '<option value="__new__">＋ New playlist…</option>'
+      '<option value="__new__">＋ New playlist…</option>' +
+      playlists.map(p => `<option value="${esc(p.name)}">${esc(p.name)} (${p.trackCount})</option>`).join('')
     sel.value = [...sel.options].some(o => o.value === prev) ? prev : ''
     plsSelectChanged()
     if (!playlists.length) {
@@ -1537,6 +1539,18 @@ function plsSelectChanged() {
   if (isNew) $('plsName').focus()
 }
 
+// "＋ New playlist" button — arms the create flow from the Existing section
+function plsStartNew() {
+  if (!_plsSongs.length) {
+    showToast('Search for songs above and tick the ones you want — then name the playlist', 'error')
+    $('plsQuery').focus()
+    return
+  }
+  $('plsSelect').value = '__new__'
+  plsSelectChanged()
+  $('plsAssignBar').scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
+
 async function plsAssign() {
   const sel  = $('plsSelect').value
   const name = sel === '__new__' ? $('plsName').value.trim() : sel
@@ -1545,7 +1559,10 @@ async function plsAssign() {
     ;(sel === '__new__' ? $('plsName') : $('plsSelect')).focus()
     return
   }
-  if (!_plsChecked.size) return
+  if (!_plsChecked.size) {
+    showToast('Tick at least one song first — a playlist is created by tagging songs into it', 'error')
+    return
+  }
 
   const moving = _plsSongs.filter(s => _plsChecked.has(s.recordId) && s.playlist && s.playlist !== name)
   let msg = `Tag ${_plsChecked.size} song(s) as "${name}"?`
