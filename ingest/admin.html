@@ -290,6 +290,7 @@
       <button class="tab-btn" data-tab="artwork" onclick="showTab('artwork')">Artwork</button>
       <button class="tab-btn" data-tab="playlists" onclick="showTab('playlists')">Playlists</button>
       <button class="tab-btn" data-tab="playlistart" onclick="showTab('playlistart')">Playlist Art</button>
+      <button class="tab-btn" data-tab="youtube" onclick="showTab('youtube')">YouTube</button>
     </nav>
 
     <!-- ── Catalog tab ──────────────────────────────────────── -->
@@ -1096,6 +1097,80 @@
       </div>
     </div>
 
+    <!-- ── YouTube tab ──────────────────────────────────────── -->
+    <div id="tab-youtube" class="tab-panel">
+      <div class="import-section" style="margin-bottom:24px">
+        <h3>YouTube Asset Creation</h3>
+        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:10px">
+          Renders upload-ready videos from owned assets (S3 audio + sleeve + MadStreamer metadata):
+          <strong>art-tracks</strong> (1920×1080, full track) and <strong>Shorts</strong> (1080×1920, 30&nbsp;s —
+          also usable for Instagram Reels / TikTok). Each video gets a <code>.txt</code> sidecar with the
+          title, description and tags to paste into YouTube Studio. Desktop-only (needs macOS + ffmpeg).
+        </p>
+        <div id="ytSupportWarn" style="display:none;font-size:0.82rem;color:var(--red);margin-bottom:10px"></div>
+
+        <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px">
+          <input id="ytSearch" type="text" placeholder="Search artist / track / album (MadStreamer)…"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();ytDoSearch()}"
+            style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
+          <button class="btn btn-ghost" onclick="ytDoSearch()">Search</button>
+        </div>
+        <div id="ytResultsWrap" class="table-wrap" style="display:none;max-height:340px;overflow-y:auto"></div>
+
+        <div id="ytSelectedBar" style="display:none;margin-top:12px;font-size:0.82rem;color:var(--muted)">
+          <span id="ytSelectedSummary"></span>
+          <button class="btn btn-ghost" style="font-size:0.76rem;margin-left:10px" onclick="ytClearSelection()">Clear selection</button>
+        </div>
+      </div>
+
+      <div class="import-section" style="margin-bottom:24px">
+        <h3>Render</h3>
+        <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px">
+          <div>
+            <label style="font-size:0.78rem;color:var(--muted);display:block;margin-bottom:4px">Art-track excerpt (seconds, 0 = full track)</label>
+            <input id="ytExcerpt" type="number" min="0" value="0" style="width:110px;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 10px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
+          </div>
+          <div>
+            <label style="font-size:0.78rem;color:var(--muted);display:block;margin-bottom:4px">Short starts at (seconds in — skips intros)</label>
+            <input id="ytShortOffset" type="number" min="0" value="30" style="width:110px;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 10px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
+          </div>
+          <div style="flex:1;min-width:260px">
+            <label style="font-size:0.78rem;color:var(--muted);display:block;margin-bottom:4px">Output folder</label>
+            <input id="ytOutDir" type="text" placeholder="~/Downloads/mad-youtube-pilot"
+              style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 10px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
+          </div>
+          <label style="font-size:0.82rem;color:var(--muted);display:flex;align-items:center;gap:6px;padding-bottom:8px">
+            <input id="ytMetaOnly" type="checkbox"> Sidecars only (no re-render)
+          </label>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center">
+          <button class="btn btn-gold" id="ytRenderBtn" onclick="ytRender()">Render selected</button>
+        </div>
+        <pre id="ytRenderStatus" style="margin-top:12px;font-size:0.8rem;white-space:pre-wrap;font-family:ui-monospace,Menlo,monospace;color:var(--muted);max-height:320px;overflow-y:auto"></pre>
+      </div>
+
+      <div class="import-section">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:4px">
+          <h3 style="margin:0">Output folder contents</h3>
+          <button class="btn btn-ghost" style="font-size:0.78rem" onclick="ytLoadOutputs()">↺ Refresh</button>
+        </div>
+        <p style="font-size:0.78rem;color:var(--muted);margin:6px 0 0">
+          Upload the <code>.mp4</code>s at studio.youtube.com; click a sidecar to copy its title/description/tags.
+          New uploads start Unlisted until Content&nbsp;ID whitelisting clears (see handover doc).
+        </p>
+        <div id="ytOutputsWrap" class="table-wrap" style="margin-top:12px">
+          <div style="padding:14px;font-size:0.82rem;color:var(--muted)">Press Refresh to list the output folder.</div>
+        </div>
+        <div id="ytSidecarWrap" style="display:none;margin-top:12px">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+            <strong id="ytSidecarName" style="font-size:0.84rem"></strong>
+            <button class="btn btn-ghost" style="font-size:0.76rem" onclick="ytCopySidecar()">Copy to clipboard</button>
+          </div>
+          <pre id="ytSidecarText" style="font-size:0.8rem;white-space:pre-wrap;font-family:ui-monospace,Menlo,monospace;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:12px;max-height:280px;overflow-y:auto"></pre>
+        </div>
+      </div>
+    </div>
+
   </div>
 </div>
 
@@ -1232,6 +1307,7 @@ function showTab(name) {
   if (name === 'biography') biographyInit()
   if (name === 'playlists') playlistsInit()
   if (name === 'playlistart') playlistArtInit()
+  if (name === 'youtube') youtubeInit()
 }
 
 // ── Podcasts ───────────────────────────────────────────────────────────────
@@ -4403,6 +4479,198 @@ function streamToStatus({ url, btn, btnLabelIdle, statusEl, onDone, onErrorColou
       }
     }
   })
+}
+
+// ── YouTube asset creation ─────────────────────────────────────────────────
+// Selection lives in ytSelected (recordId → row + which formats), so it
+// survives new searches: search for one artist, tick tracks, search another,
+// tick more, then render the whole batch in one go.
+let ytSelected = new Map()
+let ytLastResults = []
+let ytInitDone = false
+let ytDefaultOutDir = ''
+let ytSidecarRaw = ''
+
+async function youtubeInit() {
+  if (ytInitDone) { $('ytSearch').focus(); return }
+  ytInitDone = true
+  try {
+    const res  = await api('/api/youtube/support')
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || 'support check failed')
+    ytDefaultOutDir = data.defaultOutDir || ''
+    if (ytDefaultOutDir && !$('ytOutDir').value) $('ytOutDir').placeholder = ytDefaultOutDir
+    if (!data.ok) {
+      const w = $('ytSupportWarn')
+      w.style.display = 'block'
+      w.textContent = '⚠ Rendering unavailable on this machine: ' + (data.problems || []).join(' ')
+    }
+  } catch (err) {
+    showToast('YouTube support check failed: ' + err.message, 'error')
+  }
+  $('ytSearch').focus()
+}
+
+async function ytDoSearch() {
+  const q = $('ytSearch').value.trim()
+  if (q.length < 2) { showToast('Type at least 2 characters', 'error'); return }
+  const wrap = $('ytResultsWrap')
+  wrap.style.display = 'block'
+  wrap.innerHTML = '<div style="padding:14px;font-size:0.82rem;color:var(--muted)">⟳ Searching MadStreamer…</div>'
+  try {
+    const res  = await api('/api/youtube/search?q=' + encodeURIComponent(q))
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    ytLastResults = data.tracks || []
+    ytRenderResults()
+  } catch (err) {
+    wrap.innerHTML = `<div style="padding:14px;font-size:0.82rem;color:var(--red)">✗ ${esc(err.message)}</div>`
+  }
+}
+
+function ytRenderResults() {
+  const wrap = $('ytResultsWrap')
+  if (!ytLastResults.length) {
+    wrap.innerHTML = '<div style="padding:14px;font-size:0.82rem;color:var(--muted)">No matches.</div>'
+    return
+  }
+  const rows = ytLastResults.map(t => {
+    const sel = ytSelected.get(t.recordId) || {}
+    const eligible = t.hasAudio && t.hasArt
+    const why = !t.hasAudio ? 'no audio' : !t.hasArt ? 'no artwork' : ''
+    return `<tr${eligible ? '' : ' style="opacity:0.45"'}>
+      <td style="text-align:center"><input type="checkbox" ${sel.art ? 'checked' : ''} ${eligible ? '' : 'disabled'}
+        onchange="ytToggle('${esc(t.recordId)}','art',this.checked)"></td>
+      <td style="text-align:center"><input type="checkbox" ${sel.short ? 'checked' : ''} ${eligible ? '' : 'disabled'}
+        onchange="ytToggle('${esc(t.recordId)}','short',this.checked)"></td>
+      <td>${esc(t.artist || '—')}</td>
+      <td>${esc(t.title || '—')}</td>
+      <td>${esc(t.album || '—')}</td>
+      <td>${esc(t.year || '—')}</td>
+      <td>${esc(t.genre || '—')}</td>
+      <td style="font-size:0.76rem;color:${eligible ? 'var(--green)' : 'var(--red)'}">${eligible ? 'ready' : esc(why)}</td>
+    </tr>`
+  }).join('')
+  wrap.innerHTML = `<table>
+    <thead><tr>
+      <th title="1920×1080 full-length art-track">Art-track</th>
+      <th title="1080×1920 30-second Short">Short</th>
+      <th>Artist</th><th>Title</th><th>Album</th><th>Year</th><th>Genre</th><th></th>
+    </tr></thead>
+    <tbody>${rows}</tbody></table>`
+}
+
+function ytToggle(recordId, kind, on) {
+  const row = ytLastResults.find(t => t.recordId === recordId) || ytSelected.get(recordId)?.row
+  const cur = ytSelected.get(recordId) || { row }
+  cur.row = cur.row || row
+  cur[kind] = on
+  if (!cur.art && !cur.short) ytSelected.delete(recordId)
+  else ytSelected.set(recordId, cur)
+  ytUpdateSelectedBar()
+}
+
+function ytUpdateSelectedBar() {
+  const arts   = [...ytSelected.values()].filter(s => s.art).length
+  const shorts = [...ytSelected.values()].filter(s => s.short).length
+  const bar = $('ytSelectedBar')
+  if (!arts && !shorts) { bar.style.display = 'none'; return }
+  bar.style.display = 'block'
+  const names = [...ytSelected.values()].slice(0, 6)
+    .map(s => `${s.row?.artist || '?'} – ${s.row?.title || '?'}`).join(' · ')
+  $('ytSelectedSummary').textContent =
+    `Selected: ${arts} art-track${arts === 1 ? '' : 's'}, ${shorts} Short${shorts === 1 ? '' : 's'}` +
+    (names ? `  (${names}${ytSelected.size > 6 ? ' …' : ''})` : '')
+}
+
+function ytClearSelection() {
+  ytSelected.clear()
+  ytUpdateSelectedBar()
+  ytRenderResults()
+}
+
+function ytRender() {
+  const tracks = [...ytSelected.entries()].filter(([, s]) => s.art).map(([id]) => id)
+  const shorts = [...ytSelected.entries()].filter(([, s]) => s.short).map(([id]) => id)
+  if (!tracks.length && !shorts.length) { showToast('Nothing selected — tick Art-track and/or Short first', 'error'); return }
+
+  const params = new URLSearchParams({ token: adminToken })
+  if (tracks.length) params.set('tracks', tracks.join(','))
+  if (shorts.length) params.set('shorts', shorts.join(','))
+  const excerpt = parseInt($('ytExcerpt').value, 10) || 0
+  const offset  = parseInt($('ytShortOffset').value, 10)
+  if (excerpt > 0) params.set('excerpt', String(excerpt))
+  if (Number.isFinite(offset)) params.set('short_offset', String(offset))
+  const outDir = $('ytOutDir').value.trim()
+  if (outDir) params.set('out', outDir)
+  if ($('ytMetaOnly').checked) params.set('meta_only', '1')
+
+  streamToStatus({
+    url: '/api/youtube/render-stream?' + params.toString(),
+    btn: $('ytRenderBtn'),
+    btnLabelIdle: 'Render selected',
+    statusEl: $('ytRenderStatus'),
+    onDone: (data) => {
+      setTimeout(ytLoadOutputs, 300)
+      const parts = ['', `✓ ${data.done?.length || 0} track(s) rendered → ${data.outDir}`]
+      if (data.skipped?.length) parts.push(`  skipped (missing audio/art): ${data.skipped.join(', ')}`)
+      if (data.failed?.length)  parts.push(`  ✗ failed: ${data.failed.join(', ')}`)
+      return parts.join('\n')
+    },
+  })
+}
+
+async function ytLoadOutputs() {
+  const wrap = $('ytOutputsWrap')
+  wrap.innerHTML = '<div style="padding:14px;font-size:0.82rem;color:var(--muted)">⟳ Loading…</div>'
+  try {
+    const dir = $('ytOutDir').value.trim()
+    const res  = await api('/api/youtube/outputs' + (dir ? '?dir=' + encodeURIComponent(dir) : ''))
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    if (!data.files.length) {
+      wrap.innerHTML = `<div style="padding:14px;font-size:0.82rem;color:var(--muted)">Nothing rendered yet in ${esc(data.dir)}</div>`
+      return
+    }
+    const fmtSize = b => b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.round(b / 1024) + ' KB'
+    const rows = data.files.map(f => `<tr>
+      <td>${f.name.endsWith('.txt')
+        ? `<a href="#" onclick="ytShowSidecar('${esc(f.name)}');return false" style="color:var(--gold)">${esc(f.name)}</a>`
+        : esc(f.name)}</td>
+      <td>${f.name.endsWith('.mp4') ? (f.name.includes('--short') ? 'Short' : 'Art-track') : 'Sidecar'}</td>
+      <td>${fmtSize(f.size)}</td>
+      <td>${fmtDate(f.mtime)}</td>
+    </tr>`).join('')
+    wrap.innerHTML = `<table>
+      <thead><tr><th>File</th><th>Kind</th><th>Size</th><th>Modified</th></tr></thead>
+      <tbody>${rows}</tbody></table>`
+  } catch (err) {
+    wrap.innerHTML = `<div style="padding:14px;font-size:0.82rem;color:var(--red)">✗ ${esc(err.message)}</div>`
+  }
+}
+
+async function ytShowSidecar(name) {
+  try {
+    const dir = $('ytOutDir').value.trim()
+    const params = new URLSearchParams({ file: name })
+    if (dir) params.set('dir', dir)
+    const res  = await api('/api/youtube/sidecar?' + params.toString())
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    ytSidecarRaw = data.text
+    $('ytSidecarName').textContent = name
+    $('ytSidecarText').textContent = data.text
+    $('ytSidecarWrap').style.display = 'block'
+  } catch (err) {
+    showToast('Sidecar load failed: ' + err.message, 'error')
+  }
+}
+
+function ytCopySidecar() {
+  if (!ytSidecarRaw) return
+  navigator.clipboard.writeText(ytSidecarRaw)
+    .then(() => showToast('Sidecar copied'))
+    .catch(err => showToast('Copy failed: ' + err.message, 'error'))
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────

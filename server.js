@@ -5,6 +5,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import ingestRouter from './routes/ingest.js'
 import podcastsRouter from './routes/podcasts.js'
+import youtubeRouter from './routes/youtube.js'
 import { getValueList } from './lib/fm-gallo.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -75,6 +76,7 @@ app.get('/api/genres', async (req, res) => {
 // API routes
 app.use('/api/ingest', ingestRouter)
 app.use('/api/podcasts', podcastsRouter)
+app.use('/api/youtube', youtubeRouter)
 
 // Health check
 app.get('/health', (req, res) => res.json({ ok: true, service: 'gallo-ingest' }))
