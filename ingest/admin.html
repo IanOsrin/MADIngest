@@ -1105,7 +1105,9 @@
           Renders upload-ready videos from owned assets (S3 audio + sleeve + MadStreamer metadata):
           <strong>art-tracks</strong> (1920×1080, full track) and <strong>Shorts</strong> (1080×1920, 30&nbsp;s —
           also usable for Instagram Reels / TikTok). Each video gets a <code>.txt</code> sidecar with the
-          title, description and tags to paste into YouTube Studio. Desktop-only (needs macOS + ffmpeg).
+          title, description and tags to paste into YouTube Studio. Renders on the desktop Mac (AppKit
+          overlays) or the hosted service (Docker ffmpeg) — hosted output lives on the server, so use
+          the download links below to pull files down.
         </p>
         <div id="ytSupportWarn" style="display:none;font-size:0.82rem;color:var(--red);margin-bottom:10px"></div>
 
@@ -1145,6 +1147,8 @@
         </div>
         <div style="display:flex;gap:10px;align-items:center">
           <button class="btn btn-gold" id="ytRenderBtn" onclick="ytRender()">Render selected</button>
+          <button class="btn btn-ghost" style="font-size:0.78rem" onclick="ytCheckStatus()"
+            title="If the live log disconnects during a long render, the render continues on the server — this fetches its latest progress.">Check server status</button>
         </div>
         <pre id="ytRenderStatus" style="margin-top:12px;font-size:0.8rem;white-space:pre-wrap;font-family:ui-monospace,Menlo,monospace;color:var(--muted);max-height:320px;overflow-y:auto"></pre>
       </div>
@@ -1152,7 +1156,11 @@
       <div class="import-section">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:4px">
           <h3 style="margin:0">Output folder contents</h3>
-          <button class="btn btn-ghost" style="font-size:0.78rem" onclick="ytLoadOutputs()">↺ Refresh</button>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-ghost" style="font-size:0.78rem" onclick="ytLoadOutputs()">↺ Refresh</button>
+            <button class="btn btn-ghost" style="font-size:0.78rem;color:var(--red)" onclick="ytClearOutputs()"
+              title="Deletes rendered videos, sidecars and cached audio/artwork from the output folder. Safe once uploaded — YouTube keeps the copy and everything can be re-rendered.">🗑 Clear folder</button>
+          </div>
         </div>
         <p style="font-size:0.78rem;color:var(--muted);margin:6px 0 0">
           Upload the <code>.mp4</code>s at studio.youtube.com; click a sidecar to copy its title/description/tags.
@@ -4633,10 +4641,16 @@ async function ytLoadOutputs() {
       return
     }
     const fmtSize = b => b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.round(b / 1024) + ' KB'
+    const dlHref = name => {
+      const p = new URLSearchParams({ file: name, token: adminToken })
+      const d = $('ytOutDir').value.trim()
+      if (d) p.set('dir', d)
+      return '/api/youtube/download?' + p.toString()
+    }
     const rows = data.files.map(f => `<tr>
       <td>${f.name.endsWith('.txt')
         ? `<a href="#" onclick="ytShowSidecar('${esc(f.name)}');return false" style="color:var(--gold)">${esc(f.name)}</a>`
-        : esc(f.name)}</td>
+        : `<a href="${esc(dlHref(f.name))}" download style="color:var(--gold)">${esc(f.name)}</a>`}</td>
       <td>${f.name.endsWith('.mp4') ? (f.name.includes('--short') ? 'Short' : 'Art-track') : 'Sidecar'}</td>
       <td>${fmtSize(f.size)}</td>
       <td>${fmtDate(f.mtime)}</td>
@@ -4646,6 +4660,21 @@ async function ytLoadOutputs() {
       <tbody>${rows}</tbody></table>`
   } catch (err) {
     wrap.innerHTML = `<div style="padding:14px;font-size:0.82rem;color:var(--red)">✗ ${esc(err.message)}</div>`
+  }
+}
+
+async function ytClearOutputs() {
+  const dir = $('ytOutDir').value.trim()
+  if (!confirm(`Delete all rendered videos, sidecars and cached audio/artwork from ${dir || 'the output folder'}?\n\nUploaded videos stay on YouTube, and anything can be re-rendered.`)) return
+  try {
+    const res  = await api('/api/youtube/clear-outputs', 'POST', dir ? { dir } : {})
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    showToast(`Deleted ${data.deleted} file(s) from ${data.dir}`)
+    $('ytSidecarWrap').style.display = 'none'
+    ytLoadOutputs()
+  } catch (err) {
+    showToast('Clear failed: ' + err.message, 'error')
   }
 }
 
@@ -4663,6 +4692,27 @@ async function ytShowSidecar(name) {
     $('ytSidecarWrap').style.display = 'block'
   } catch (err) {
     showToast('Sidecar load failed: ' + err.message, 'error')
+  }
+}
+
+async function ytCheckStatus() {
+  const statusEl = $('ytRenderStatus')
+  try {
+    const res  = await api('/api/youtube/status')
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    if (!data.startedAt) { statusEl.textContent = 'No render has run since the server started.'; return }
+    const parts = [
+      data.running ? `⟳ Render in progress (started ${fmtDate(data.startedAt)})` : `Last render (started ${fmtDate(data.startedAt)})`,
+      ...data.lines.map(l => '  ' + l),
+    ]
+    if (data.error) parts.push('✗ ' + data.error)
+    else if (data.result) parts.push(`✓ ${data.result.done?.length || 0} rendered → ${data.result.outDir}`)
+    statusEl.textContent = parts.join('\n')
+    statusEl.style.color = data.error ? 'var(--red)' : 'var(--muted)'
+    if (!data.running && data.result) ytLoadOutputs()
+  } catch (err) {
+    showToast('Status check failed: ' + err.message, 'error')
   }
 }
 

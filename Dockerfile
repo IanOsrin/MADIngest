@@ -12,11 +12,13 @@ COPY . .
 RUN node scripts/convert-metadata.js Gallo_Metadata_Extract.xlsx data/metadata.json \
   && rm Gallo_Metadata_Extract.xlsx
 
-# Stage 2: runtime image with ffmpeg (lib/audio-convert.js shells out to it)
+# Stage 2: runtime image with ffmpeg (lib/audio-convert.js shells out to it;
+# lib/youtube-video.js also needs its drawtext filter + Liberation fonts for
+# video text overlays — Debian ffmpeg has drawtext, unlike Homebrew's)
 FROM node:22-slim
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ffmpeg \
+  && apt-get install -y --no-install-recommends ffmpeg fonts-liberation \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

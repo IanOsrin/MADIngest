@@ -11,6 +11,10 @@ services:
         value: production
       - key: UPLOAD_TMP_DIR
         value: /tmp/gallo-uploads
+      # YouTube tab: faster x264 preset — the starter instance is CPU/RAM-tight
+      # for full-length 1080p art-track encodes (drop when the plan is upgraded)
+      - key: YT_X264_PRESET
+        value: veryfast
       - key: INGEST_ADMIN_SECRET
         sync: false
       # FileMaker — Gallo Catalogue
