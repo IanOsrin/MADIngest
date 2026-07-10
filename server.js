@@ -12,6 +12,15 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app  = express()
 const PORT = process.env.PORT || 3001
 
+// The YouTube tab renders 1080p art-tracks with ffmpeg — encodes whose peak
+// RAM exceeds the 512MB hosted (starter) plan and OOM-killed the instance.
+// It's a single-operator desktop tool, so it runs on LOCAL GalloIngest only:
+// hosted sets NODE_ENV=production (render.yaml) → off. Set YOUTUBE_ENABLED=true
+// to force it on, e.g. if the hosted plan is ever bumped past 512MB.
+const YOUTUBE_ENABLED =
+  process.env.YOUTUBE_ENABLED === 'true' ||
+  (process.env.YOUTUBE_ENABLED !== 'false' && process.env.NODE_ENV !== 'production')
+
 app.use(cors())
 app.use(express.json())
 
@@ -76,10 +85,10 @@ app.get('/api/genres', async (req, res) => {
 // API routes
 app.use('/api/ingest', ingestRouter)
 app.use('/api/podcasts', podcastsRouter)
-app.use('/api/youtube', youtubeRouter)
+if (YOUTUBE_ENABLED) app.use('/api/youtube', youtubeRouter)   // local-only — see YOUTUBE_ENABLED above
 
-// Health check
-app.get('/health', (req, res) => res.json({ ok: true, service: 'gallo-ingest' }))
+// Health check — youtubeEnabled lets the admin UI hide the tab on hosted
+app.get('/health', (req, res) => res.json({ ok: true, service: 'gallo-ingest', youtubeEnabled: YOUTUBE_ENABLED }))
 
 // Root + shorthand redirects
 app.get('/', (req, res) => res.redirect('/ingest/admin'))

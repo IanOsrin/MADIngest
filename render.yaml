@@ -11,10 +11,10 @@ services:
         value: production
       - key: UPLOAD_TMP_DIR
         value: /tmp/gallo-uploads
-      # YouTube tab: faster x264 preset — the starter instance is CPU/RAM-tight
-      # for full-length 1080p art-track encodes (drop when the plan is upgraded)
-      - key: YT_X264_PRESET
-        value: veryfast
+      # The YouTube video tab is disabled here: 1080p ffmpeg encodes OOM the
+      # 512MB starter plan. It runs on LOCAL GalloIngest only (server gates it
+      # on NODE_ENV!==production). To re-enable hosted, upgrade the plan and
+      # set YOUTUBE_ENABLED=true.
       - key: INGEST_ADMIN_SECRET
         sync: false
       # FileMaker — Gallo Catalogue
