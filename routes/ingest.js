@@ -3293,11 +3293,23 @@ async function _runPullCatalogueToGallo({ catalogue_no, fields, layout, log, war
                        gallo_record_id: galloMatch.fm_record_id,
                        fields_written: Object.keys(writePayload) })
       } else {
-        const created = await createGalloRecord(_galloMetadataFromCms(c, catalogue_no))
-        succeeded++
-        log(`  ✓ ${label}: created Gallo rec ${created.fmRecordId}`)
-        results.push({ ok: true, isrc: c.isrc, sequence_no: c.sequence_no, action: 'created',
-                       gallo_record_id: created.fmRecordId })
+        // Not under this catalogue — but the SAME recording may live in Gallo
+        // under a different catalogue number (re-issues: CMS "ASF 1631" vs
+        // Gallo "ABC 1685-6"). Creating would trip Gallo's unique-ISRC
+        // validation with a cryptic 504 — check by ISRC first and say so.
+        const elsewhere = c.isrc ? await getGalloTrack({ isrc: c.isrc }).catch(() => null) : null
+        if (elsewhere) {
+          succeeded++
+          log(`  ↷ ${label}: already in Gallo as rec ${elsewhere.fm_record_id} under catalogue "${elsewhere.catalogue_no || '?'}" — skipped, not re-created`)
+          results.push({ ok: true, isrc: c.isrc, sequence_no: c.sequence_no, action: 'exists-other-catalogue',
+                         gallo_record_id: elsewhere.fm_record_id, gallo_catalogue_no: elsewhere.catalogue_no || null })
+        } else {
+          const created = await createGalloRecord(_galloMetadataFromCms(c, catalogue_no))
+          succeeded++
+          log(`  ✓ ${label}: created Gallo rec ${created.fmRecordId}`)
+          results.push({ ok: true, isrc: c.isrc, sequence_no: c.sequence_no, action: 'created',
+                         gallo_record_id: created.fmRecordId })
+        }
       }
     } catch (err) {
       failed++
@@ -3307,7 +3319,10 @@ async function _runPullCatalogueToGallo({ catalogue_no, fields, layout, log, war
   }
 
   let tape = null
-  if (galloExisting.length === 0 && cmsTracks.length) {
+  // Only create an album (Tape) record when this run actually created tracks —
+  // an album that fully exists under another catalogue must not get a shell.
+  const anyCreated = results.some(r => r.action === 'created')
+  if (galloExisting.length === 0 && cmsTracks.length && anyCreated) {
     try {
       tape = await createTapeFileRecord(_galloTapeMetadataFromCms(cmsTracks[0], catalogue_no))
       log(`  ✓ Gallo Tape Files Master record created (album was new)`)
@@ -3479,6 +3494,16 @@ async function _runEnsureReplicated({ catalogue_no, replicate_to, force = false,
       for (const c of cmsTracks) {
         const label = `seq ${c.sequence_no ?? '?'} "${c.title || '(no title)'}"`
         try {
+          // Same recording may exist under a different catalogue (re-issues) —
+          // creating would trip unique-ISRC validation. Check by ISRC first.
+          const elsewhere = c.isrc ? await getGalloTrack({ isrc: c.isrc }).catch(() => null) : null
+          if (elsewhere) {
+            succeeded++
+            log(`  ↷ Gallo ${label}: already exists as rec ${elsewhere.fm_record_id} under catalogue "${elsewhere.catalogue_no || '?'}" — skipped`)
+            trackResults.push({ ok: true, isrc: c.isrc, sequence_no: c.sequence_no, action: 'exists-other-catalogue',
+                                gallo_record_id: elsewhere.fm_record_id, gallo_catalogue_no: elsewhere.catalogue_no || null })
+            continue
+          }
           const created = await createGalloRecord(_galloMetadataFromCms(c, catalogue_no))
           succeeded++
           log(`  ✓ Gallo ${label} → rec ${created.fmRecordId}`)
@@ -3490,12 +3515,16 @@ async function _runEnsureReplicated({ catalogue_no, replicate_to, force = false,
         }
       }
       let tape = null
-      try {
-        tape = await createTapeFileRecord(_galloTapeMetadataFromCms(first, catalogue_no))
-        log(`  ✓ Gallo Tape Files Master record created`)
-      } catch (err) {
-        warn(`Gallo Tape Files create failed: ${err.message}`)
-        tape = { error: err.message }
+      if (trackResults.some(r => r.action === 'created')) {
+        try {
+          tape = await createTapeFileRecord(_galloTapeMetadataFromCms(first, catalogue_no))
+          log(`  ✓ Gallo Tape Files Master record created`)
+        } catch (err) {
+          warn(`Gallo Tape Files create failed: ${err.message}`)
+          tape = { error: err.message }
+        }
+      } else {
+        log(`  ↷ Gallo Tape Files record NOT created — no new tracks (album exists under another catalogue)`)
       }
       result.gallo = { action: 'replicated', total: cmsTracks.length, succeeded, failed, tape, results: trackResults }
     }
