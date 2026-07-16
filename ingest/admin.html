@@ -636,14 +636,17 @@
       </div>
 
       <div class="import-section">
-        <h3>Cache Viewer</h3>
+        <h3>Cache Viewer &amp; Editor</h3>
         <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
-          Browse the embedded metadata extract like a spreadsheet — click a column header to sort,
-          filter per column, or search across everything. View only.
+          Browse the metadata extract like a spreadsheet — click a column header to sort, filter
+          per column, or search across everything. <strong>Double-click a cell to edit it</strong>
+          (Enter saves, Esc cancels), ✕ deletes a row. Edits persist to the shared S3 copy, so
+          they survive deploys and both local and hosted GalloIngest see the same catalogue.
         </p>
 
         <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
           <button class="btn btn-ghost" id="xvLoadBtn" onclick="xvLoadCache()">Open Cache Viewer</button>
+          <button class="btn btn-ghost" id="xvDownloadBtn" onclick="xvDownloadXlsx()" style="display:none">⬇ Download xlsx</button>
           <span id="xvFileLabel" style="font-size:0.82rem;color:var(--muted)"></span>
         </div>
 
@@ -2902,12 +2905,23 @@ const XV_COLS = [
   ['producer', 'Producers'], ['publisher', 'Publishers'], ['parental', 'Parental'],
   ['rights_territories', 'Territories'], ['featured_artist', 'Featured'],
 ]
-let _xvSheet   = null   // { headers:[], rows:[[]] }
+let _xvRaw     = []     // raw cache rows (server order — index = server row id)
+let _xvCols    = null   // internal key → canonical xlsx header (from the server)
+let _xvSheet   = null   // { headers:[], rows:[{ i, c:[] }] }
 let _xvSortCol = -1
 let _xvSortDir = 1
 let _xvGlobal  = ''
 let _xvFilters = {}     // colIdx → lowercase needle
 let _xvShown   = XV_PAGE
+
+// Rebuild the grid rows from _xvRaw (after load, or after a delete shifts
+// server indexes). Keeps filter/sort state; only the row set changes.
+function xvRebuildSheet() {
+  _xvSheet = {
+    headers: XV_COLS.map(([, label]) => label),
+    rows:    _xvRaw.map((r, i) => ({ i, c: XV_COLS.map(([key]) => r[key] == null ? '' : String(r[key])) })),
+  }
+}
 
 async function xvLoadCache() {
   const btn = $('xvLoadBtn')
@@ -2916,14 +2930,15 @@ async function xvLoadCache() {
     const res  = await api('/api/ingest/metadata/rows')
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || 'Cache load failed')
-    _xvSheet = {
-      headers: XV_COLS.map(([, label]) => label),
-      rows:    (data.rows || []).map(r => XV_COLS.map(([key]) => r[key] == null ? '' : String(r[key]))),
-    }
+    _xvRaw  = data.rows || []
+    _xvCols = data.columns || null
+    xvRebuildSheet()
     _xvSortCol = -1; _xvSortDir = 1; _xvGlobal = ''; _xvFilters = {}; _xvShown = XV_PAGE
     $('xvGlobal').value = ''
-    $('xvFileLabel').textContent = `${data.count.toLocaleString()} rows · loaded ${data.loadedAt ? fmtDate(data.loadedAt) : '—'}`
+    $('xvFileLabel').textContent =
+      `${data.count.toLocaleString()} rows · ${data.source === 's3' ? 'S3 store' : data.source || ''} · loaded ${data.loadedAt ? fmtDate(data.loadedAt) : '—'}`
     $('xvToolbar').style.display = 'flex'
+    $('xvDownloadBtn').style.display = ''
     btn.textContent = '↺ Reload'
     xvBuildTable()
   } catch (err) {
@@ -2939,9 +2954,9 @@ async function xvLoadCache() {
 function xvBuildTable() {
   const sheet = _xvSheet
   $('xvWrap').innerHTML = `<table style="font-size:0.78rem"><thead>
-    <tr>${sheet.headers.map((h, i) =>
+    <tr><th style="position:sticky;top:0;z-index:2;width:26px"></th>${sheet.headers.map((h, i) =>
       `<th id="xvTh${i}" style="position:sticky;top:0;z-index:2" onclick="xvSortBy(${i})">${esc(h)}</th>`).join('')}</tr>
-    <tr>${sheet.headers.map((_, i) =>
+    <tr><th class="xv-filter-th" style="position:sticky;z-index:2;background:var(--bg-lift);padding:4px 8px"></th>${sheet.headers.map((_, i) =>
       `<th class="xv-filter-th" style="position:sticky;z-index:2;background:var(--bg-lift);padding:4px 8px">
         <input type="text" class="xv-filter" data-col="${i}" placeholder="filter…" oninput="xvFilterChanged(${i}, this.value)"
           style="width:100%;min-width:70px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:3px 7px;font-size:0.74rem;color:var(--text);font-family:inherit;outline:none">
@@ -2959,8 +2974,8 @@ function xvFilteredRows() {
   const global = _xvGlobal.toLowerCase()
   const cols   = Object.entries(_xvFilters).filter(([, v]) => v)
   let rows = sheet.rows.filter(r =>
-    (!global || r.some(c => c.toLowerCase().includes(global))) &&
-    cols.every(([i, v]) => (r[i] || '').toLowerCase().includes(v))
+    (!global || r.c.some(c => c.toLowerCase().includes(global))) &&
+    cols.every(([i, v]) => (r.c[i] || '').toLowerCase().includes(v))
   )
   if (_xvSortCol >= 0) {
     const idx = _xvSortCol, dir = _xvSortDir
@@ -2969,7 +2984,7 @@ function xvFilteredRows() {
       return isNaN(n) || !/^[\s,.%\d+-]+$/.test(s) ? null : n
     }
     rows = [...rows].sort((a, b) => {
-      const av = a[idx] || '', bv = b[idx] || ''
+      const av = a.c[idx] || '', bv = b.c[idx] || ''
       if (!av && !bv) return 0
       if (!av) return 1
       if (!bv) return -1
@@ -2986,13 +3001,105 @@ function xvRenderBody() {
   const rows  = xvFilteredRows()
   const slice = rows.slice(0, _xvShown)
   $('xvBody').innerHTML = slice.map(r =>
-    `<tr>${r.map(c =>
-      `<td style="white-space:nowrap;max-width:340px;overflow:hidden;text-overflow:ellipsis" title="${esc(c)}">${esc(c)}</td>`
+    `<tr><td style="padding:4px 6px"><button class="btn btn-ghost" title="Delete this row"
+        style="padding:0 6px;font-size:0.72rem;color:var(--red);border-color:rgba(217,83,79,0.3)"
+        onclick="xvDeleteRow(${r.i})">✕</button></td>${r.c.map((c, col) =>
+      `<td style="white-space:nowrap;max-width:340px;overflow:hidden;text-overflow:ellipsis;cursor:cell"
+         data-i="${r.i}" data-col="${col}" ondblclick="xvEditCell(this)" title="${esc(c)}">${esc(c)}</td>`
     ).join('')}</tr>`
-  ).join('') || `<tr><td colspan="${sheet.headers.length}" style="padding:16px;color:var(--muted);text-align:center">No rows match the filters.</td></tr>`
+  ).join('') || `<tr><td colspan="${sheet.headers.length + 1}" style="padding:16px;color:var(--muted);text-align:center">No rows match the filters.</td></tr>`
   const filtered = rows.length !== sheet.rows.length ? ` (filtered from ${sheet.rows.length})` : ''
   $('xvCount').textContent = `showing ${slice.length} of ${rows.length} row(s)${filtered}`
   $('xvMoreBar').style.display = rows.length > _xvShown ? 'block' : 'none'
+}
+
+// Expect-snapshot: a few identity fields as this grid last saw them — the
+// server refuses the write if the row changed underneath the viewer.
+function xvExpect(i) {
+  const r = _xvRaw[i] || {}
+  return { isrc: r.isrc ?? '', track_name: r.track_name ?? '', catalogue: r.catalogue ?? '' }
+}
+
+function xvEditCell(td) {
+  if (td.querySelector('input')) return
+  const i    = Number(td.dataset.i)
+  const col  = Number(td.dataset.col)
+  const key  = XV_COLS[col][0]
+  const orig = _xvRaw[i]?.[key] == null ? '' : String(_xvRaw[i][key])
+  td.textContent = ''
+  const input = document.createElement('input')
+  input.type  = 'text'
+  input.value = orig
+  input.style.cssText = 'width:100%;min-width:90px;background:var(--bg);border:1px solid var(--gold);border-radius:3px;padding:2px 6px;font:inherit;color:var(--text);outline:none'
+  const restore = () => { td.textContent = orig; td.title = orig }
+  input.onkeydown = async (e) => {
+    if (e.key === 'Escape') { restore(); return }
+    if (e.key !== 'Enter') return
+    e.preventDefault()
+    const val = input.value.trim()
+    if (val === orig.trim()) { restore(); return }
+    input.disabled = true
+    try {
+      const res  = await api('/api/ingest/metadata/row', 'PATCH',
+        { index: i, expect: xvExpect(i), patch: { [key]: val } })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+      _xvRaw[i][key] = val === '' ? null : val
+      const row = _xvSheet.rows.find(r => r.i === i)
+      if (row) row.c[col] = val
+      td.textContent = val
+      td.title = val
+      showToast('Saved')
+    } catch (err) {
+      showToast(err.message, 'error')
+      restore()
+    }
+  }
+  input.onblur = () => { if (!input.disabled) restore() }
+  td.appendChild(input)
+  input.focus()
+  input.select()
+}
+
+async function xvDeleteRow(i) {
+  const r = _xvRaw[i]
+  if (!r) return
+  if (!confirm(`Delete this row from the cache?\n\n${r.track_artist || r.album_artist || '?'} — ${r.track_name || '?'} (${r.catalogue || 'no cat'})`)) return
+  try {
+    const res  = await api('/api/ingest/metadata/row', 'DELETE', { index: i, expect: xvExpect(i) })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    _xvRaw.splice(i, 1)
+    xvRebuildSheet()      // server indexes shifted — rebuild the grid's mapping
+    xvRenderBody()
+    $('xvFileLabel').textContent = `${data.count.toLocaleString()} rows · S3 store · edited just now`
+    showToast('Row deleted')
+  } catch (err) {
+    showToast(err.message, 'error')
+  }
+}
+
+async function xvDownloadXlsx() {
+  if (!_xvRaw.length || !_xvCols) return
+  const btn = $('xvDownloadBtn')
+  btn.disabled = true; btn.textContent = '⟳ Building…'
+  try {
+    const wb = new ExcelJS.Workbook()
+    const ws = wb.addWorksheet('Metadata')
+    const keys = Object.keys(_xvCols)
+    ws.addRow(keys.map(k => _xvCols[k]))
+    for (const r of _xvRaw) ws.addRow(keys.map(k => r[k] ?? null))
+    const buf  = await wb.xlsx.writeBuffer()
+    const url  = URL.createObjectURL(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }))
+    const a    = document.createElement('a')
+    a.href = url; a.download = 'Gallo_Metadata_Extract.xlsx'
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (err) {
+    showToast('xlsx build failed: ' + err.message, 'error')
+  } finally {
+    btn.disabled = false; btn.textContent = '⬇ Download xlsx'
+  }
 }
 
 function xvSortBy(i) {

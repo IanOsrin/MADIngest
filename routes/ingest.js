@@ -42,7 +42,7 @@ import { languageNameToCode } from '../lib/language-codes.js'
 import { generateDDEX382 } from '../lib/ddex-generate.js'
 import { buildDdexPackage } from '../lib/ddex-build.js'
 import AdmZip from 'adm-zip'
-import { loadMetadata, lookupByIsrc, lookupByCatalogue, lookupAlbumTracks, lookupByFilename, lookupByBarcodeAndSeq, lookupCataloguesByBarcode, searchMetadata, getStatus, getAllRows, appendRow as appendMetadataRow, mergeFromBuffer as mergeMetadataFromBuffer, extractHeaders as extractMetadataHeaders, mergeWithMapping as mergeMetadataWithMapping } from '../lib/metadata-cache.js'
+import { loadMetadata, lookupByIsrc, lookupByCatalogue, lookupAlbumTracks, lookupByFilename, lookupByBarcodeAndSeq, lookupCataloguesByBarcode, searchMetadata, getStatus, getAllRows, appendRow as appendMetadataRow, mergeFromBuffer as mergeMetadataFromBuffer, extractHeaders as extractMetadataHeaders, mergeWithMapping as mergeMetadataWithMapping, updateRow as updateMetadataRow, deleteRow as deleteMetadataRow, CACHE_COLUMNS } from '../lib/metadata-cache.js'
 
 // Load metadata on startup (non-blocking — portal works even if file is missing)
 loadMetadata()
@@ -1356,7 +1356,36 @@ router.get('/metadata/rows', adminAuth, async (req, res) => {
     for (const [k, v] of Object.entries(r)) if (v != null && v !== '') slim[k] = v
     return slim
   })
-  res.json({ ok: true, count: rows.length, loadedAt: status.loadedAt, rows })
+  res.json({ ok: true, count: rows.length, loadedAt: status.loadedAt, source: status.source, rows, columns: CACHE_COLUMNS })
+})
+
+// Edit / delete one cache row (Cache Viewer). Body carries the row's index in
+// the /metadata/rows array plus an `expect` snapshot of a few fields as the
+// grid saw them — the cache refuses the write if the row changed underneath.
+// Persists to the durable store (S3 when configured).
+router.patch('/metadata/row', adminAuth, express.json(), async (req, res) => {
+  const { index, patch, expect } = req.body || {}
+  if (!Number.isInteger(index) || index < 0) return res.status(400).json({ error: 'index required' })
+  if (!patch || !Object.keys(patch).length)  return res.status(400).json({ error: 'patch required' })
+  try {
+    const result = await updateMetadataRow(index, patch, expect)
+    console.log(`[Metadata] Row ${index} edited: ${Object.keys(patch).join(', ')}`)
+    res.json(result)
+  } catch (err) {
+    res.status(409).json({ error: err.message })
+  }
+})
+
+router.delete('/metadata/row', adminAuth, express.json(), async (req, res) => {
+  const { index, expect } = req.body || {}
+  if (!Number.isInteger(index) || index < 0) return res.status(400).json({ error: 'index required' })
+  try {
+    const result = await deleteMetadataRow(index, expect)
+    console.log(`[Metadata] Row ${index} deleted (${result.count} remain)`)
+    res.json(result)
+  } catch (err) {
+    res.status(409).json({ error: err.message })
+  }
 })
 
 // ── Filename-based metadata lookup ───────────────────────────────────────────
