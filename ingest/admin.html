@@ -640,13 +640,19 @@
         <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
           Browse the metadata extract like a spreadsheet — click a column header to sort, filter
           per column, or search across everything. <strong>Double-click a cell to edit it</strong>
-          (Enter saves, Esc cancels), ✕ deletes a row. Edits persist to the shared S3 copy, so
+          (Enter saves, Esc cancels), ✕ deletes a row. For bulk corrections:
+          <strong>⬇ Download xlsx → edit in Excel → ⬆ Replace from xlsx</strong> (a timestamped
+          S3 backup is written before every replace). Edits persist to the shared S3 copy, so
           they survive deploys and both local and hosted GalloIngest see the same catalogue.
         </p>
 
         <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
           <button class="btn btn-ghost" id="xvLoadBtn" onclick="xvLoadCache()">Open Cache Viewer</button>
           <button class="btn btn-ghost" id="xvDownloadBtn" onclick="xvDownloadXlsx()" style="display:none">⬇ Download xlsx</button>
+          <label class="btn btn-ghost" id="xvReplaceBtn" style="display:none;cursor:pointer;color:var(--amber);border-color:rgba(240,168,50,0.35)">
+            ⬆ Replace from xlsx…
+            <input type="file" id="xvReplaceFile" accept=".xlsx,.csv" style="display:none" onchange="xvReplaceChosen(this.files[0])">
+          </label>
           <span id="xvFileLabel" style="font-size:0.82rem;color:var(--muted)"></span>
         </div>
 
@@ -2939,6 +2945,7 @@ async function xvLoadCache() {
       `${data.count.toLocaleString()} rows · ${data.source === 's3' ? 'S3 store' : data.source || ''} · loaded ${data.loadedAt ? fmtDate(data.loadedAt) : '—'}`
     $('xvToolbar').style.display = 'flex'
     $('xvDownloadBtn').style.display = ''
+    $('xvReplaceBtn').style.display = ''
     btn.textContent = '↺ Reload'
     xvBuildTable()
   } catch (err) {
@@ -3076,6 +3083,56 @@ async function xvDeleteRow(i) {
     showToast('Row deleted')
   } catch (err) {
     showToast(err.message, 'error')
+  }
+}
+
+// Replace the ENTIRE cache from an edited xlsx (the Download → Excel →
+// Replace round trip). Counts the file's rows client-side first so the
+// confirm shows real numbers, and shouts when the new file is much smaller.
+async function xvReplaceChosen(file) {
+  if (!file) return
+  $('xvReplaceFile').value = ''
+  let newCount = null
+  try {
+    if (/\.xlsx$/i.test(file.name)) {
+      const wb = new ExcelJS.Workbook()
+      await wb.xlsx.load(await file.arrayBuffer())
+      newCount = Math.max(...wb.worksheets.map(ws => Math.max(0, ws.actualRowCount - 1)), 0)
+    } else {
+      const text = await file.text()
+      newCount = Math.max(0, text.split(/\r?\n/).filter(l => l.trim()).length - 1)
+    }
+  } catch (_) { /* count stays unknown — confirm still shows filename */ }
+
+  const cur = _xvRaw.length
+  let msg = `REPLACE the entire cache with "${file.name}"?\n\nCurrent: ${cur.toLocaleString()} rows → New file: ${newCount != null ? newCount.toLocaleString() + ' rows' : 'row count unknown'}.`
+  if (newCount != null && newCount < cur * 0.8) {
+    msg += `\n\n⚠⚠ The new file has ${ (cur - newCount).toLocaleString() } FEWER rows than the current cache — is that intended?`
+  }
+  msg += `\n\nA timestamped backup of the current data is written to S3 first.`
+  if (!confirm(msg)) return
+
+  const btn = $('xvReplaceBtn')
+  btn.style.pointerEvents = 'none'
+  const origLabel = btn.firstChild.textContent
+  btn.firstChild.textContent = '⟳ Replacing… '
+  try {
+    const fd = new FormData()
+    fd.append('sheet', file)
+    const res  = await fetch('/api/ingest/metadata/replace', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: fd
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    showToast(`Cache replaced: ${data.before.toLocaleString()} → ${data.count.toLocaleString()} rows`)
+    await xvLoadCache()   // reload the grid from the new store
+  } catch (err) {
+    showToast(err.message, 'error')
+  } finally {
+    btn.firstChild.textContent = origLabel
+    btn.style.pointerEvents = ''
   }
 }
 

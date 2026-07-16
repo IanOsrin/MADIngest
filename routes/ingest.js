@@ -42,7 +42,7 @@ import { languageNameToCode } from '../lib/language-codes.js'
 import { generateDDEX382 } from '../lib/ddex-generate.js'
 import { buildDdexPackage } from '../lib/ddex-build.js'
 import AdmZip from 'adm-zip'
-import { loadMetadata, lookupByIsrc, lookupByCatalogue, lookupAlbumTracks, lookupByFilename, lookupByBarcodeAndSeq, lookupCataloguesByBarcode, searchMetadata, getStatus, getAllRows, appendRow as appendMetadataRow, mergeFromBuffer as mergeMetadataFromBuffer, extractHeaders as extractMetadataHeaders, mergeWithMapping as mergeMetadataWithMapping, updateRow as updateMetadataRow, deleteRow as deleteMetadataRow, CACHE_COLUMNS } from '../lib/metadata-cache.js'
+import { loadMetadata, lookupByIsrc, lookupByCatalogue, lookupAlbumTracks, lookupByFilename, lookupByBarcodeAndSeq, lookupCataloguesByBarcode, searchMetadata, getStatus, getAllRows, appendRow as appendMetadataRow, mergeFromBuffer as mergeMetadataFromBuffer, extractHeaders as extractMetadataHeaders, mergeWithMapping as mergeMetadataWithMapping, updateRow as updateMetadataRow, deleteRow as deleteMetadataRow, replaceFromBuffer as replaceMetadataFromBuffer, CACHE_COLUMNS } from '../lib/metadata-cache.js'
 
 // Load metadata on startup (non-blocking — portal works even if file is missing)
 loadMetadata()
@@ -1357,6 +1357,33 @@ router.get('/metadata/rows', adminAuth, async (req, res) => {
     return slim
   })
   res.json({ ok: true, count: rows.length, loadedAt: status.loadedAt, source: status.source, rows, columns: CACHE_COLUMNS })
+})
+
+// Replace the WHOLE cache from an uploaded spreadsheet (bulk-corrections
+// round trip: Download xlsx → edit in Excel → Replace). Own uploader: the
+// full extract can exceed uploadSheet's 50MB cap.
+const uploadBigSheet = multer({
+  storage,
+  limits: { fileSize: 100 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase()
+    if (['.xlsx', '.xls', '.csv'].includes(ext)) cb(null, true)
+    else cb(new Error(`Expected spreadsheet, got: ${file.mimetype}`))
+  }
+})
+
+router.post('/metadata/replace', adminAuth, uploadBigSheet.single('sheet'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'sheet file required' })
+  try {
+    const buf = await readFile(req.file.path)
+    await unlink(req.file.path).catch(() => {})
+    const result = await replaceMetadataFromBuffer(buf)
+    console.log(`[Metadata] Replace via admin: ${result.before} → ${result.count} rows`)
+    res.json(result)
+  } catch (err) {
+    await unlink(req.file?.path).catch(() => {})
+    res.status(400).json({ error: err.message })
+  }
 })
 
 // Edit / delete one cache row (Cache Viewer). Body carries the row's index in
