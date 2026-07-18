@@ -290,6 +290,7 @@
       <button class="tab-btn" data-tab="artwork" onclick="showTab('artwork')">Artwork</button>
       <button class="tab-btn" data-tab="playlists" onclick="showTab('playlists')">Playlists</button>
       <button class="tab-btn" data-tab="playlistart" onclick="showTab('playlistart')">Playlist Art</button>
+      <button class="tab-btn" data-tab="genrefix" onclick="showTab('genrefix')">Genre Fix</button>
       <button class="tab-btn" data-tab="youtube" onclick="showTab('youtube')">YouTube</button>
     </nav>
 
@@ -1102,6 +1103,34 @@
         </div>
         <div id="plArtListWrap" class="table-wrap" style="margin-top:12px">
           <div class="loading-state"><span class="spin">⟳</span> Loading…</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Genre Fix tab ────────────────────────────────────── -->
+    <div id="tab-genrefix" class="tab-panel">
+      <div class="card">
+        <h3>Genre Fix — audition &amp; re-tag by artist</h3>
+        <p class="muted" style="margin:6px 0 14px">
+          Load a Local Genre to review (e.g. <em>Afro Folk</em>). Each row is one artist with one
+          auditionable track. Pick the real genre and Apply — it re-tags <strong>only that artist's
+          tracks in the loaded genre</strong> (their tracks in other genres are untouched).
+        </p>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
+          <input id="gfGenre" list="gfGenreList" placeholder="Local Genre to review…" style="min-width:220px">
+          <datalist id="gfGenreList"></datalist>
+          <button class="btn" onclick="gfLoad()">Load</button>
+          <span id="gfStatus" class="muted"></span>
+        </div>
+        <div class="table-wrap">
+          <table id="gfTable" style="width:100%">
+            <thead><tr>
+              <th style="text-align:left">Artist</th><th>Tracks</th><th>Albums</th>
+              <th style="text-align:left;min-width:260px">Audition (one sample)</th>
+              <th style="text-align:left">New Local Genre</th><th></th><th style="text-align:left">Status</th>
+            </tr></thead>
+            <tbody id="gfBody"></tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -4907,6 +4936,77 @@ function ytCopySidecar() {
 checkAuth()
 loadDdexOutDir()
 loadDdexVolumes()
+</script>
+<script>
+// ── Genre Fix tab ───────────────────────────────────────────────────────────
+let gfArtists = []
+let gfLoadedGenre = ''
+
+async function gfInitGenres() {
+  try {
+    const r = await fetch('/api/genres'); const j = await r.json()
+    const dl = document.getElementById('gfGenreList')
+    dl.innerHTML = (j.genres || []).map(g => `<option value="${g.replace(/"/g,'&quot;')}">`).join('')
+  } catch (e) { /* datalist stays empty; free text still works */ }
+}
+gfInitGenres()
+
+function gfEsc(s){ return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') }
+
+async function gfLoad() {
+  const genre = document.getElementById('gfGenre').value.trim()
+  const status = document.getElementById('gfStatus')
+  const body = document.getElementById('gfBody')
+  if (!genre) { status.textContent = 'Type a genre first.'; return }
+  status.textContent = 'Loading — big genres can take up to a minute…'
+  body.innerHTML = ''
+  try {
+    const r = await fetch(`/api/genre-fix/list?genre=${encodeURIComponent(genre)}`,
+      { headers: { Authorization: `Bearer ${adminToken}` } })
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    gfArtists = j.artists || []
+    gfLoadedGenre = j.genre
+    status.textContent = `${j.totalTracks} tracks across ${gfArtists.length} artists in “${j.genre}”.`
+    body.innerHTML = gfArtists.map((a, i) => `
+      <tr id="gfRow${i}">
+        <td style="text-align:left">${gfEsc(a.artist)}</td>
+        <td style="text-align:center">${a.count}</td>
+        <td style="text-align:center">${a.albumCount}</td>
+        <td style="text-align:left">${a.sample
+          ? `<div class="muted" style="font-size:12px;margin-bottom:3px">${gfEsc(a.sample.title)}${a.sample.year ? ' · ' + gfEsc(a.sample.year) : ''}</div>
+             <audio controls preload="none" style="width:250px;height:30px" src="${gfEsc(a.sample.url)}"></audio>`
+          : '<span class="muted">no audio</span>'}</td>
+        <td style="text-align:left"><input list="gfGenreList" id="gfNew${i}" placeholder="new genre…" style="min-width:170px"></td>
+        <td><button class="btn" onclick="gfApply(${i})">Apply</button></td>
+        <td style="text-align:left" id="gfStat${i}" class="muted"></td>
+      </tr>`).join('')
+  } catch (e) {
+    status.textContent = `Failed: ${e.message}`
+  }
+}
+
+async function gfApply(i) {
+  const a = gfArtists[i]
+  const to = document.getElementById(`gfNew${i}`).value.trim()
+  const stat = document.getElementById(`gfStat${i}`)
+  if (!to) { stat.textContent = 'pick a genre first'; return }
+  if (!confirm(`Re-tag ${a.count} “${gfLoadedGenre}” track(s) by ${a.artist} → “${to}”?`)) return
+  stat.textContent = `applying to ${a.count}…`
+  try {
+    const r = await fetch('/api/genre-fix/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ recordIds: a.recordIds, toGenre: to }),
+    })
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    stat.innerHTML = `<span style="color:var(--gold)">✔ ${j.updated} re-tagged → ${gfEsc(to)}</span>${j.failed?.length ? ` <span style="color:#e66">(${j.failed.length} failed)</span>` : ''}`
+    document.getElementById(`gfRow${i}`).style.opacity = '0.45'
+  } catch (e) {
+    stat.textContent = `failed: ${e.message}`
+  }
+}
 </script>
 </body>
 </html>

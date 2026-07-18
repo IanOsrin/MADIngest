@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url'
 import ingestRouter from './routes/ingest.js'
 import podcastsRouter from './routes/podcasts.js'
 import youtubeRouter from './routes/youtube.js'
+import genreFixRouter from './routes/genre-fix.js'
 import { getValueList } from './lib/fm-gallo.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -71,20 +72,56 @@ const GENRES_FALLBACK = [
   "Traditional","Trance","Trap","TrapSoul","Tsonga Disco","Tsonga Traditional",
   "Twist","Urban","Vocal","Volksmusik","World Music","Zouk"
 ]
+// Southern African genre taxonomy (Ian, 2026-07-18) — always merged into the
+// genre list so these are selectable even before the FM value list carries
+// them. Add new entries here AND to FileMaker's value list when convenient.
+const SOUTHERN_AFRICA_GENRES = [
+  // South Africa
+  'Marabi','Kwela','Mbaqanga','Isicathamiya','Maskandi','Mbube','African Jazz',
+  'Bubblegum','Kwaito','Gqom','Amapiano','Bacardi House','Sgija','3-Step',
+  'Afro Tech','Afro Soul','Cape Jazz','Cape Malay Ghoema','Langarm',
+  'Boeremusiek','Sokkie','Shangaan Electro','Tsonga Disco','Rap Lokal',
+  'Motswako','Zulu Gospel',
+  // Zimbabwe
+  'Chimurenga','Sungura','Jit','Museve','Zimdancehall','Mbira','Tuku Music',
+  // Zambia
+  'Kalindula','Zamrock','Zed Beats',
+  // Mozambique
+  'Marrabenta','Pandza','Timbila',
+  // Angola
+  'Semba','Kizomba','Kuduro','Rebita','Tarraxinha',
+  // Malawi
+  'Kwasa Kwasa','Manganje',
+  // Namibia
+  'Damara Punch','Oviritje','Shambo',
+  // Botswana
+  'Tswana Rap','Botswana House',
+]
+
+function mergeGenres(base) {
+  const seen = new Set(base.map(g => g.trim().toLowerCase()))
+  const merged = [...base]
+  for (const g of SOUTHERN_AFRICA_GENRES) {
+    if (!seen.has(g.trim().toLowerCase())) { merged.push(g); seen.add(g.trim().toLowerCase()) }
+  }
+  return merged.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+}
+
 const FM_GENRE_LIST = process.env.FM_GENRE_VALUE_LIST || 'Local Genre'
 app.get('/api/genres', async (req, res) => {
   try {
     const genres = await getValueList(FM_GENRE_LIST)
-    if (genres.length) return res.json({ genres, source: 'filemaker' })
+    if (genres.length) return res.json({ genres: mergeGenres(genres), source: 'filemaker+curated' })
   } catch (e) {
     console.warn('[Genres] FM value list fetch failed, using fallback:', e.message)
   }
-  res.json({ genres: GENRES_FALLBACK, source: 'fallback' })
+  res.json({ genres: mergeGenres(GENRES_FALLBACK), source: 'fallback+curated' })
 })
 
 // API routes
 app.use('/api/ingest', ingestRouter)
 app.use('/api/podcasts', podcastsRouter)
+app.use('/api/genre-fix', genreFixRouter)
 if (YOUTUBE_ENABLED) app.use('/api/youtube', youtubeRouter)   // local-only — see YOUTUBE_ENABLED above
 
 // Health check — youtubeEnabled lets the admin UI hide the tab on hosted
