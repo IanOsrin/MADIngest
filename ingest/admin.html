@@ -300,13 +300,12 @@
       <div style="display:flex;gap:8px;margin-bottom:16px;align-items:center">
         <input id="catalogSearch" type="text" placeholder="Search artist, title, catalogue number, ISRC…"
           style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none"
-          onkeydown="if(event.key==='Enter')searchCatalog(0)"
+          onkeydown="if(event.key==='Enter')searchAllDbs()"
           oninput="if(this.value==='')clearCatalog()">
-        <button class="btn btn-gold" onclick="searchCatalog(0)">Search FM</button>
-        <button class="btn btn-ghost" onclick="searchAllDbs()" title="Search Gallo Catalogue, CMS 2024, MadStreamer and the Metadata Extract in one go">Search All DBs</button>
+        <button class="btn btn-gold" onclick="searchAllDbs()" title="Searches Gallo Catalogue, CMS 2024, MadStreamer and the Metadata Extract in one go">Search FM</button>
         <span id="catalogCount" style="margin-left:4px;font-size:0.78rem;color:var(--muted)"></span>
       </div>
-      <div id="catalogContent"><div class="empty-state" style="color:var(--muted);padding:40px 0;text-align:center">Enter a search term above to query FileMaker.</div></div>
+      <div id="catalogContent"><div class="empty-state" style="color:var(--muted);padding:40px 0;text-align:center">Enter a search term above — searches Gallo Catalogue, CMS 2024, MadStreamer and the Metadata Extract in one go.</div></div>
     </div>
 
     <!-- ── FM Submit tab ────────────────────────────────────── -->
@@ -2311,7 +2310,7 @@ let _catalogQuery     = ''
 
 function clearCatalog() {
   $('catalogCount').textContent = ''
-  $('catalogContent').innerHTML = '<div class="empty-state" style="color:var(--muted);padding:40px 0;text-align:center">Enter a search term above to query FileMaker.</div>'
+  $('catalogContent').innerHTML = '<div class="empty-state" style="color:var(--muted);padding:40px 0;text-align:center">Enter a search term above — searches Gallo Catalogue, CMS 2024, MadStreamer and the Metadata Extract in one go.</div>'
   _catalogOffset = 0; _catalogFoundCount = 0; _catalogQuery = ''
 }
 
