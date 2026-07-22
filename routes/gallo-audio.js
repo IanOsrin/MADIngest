@@ -35,6 +35,42 @@ router.get('/audio/:recordId/resolve', async (req, res) => {
   }
 })
 
+// A self-contained HTML audio player for a record — this is what a FileMaker
+// web viewer points at (one URL, consistent player across FM versions). The
+// <audio> element streams from /audio/:recordId (Range-aware, so seeking works).
+router.get('/player/:recordId', async (req, res) => {
+  const id = String(req.params.recordId)
+  let title = '', artist = '', note = ''
+  try {
+    const f = await getGalloFieldData(id)
+    if (f) {
+      title = f['Track Name'] || ''
+      artist = f['Track Artist'] || f['Album Artist'] || ''
+      const r = resolveGalloAudio(f)
+      if (!r.ok) note = `No resolvable audio (${r.reason})`
+      else if (r.kind === 'url') note = 'Legacy streaming source'
+    } else { note = 'Record not found' }
+  } catch (e) { note = e.message }
+
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+  res.setHeader('Content-Type', 'text/html; charset=utf-8')
+  res.send(`<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  html,body{margin:0;height:100%;font-family:-apple-system,Segoe UI,sans-serif;background:#f4f6fb;color:#1a1a2e}
+  .box{display:flex;flex-direction:column;justify-content:center;gap:8px;height:100%;padding:14px 18px;box-sizing:border-box}
+  .t{font-weight:600;font-size:15px;line-height:1.2}
+  .a{color:#666;font-size:13px}
+  audio{width:100%;margin-top:4px}
+  .note{color:#b45309;font-size:12px}
+</style></head><body>
+<div class="box">
+  <div class="t">${esc(title) || 'Track ' + esc(id)}</div>
+  ${artist ? `<div class="a">${esc(artist)}</div>` : ''}
+  ${note ? `<div class="note">${esc(note)}</div>` : `<audio controls preload="metadata" src="/api/gallo/audio/${encodeURIComponent(id)}"></audio>`}
+</div></body></html>`)
+})
+
 router.get('/audio/:recordId', async (req, res) => {
   try {
     const f = await getGalloFieldData(req.params.recordId)
