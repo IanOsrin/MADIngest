@@ -293,6 +293,7 @@
       <button class="tab-btn" data-tab="genrefix" onclick="showTab('genrefix')">Genre Fix</button>
       <button class="tab-btn" data-tab="youtube" onclick="showTab('youtube')">YouTube</button>
       <button class="tab-btn" data-tab="download" onclick="showTab('download')">Download</button>
+      <button class="tab-btn" data-tab="vision" onclick="showTab('vision')">Vision</button>
     </nav>
 
     <!-- ── Catalog tab ──────────────────────────────────────── -->
@@ -1161,6 +1162,34 @@
               <th style="text-align:left">Status</th>
             </tr></thead>
             <tbody id="dlBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div id="tab-vision" class="tab-panel">
+      <div class="card">
+        <h3>Vision Drive — browse &amp; download</h3>
+        <p class="muted" style="margin:6px 0 14px" id="viIntro">
+          Read-only view of the Vision server. Click folders to open them; Download streams the
+          file through this service.
+        </p>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
+          <button class="btn btn-ghost" onclick="viUp()" id="viUpBtn" disabled>&#8593; Up</button>
+          <span id="viPath" style="font-family:monospace;font-size:0.82rem">/</span>
+          <button class="btn" onclick="viLoad(viCurrentPath)">Refresh</button>
+          <span id="viStatus" class="muted"></span>
+        </div>
+        <div class="table-wrap">
+          <table id="viTable" style="width:100%">
+            <thead><tr>
+              <th style="text-align:left">Name</th>
+              <th style="text-align:right">Size</th>
+              <th style="text-align:left">Modified</th>
+              <th></th>
+              <th style="text-align:left">Status</th>
+            </tr></thead>
+            <tbody id="viBody"></tbody>
           </table>
         </div>
       </div>
@@ -5100,6 +5129,90 @@ async function dlGet(i) {
   } catch (e) {
     stat.textContent = `failed: ${e.message}`
   }
+}
+
+/* ── Vision drive tab ───────────────────────────────────────── */
+let viCurrentPath = '/'
+let viEntries = []
+let viChecked = false
+
+async function viLoad(p) {
+  const status = document.getElementById('viStatus')
+  const body = document.getElementById('viBody')
+  status.textContent = 'Loading…'
+  try {
+    const r = await fetch(`/api/vision/list?path=${encodeURIComponent(p || '/')}`,
+      { headers: { Authorization: `Bearer ${adminToken}` } })
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    viCurrentPath = j.path || '/'
+    viEntries = j.entries || []
+    document.getElementById('viPath').textContent = viCurrentPath
+    document.getElementById('viUpBtn').disabled = viCurrentPath === '/'
+    status.textContent = `${viEntries.length} item${viEntries.length === 1 ? '' : 's'}`
+    body.innerHTML = viEntries.map((e, i) => `
+      <tr>
+        <td style="text-align:left">${e.type === 'dir'
+          ? `<a href="#" onclick="viOpen(${i});return false" style="color:var(--gold);text-decoration:none">&#128193; ${gfEsc(e.name)}</a>`
+          : `&#127925; ${gfEsc(e.name)}`}</td>
+        <td style="text-align:right;font-family:monospace;font-size:0.78rem">${e.type === 'dir' ? '' : viSize(e.size)}</td>
+        <td style="text-align:left;font-size:0.8rem;color:var(--muted)">${e.modified ? gfEsc(e.modified.slice(0, 16).replace('T', ' ')) : ''}</td>
+        <td>${e.type === 'file' ? `<button class="btn" onclick="viGet(${i})">Download</button>` : ''}</td>
+        <td style="text-align:left" id="viStat${i}" class="muted"></td>
+      </tr>`).join('')
+  } catch (e) {
+    status.textContent = ''
+    body.innerHTML = `<tr><td colspan="5" style="text-align:left;color:var(--red);padding:14px 6px">${gfEsc(e.message)}</td></tr>`
+  }
+}
+
+function viSize(n) {
+  if (n == null) return ''
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + ' GB'
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + ' MB'
+  if (n >= 1e3) return (n / 1e3).toFixed(0) + ' KB'
+  return n + ' B'
+}
+
+function viJoin(base, name) { return (base === '/' ? '' : base) + '/' + name }
+function viOpen(i) { viLoad(viJoin(viCurrentPath, viEntries[i].name)) }
+function viUp() {
+  const parts = viCurrentPath.split('/').filter(Boolean)
+  parts.pop()
+  viLoad('/' + parts.join('/'))
+}
+
+async function viGet(i) {
+  const e = viEntries[i]
+  const stat = document.getElementById(`viStat${i}`)
+  stat.textContent = 'downloading…'
+  try {
+    const r = await fetch(`/api/vision/download?path=${encodeURIComponent(viJoin(viCurrentPath, e.name))}`,
+      { headers: { Authorization: `Bearer ${adminToken}` } })
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}))
+      throw new Error(j.error || `HTTP ${r.status}`)
+    }
+    const blob = await r.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = e.name
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 30000)
+    stat.innerHTML = '<span style="color:var(--gold)">&#10004; saved</span>'
+  } catch (err) {
+    stat.textContent = `failed: ${err.message}`
+  }
+}
+
+// First open of the tab loads the root listing (or the not-configured notice)
+const _viOrigShowTab = showTab
+showTab = function (name) {
+  _viOrigShowTab(name)
+  if (name === 'vision' && !viChecked) { viChecked = true; viLoad('/') }
 }
 </script>
 </body>
