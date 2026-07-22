@@ -14,7 +14,7 @@ router.get('/status', adminAuth, (_req, res) => {
 router.get('/list', adminAuth, async (req, res) => {
   try {
     if (!visionStatus().configured) {
-      return res.status(503).json({ error: 'Vision drive is not configured — set VISION_HOST/USER/PASS (and VISION_PROTOCOL if not sftp)' })
+      return res.status(503).json({ error: 'Vision drive is not configured — set VISION_ENDPOINT / VISION_ACCESS_KEY / VISION_SECRET_KEY' })
     }
     const out = await visionList(String(req.query.path || '/'))
     res.json(out)
