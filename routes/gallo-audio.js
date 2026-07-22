@@ -15,6 +15,16 @@ import { visionOpen, visionStat } from '../lib/vision-drive.js'
 
 const router = Router()
 
+// Optional shared-key gate. On the public Render service the endpoint streams
+// master WAVs and record IDs are sequential, so set GALLO_AUDIO_KEY there and
+// the FileMaker web viewer appends ?k=<key>. When the env var is unset (local
+// dev) the gate is open. A wrong/missing key when required → 403.
+const AUDIO_KEY = process.env.GALLO_AUDIO_KEY || ''
+function keyOk(req) {
+  if (!AUDIO_KEY) return true
+  return String(req.query.k || '') === AUDIO_KEY
+}
+
 const CONTENT_TYPES = { wav: 'audio/wav', mp3: 'audio/mpeg', flac: 'audio/flac', m4a: 'audio/mp4', aac: 'audio/aac', ogg: 'audio/ogg' }
 const typeFor = (name) => CONTENT_TYPES[(String(name).match(/\.([a-z0-9]+)$/i)?.[1] || '').toLowerCase()] || 'application/octet-stream'
 
@@ -22,6 +32,7 @@ const typeFor = (name) => CONTENT_TYPES[(String(name).match(/\.([a-z0-9]+)$/i)?.
 // read of a resolution, no bytes.
 router.get('/audio/:recordId/resolve', async (req, res) => {
   try {
+    if (!keyOk(req)) return res.status(403).json({ error: 'Forbidden' })
     const f = await getGalloFieldData(req.params.recordId)
     if (!f) return res.status(404).json({ error: 'Record not found' })
     const r = resolveGalloAudio(f)
@@ -39,7 +50,9 @@ router.get('/audio/:recordId/resolve', async (req, res) => {
 // web viewer points at (one URL, consistent player across FM versions). The
 // <audio> element streams from /audio/:recordId (Range-aware, so seeking works).
 router.get('/player/:recordId', async (req, res) => {
+  if (!keyOk(req)) return res.status(403).send('Forbidden')
   const id = String(req.params.recordId)
+  const kq = AUDIO_KEY ? `?k=${encodeURIComponent(req.query.k)}` : '' // propagate to the audio src
   let title = '', artist = '', note = ''
   try {
     const f = await getGalloFieldData(id)
@@ -67,12 +80,13 @@ router.get('/player/:recordId', async (req, res) => {
 <div class="box">
   <div class="t">${esc(title) || 'Track ' + esc(id)}</div>
   ${artist ? `<div class="a">${esc(artist)}</div>` : ''}
-  ${note ? `<div class="note">${esc(note)}</div>` : `<audio controls preload="metadata" src="/api/gallo/audio/${encodeURIComponent(id)}"></audio>`}
+  ${note ? `<div class="note">${esc(note)}</div>` : `<audio controls preload="metadata" src="/api/gallo/audio/${encodeURIComponent(id)}${kq}"></audio>`}
 </div></body></html>`)
 })
 
 router.get('/audio/:recordId', async (req, res) => {
   try {
+    if (!keyOk(req)) return res.status(403).json({ error: 'Forbidden' })
     const f = await getGalloFieldData(req.params.recordId)
     if (!f) return res.status(404).json({ error: 'Record not found' })
     const r = resolveGalloAudio(f)
