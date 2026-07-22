@@ -3,12 +3,14 @@
 // Workflow: operator searches by artist and/or track name → GET /search
 // returns matching streamer records (with an auditionable S3 URL) → the
 // Download button hits GET /file/:recordId, which re-resolves the record in
-// FileMaker and streams its S3 master back with a proper attachment filename.
-// The proxy takes a recordId, never a URL — the server decides what it fetches.
+// FileMaker and answers with a short-lived presigned S3 URL carrying a clean
+// "Artist - Title.ext" attachment filename. The browser then downloads
+// DIRECTLY from S3 — no audio bytes flow through this service. The endpoint
+// takes a recordId, never a URL — the server decides what it signs.
 import { Router } from 'express'
-import { Readable } from 'node:stream'
 import { adminAuth } from '../lib/admin-auth.js'
 import { findStreamerTracks, getStreamerTrackById } from '../lib/madstreamer.js'
+import { presignAudioDownload } from '../lib/s3-imports.js'
 
 const router = Router()
 
@@ -37,24 +39,13 @@ router.get('/file/:recordId', adminAuth, async (req, res) => {
     if (!track) return res.status(404).json({ error: 'Record not found' })
     if (!track.s3url) return res.status(404).json({ error: 'Record has no audio file (S3_URL empty)' })
 
-    const upstream = await fetch(track.s3url)
-    if (!upstream.ok || !upstream.body) {
-      console.error(`[download-track] S3 fetch ${upstream.status} for record ${track.recordId}`)
-      return res.status(502).json({ error: `Audio fetch failed (HTTP ${upstream.status})` })
-    }
-
     const ext = (new URL(track.s3url).pathname.match(/\.(mp3|wav|flac|m4a|aac|ogg)$/i)?.[1] || 'mp3').toLowerCase()
-    const name = safeFilename(`${track.artist || 'Unknown Artist'} - ${track.title || 'Untitled'}.${ext}`)
-    res.setHeader('Content-Type', upstream.headers.get('content-type') || 'audio/mpeg')
-    const len = upstream.headers.get('content-length')
-    if (len) res.setHeader('Content-Length', len)
-    res.setHeader('Content-Disposition', `attachment; filename="${name.replace(/"/g, '')}"`)
-
-    Readable.fromWeb(upstream.body).pipe(res)
+    const filename = safeFilename(`${track.artist || 'Unknown Artist'} - ${track.title || 'Untitled'}.${ext}`)
+    const url = await presignAudioDownload(track.s3url, filename)
+    res.json({ url, filename })
   } catch (e) {
-    console.error('[download-track] file failed:', e.message)
-    if (!res.headersSent) res.status(500).json({ error: e.message })
-    else res.destroy()
+    console.error('[download-track] presign failed:', e.message)
+    res.status(500).json({ error: e.message })
   }
 })
 
