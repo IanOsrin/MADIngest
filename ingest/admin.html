@@ -292,6 +292,7 @@
       <button class="tab-btn" data-tab="playlistart" onclick="showTab('playlistart')">Playlist Art</button>
       <button class="tab-btn" data-tab="genrefix" onclick="showTab('genrefix')">Genre Fix</button>
       <button class="tab-btn" data-tab="youtube" onclick="showTab('youtube')">YouTube</button>
+      <button class="tab-btn" data-tab="download" onclick="showTab('download')">Download</button>
     </nav>
 
     <!-- ── Catalog tab ──────────────────────────────────────── -->
@@ -1130,6 +1131,37 @@
               <th style="text-align:left">New Local Genre</th><th></th><th style="text-align:left">Status</th>
             </tr></thead>
             <tbody id="gfBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div id="tab-download" class="tab-panel">
+      <div class="card">
+        <h3>Download Track — search &amp; fetch the S3 master</h3>
+        <p class="muted" style="margin:6px 0 14px">
+          Search by artist and/or track name. Download streams the file from S3 through the
+          server with a clean <em>Artist - Title</em> filename. Use either field alone or both
+          together to narrow.
+        </p>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
+          <input id="dlArtist" placeholder="Artist…" style="min-width:220px" onkeydown="if(event.key==='Enter')dlSearch()">
+          <input id="dlTrack" placeholder="Track name…" style="min-width:220px" onkeydown="if(event.key==='Enter')dlSearch()">
+          <button class="btn" onclick="dlSearch()">Search</button>
+          <span id="dlStatus" class="muted"></span>
+        </div>
+        <div class="table-wrap">
+          <table id="dlTable" style="width:100%">
+            <thead><tr>
+              <th style="text-align:left">Artist</th>
+              <th style="text-align:left">Track</th>
+              <th style="text-align:left">Album</th>
+              <th>Year</th>
+              <th style="text-align:left;min-width:260px">Audition</th>
+              <th></th>
+              <th style="text-align:left">Status</th>
+            </tr></thead>
+            <tbody id="dlBody"></tbody>
           </table>
         </div>
       </div>
@@ -5003,6 +5035,74 @@ async function gfApply(i) {
     if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
     stat.innerHTML = `<span style="color:var(--gold)">✔ ${j.updated} re-tagged → ${gfEsc(to)}</span>${j.failed?.length ? ` <span style="color:#e66">(${j.failed.length} failed)</span>` : ''}`
     document.getElementById(`gfRow${i}`).style.opacity = '0.45'
+  } catch (e) {
+    stat.textContent = `failed: ${e.message}`
+  }
+}
+
+/* ── Download Track tab ─────────────────────────────────────── */
+let dlRows = []
+
+async function dlSearch() {
+  const artist = document.getElementById('dlArtist').value.trim()
+  const track = document.getElementById('dlTrack').value.trim()
+  const status = document.getElementById('dlStatus')
+  const body = document.getElementById('dlBody')
+  if (artist.length < 2 && track.length < 2) { status.textContent = 'Type at least 2 characters of an artist or track name.'; return }
+  status.textContent = 'Searching…'
+  body.innerHTML = ''
+  try {
+    const qs = new URLSearchParams()
+    if (artist) qs.set('artist', artist)
+    if (track) qs.set('track', track)
+    const r = await fetch(`/api/download-track/search?${qs}`,
+      { headers: { Authorization: `Bearer ${adminToken}` } })
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    dlRows = j.tracks || []
+    status.textContent = dlRows.length
+      ? `${dlRows.length} track${dlRows.length === 1 ? '' : 's'} found${dlRows.length >= 300 ? ' (first 300 — narrow the search for more)' : ''}.`
+      : 'No matches.'
+    body.innerHTML = dlRows.map((t, i) => `
+      <tr id="dlRow${i}">
+        <td style="text-align:left">${gfEsc(t.artist)}</td>
+        <td style="text-align:left">${gfEsc(t.title || '')}</td>
+        <td style="text-align:left">${gfEsc(t.album || '')}${t.catalogue ? ` <span class="muted" style="font-size:11px">${gfEsc(t.catalogue)}</span>` : ''}</td>
+        <td style="text-align:center">${gfEsc(t.year || '')}</td>
+        <td style="text-align:left">${t.s3url
+          ? `<audio controls preload="none" style="width:250px;height:30px" src="${gfEsc(t.s3url)}"></audio>`
+          : '<span class="muted">no audio</span>'}</td>
+        <td>${t.s3url ? `<button class="btn" onclick="dlGet(${i})">Download</button>` : ''}</td>
+        <td style="text-align:left" id="dlStat${i}" class="muted"></td>
+      </tr>`).join('')
+  } catch (e) {
+    status.textContent = `Failed: ${e.message}`
+  }
+}
+
+async function dlGet(i) {
+  const t = dlRows[i]
+  const stat = document.getElementById(`dlStat${i}`)
+  stat.textContent = 'downloading…'
+  try {
+    const r = await fetch(`/api/download-track/file/${encodeURIComponent(t.recordId)}`,
+      { headers: { Authorization: `Bearer ${adminToken}` } })
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}))
+      throw new Error(j.error || `HTTP ${r.status}`)
+    }
+    const name = (r.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/)?.[1]
+      || `${t.artist || 'Unknown'} - ${t.title || 'Untitled'}.mp3`
+    const blob = await r.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = name
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 30000)
+    stat.innerHTML = `<span style="color:var(--gold)">✔ saved</span>`
   } catch (e) {
     stat.textContent = `failed: ${e.message}`
   }
