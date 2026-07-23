@@ -22,8 +22,10 @@ router.get('/search', adminAuth, async (req, res) => {
     const q = String(req.query.q || '').trim()
     if (q.length < 2) return res.status(400).json({ error: 'Type at least 2 characters' })
     const index = await buildVisionIndex({ cacheFile: INDEX_CACHE, refresh: req.query.refresh === '1' })
-    const nq = q.toLowerCase()
-    const all = index.files.filter(f => f.path.toLowerCase().includes(nq))
+    // Match ALL words (AND), not the exact phrase — "Makeba Reflections" should
+    // find …/Miriam Makeba/…_Reflections_… even with text between the words.
+    const words = q.toLowerCase().split(/\s+/).filter(Boolean)
+    const all = index.files.filter(f => { const p = f.path.toLowerCase(); return words.every(w => p.includes(w)) })
     res.json({ total: all.length, indexedFiles: index.builtFiles, files: all.slice(0, 500) })
   } catch (e) {
     console.error('[vision] search failed:', e.message)

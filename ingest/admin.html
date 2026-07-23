@@ -294,6 +294,7 @@
       <button class="tab-btn" data-tab="youtube" onclick="showTab('youtube')">YouTube</button>
       <button class="tab-btn" data-tab="download" onclick="showTab('download')">Download</button>
       <button class="tab-btn" data-tab="vision" onclick="showTab('vision')">Vision</button>
+      <button class="tab-btn" data-tab="promote" onclick="showTab('promote')">Promote</button>
     </nav>
 
     <!-- ── Catalog tab ──────────────────────────────────────── -->
@@ -1199,6 +1200,28 @@
             <tbody id="viBody"></tbody>
           </table>
         </div>
+      </div>
+    </div>
+
+    <div id="tab-promote" class="tab-panel">
+      <div class="card">
+        <h3>Promote to Gallo Catalogue — from CMS 2024 + link Vision audio</h3>
+        <p class="muted" style="margin:6px 0 14px">
+          Enter a catalogue number. <strong>Preview</strong> shows the CMS 2024 tracks and which
+          have audio on Vision. <strong>1) Create/update records</strong> pulls the metadata into
+          Gallo. <strong>2) Link audio</strong> writes each matched WAV's Vision path into
+          <code>audio_Url</code>. Nothing is written until you click a step.
+        </p>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
+          <input id="pmCat" placeholder="Catalogue number, e.g. CYL 1054" style="min-width:240px"
+            onkeydown="if(event.key==='Enter')pmPreview()">
+          <button class="btn" onclick="pmPreview()">Preview</button>
+          <button class="btn btn-gold" onclick="pmPull()" id="pmPullBtn" disabled title="Runs pull-catalogue-to-gallo">1) Create / update records</button>
+          <button class="btn btn-gold" onclick="pmLink()" id="pmLinkBtn" disabled title="Writes audio_Url on matched records">2) Link audio</button>
+          <label style="font-size:0.8rem;color:var(--muted)"><input type="checkbox" id="pmForce"> overwrite existing audio_Url</label>
+          <span id="pmStatus" class="muted"></span>
+        </div>
+        <div id="pmResult"></div>
       </div>
     </div>
 
@@ -5280,6 +5303,85 @@ const _viOrigShowTab = showTab
 showTab = function (name) {
   _viOrigShowTab(name)
   if (name === 'vision' && !viChecked) { viChecked = true; viLoad('/') }
+}
+
+// ── Promote tab (CMS 2024 → Gallo + link Vision audio) ──────────────────────
+let pmPlan = null
+
+function pmMB(n) { return n == null ? '' : (n / 1e6).toFixed(1) + ' MB' }
+
+async function pmPreview() {
+  const cat = document.getElementById('pmCat').value.trim()
+  const status = document.getElementById('pmStatus')
+  const out = document.getElementById('pmResult')
+  if (!cat) { status.textContent = 'Enter a catalogue number.'; return }
+  status.textContent = 'Previewing (first run builds the Vision index — up to a minute)…'
+  out.innerHTML = ''
+  document.getElementById('pmPullBtn').disabled = true
+  document.getElementById('pmLinkBtn').disabled = true
+  try {
+    const r = await fetch(`/api/gallo-link/preview?catalogue=${encodeURIComponent(cat)}`,
+      { headers: { Authorization: `Bearer ${adminToken}` } })
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    pmPlan = j
+    const src = j.source === 'gallo' ? `${j.galloCount} existing Gallo record(s)` : 'CMS 2024 (not yet in Gallo)'
+    status.textContent = `Matching against ${src} · ${j.indexedFiles.toLocaleString()} Vision files indexed`
+    let html = `<div class="table-wrap"><table style="width:100%"><thead><tr>
+      <th>Seq</th><th style="text-align:left">Track</th><th style="text-align:left">Audio on Vision (→ audio_Url)</th><th style="text-align:right">Size</th></tr></thead><tbody>`
+    for (const m of j.matched) html += `<tr>
+      <td style="text-align:center">${m.sequence_no ?? '—'}</td>
+      <td style="text-align:left">${esc(m.title || '')}</td>
+      <td style="text-align:left;color:var(--gold);font-size:0.78rem">${esc(m.audio_Url)}</td>
+      <td style="text-align:right;font-family:monospace;font-size:0.76rem">${pmMB(m.size)}</td></tr>`
+    for (const t of j.tracksNoAudio) html += `<tr style="opacity:0.6">
+      <td style="text-align:center">${t.sequence_no ?? '—'}</td>
+      <td style="text-align:left">${esc(t.title || '')}</td>
+      <td colspan="2" style="text-align:left;color:var(--muted)">no audio on Vision yet</td></tr>`
+    html += `</tbody></table></div>`
+    if (j.filesNoTrack.length) html += `<p class="muted" style="margin-top:8px">${j.filesNoTrack.length} Vision file(s) matched no track (review): ${j.filesNoTrack.map(f => esc(f.name)).join(', ')}</p>`
+    html += `<p style="margin-top:10px"><strong>${j.matched.length}</strong> would get audio_Url · <strong>${j.tracksNoAudio.length}</strong> left without audio${j.source === 'cms2024' ? ` · <strong>${(j.matched.length + j.tracksNoAudio.length)}</strong> records would be created` : ''}</p>`
+    out.innerHTML = html
+    document.getElementById('pmPullBtn').disabled = false
+    document.getElementById('pmLinkBtn').disabled = j.source !== 'gallo' // must pull before linking
+    if (j.source !== 'gallo') document.getElementById('pmLinkBtn').title = 'Create records first (step 1)'
+  } catch (e) {
+    status.textContent = `Failed: ${e.message}`
+  }
+}
+
+async function pmPull() {
+  const cat = document.getElementById('pmCat').value.trim()
+  const status = document.getElementById('pmStatus')
+  if (!confirm(`Create/update Gallo Catalogue records for ${cat} from CMS 2024?`)) return
+  status.textContent = 'Pulling metadata from CMS 2024…'
+  try {
+    const r = await fetch('/api/ingest/cms2024/pull-catalogue-to-gallo',
+      { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` }, body: JSON.stringify({ catalogue_no: cat }) })
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    status.innerHTML = `<span style="color:var(--gold)">✔ ${j.succeeded}/${j.total} record(s) created/updated</span> — now re-Preview, then Link audio.`
+    document.getElementById('pmLinkBtn').disabled = false
+  } catch (e) {
+    status.textContent = `Pull failed: ${e.message}`
+  }
+}
+
+async function pmLink() {
+  const cat = document.getElementById('pmCat').value.trim()
+  const force = document.getElementById('pmForce').checked
+  const status = document.getElementById('pmStatus')
+  if (!confirm(`Write audio_Url on matched ${cat} records${force ? ' (overwriting existing values)' : ''}?`)) return
+  status.textContent = 'Linking Vision audio…'
+  try {
+    const r = await fetch('/api/gallo-link/apply',
+      { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` }, body: JSON.stringify({ catalogue: cat, force }) })
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    status.innerHTML = `<span style="color:var(--gold)">✔ audio_Url written on ${j.written}</span>${j.skipped ? ` · ${j.skipped} skipped (already set)` : ''}${j.tracksNoAudio ? ` · ${j.tracksNoAudio} without audio` : ''}`
+  } catch (e) {
+    status.textContent = `Link failed: ${e.message}`
+  }
 }
 </script>
 </body>
