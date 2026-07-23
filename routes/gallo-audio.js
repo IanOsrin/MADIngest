@@ -10,7 +10,7 @@
 import { Router } from 'express'
 import { Readable } from 'node:stream'
 import { getGalloFieldData } from '../lib/fm-gallo.js'
-import { resolveGalloAudio } from '../lib/gallo-vision.js'
+import { resolveGalloAudio, resolveGalloAudioLive } from '../lib/gallo-vision.js'
 import { visionOpen, visionStat } from '../lib/vision-drive.js'
 
 const router = Router()
@@ -35,10 +35,9 @@ router.get('/audio/:recordId/resolve', async (req, res) => {
     if (!keyOk(req)) return res.status(403).json({ error: 'Forbidden' })
     const f = await getGalloFieldData(req.params.recordId)
     if (!f) return res.status(404).json({ error: 'Record not found' })
-    const r = resolveGalloAudio(f)
+    const r = await resolveGalloAudioLive(f)
     if (r.ok && r.kind === 'vision') {
-      const stat = await visionStat(r.path).catch(() => null)
-      return res.json({ ...r, existsOnVision: !!stat, size: stat?.size ?? null })
+      return res.json({ ...r, existsOnVision: r.exists === true })
     }
     res.json(r)
   } catch (e) {
@@ -89,12 +88,13 @@ router.get('/audio/:recordId', async (req, res) => {
     if (!keyOk(req)) return res.status(403).json({ error: 'Forbidden' })
     const f = await getGalloFieldData(req.params.recordId)
     if (!f) return res.status(404).json({ error: 'Record not found' })
-    const r = resolveGalloAudio(f)
+    const r = await resolveGalloAudioLive(f)
     if (!r.ok) return res.status(404).json({ error: `No resolvable audio (${r.reason})` })
 
     // Legacy http(s) home (digitalcupboard streaming) — redirect the client
     // straight there; those hosts serve their own valid certs.
     if (r.kind === 'url') return res.redirect(302, r.url)
+    if (r.exists === false) return res.status(404).json({ error: 'Audio file not found on Vision (name mismatch — no folder match)' })
 
     const range = req.headers.range
     const obj = await visionOpen(r.path, range)
