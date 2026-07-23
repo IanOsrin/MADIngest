@@ -9,7 +9,12 @@ import multer from 'multer'
 import path from 'path'
 import os from 'os'
 import { readFile, writeFile, unlink, mkdir, rm } from 'fs/promises'
-import { mkdirSync, existsSync } from 'fs'
+import { mkdirSync, existsSync, createWriteStream } from 'fs'
+import crypto from 'crypto'
+import { Readable, Transform } from 'stream'
+import { pipeline } from 'stream/promises'
+import { resolveGalloAudio } from '../lib/gallo-vision.js'
+import { visionOpen } from '../lib/vision-drive.js'
 import { adminAuth } from '../lib/admin-auth.js'
 import { extractAudioMeta, detectAudioFormat, generateWarnings, titleFromFilename } from '../lib/audio-meta.js'
 import { parseDDEXPackage, parseDDEXXml } from '../lib/ddex.js'
@@ -40,7 +45,7 @@ import {
 import { wavBufferToMp3, ensureFfmpeg } from '../lib/audio-convert.js'
 import { languageNameToCode } from '../lib/language-codes.js'
 import { generateDDEX382 } from '../lib/ddex-generate.js'
-import { buildDdexPackage } from '../lib/ddex-build.js'
+import { buildDdexPackage, planDdex, validateDdexMeta, validateDdexAudio, renderDdexPackageXml } from '../lib/ddex-build.js'
 import AdmZip from 'adm-zip'
 import { loadMetadata, lookupByIsrc, lookupByCatalogue, lookupAlbumTracks, lookupByFilename, lookupByBarcodeAndSeq, lookupCataloguesByBarcode, searchMetadata, getStatus, getAllRows, appendRow as appendMetadataRow, mergeFromBuffer as mergeMetadataFromBuffer, extractHeaders as extractMetadataHeaders, mergeWithMapping as mergeMetadataWithMapping, updateRow as updateMetadataRow, deleteRow as deleteMetadataRow, replaceFromBuffer as replaceMetadataFromBuffer, CACHE_COLUMNS } from '../lib/metadata-cache.js'
 
@@ -880,6 +885,92 @@ function _sseStreamRunner({ req, res, runner }) {
  * `.status` property and (where relevant) `.payload` so the caller can shape
  * the appropriate response.
  */
+// Pipe a readable straight to a file while computing MD5, byte size, and RIFF
+// magic — so we never hold the full (~50 MB) WAV in memory.
+async function _pipeToFileHashed(readable, dest) {
+  const hash = crypto.createHash('md5')
+  let byteSize = 0
+  const headChunks = []
+  let headLen = 0
+  const tap = new Transform({
+    transform(chunk, _enc, cb) {
+      hash.update(chunk); byteSize += chunk.length
+      if (headLen < 12) { headChunks.push(chunk); headLen += chunk.length }
+      cb(null, chunk)
+    },
+  })
+  await pipeline(readable, tap, createWriteStream(dest))
+  const h = Buffer.concat(headChunks).subarray(0, 12)
+  const riffOk = h.length >= 12 && h[0] === 0x52 && h[1] === 0x49 && h[2] === 0x46 && h[3] === 0x46
+              && h[8] === 0x57 && h[9] === 0x41 && h[10] === 0x56 && h[11] === 0x45
+  return { md5: hash.digest('hex').toUpperCase(), byteSize, riffOk }
+}
+
+async function _streamHttpToFile(url, dest, timeoutMs) {
+  const ctrl = new AbortController()
+  const to = setTimeout(() => ctrl.abort(), timeoutMs)
+  try {
+    const res = await fetch(url, { signal: ctrl.signal })
+    if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
+    return await _pipeToFileHashed(Readable.fromWeb(res.body), dest)
+  } finally { clearTimeout(to) }
+}
+
+// Fetch one track's audio and stream it to `dest`. Prefers a plain http(s) URL
+// (fast, no FM machinery); a FileMaker moviemac container is resolved to Vision
+// and streamed from S3 (no Mountain Duck mount); else the S3-imports fallback.
+async function _streamTrackAudioToFile(t, dest, { urlToKey, timeoutMs }) {
+  const ac = t.audio_container_url
+  if (ac && /^https?:\/\//i.test(ac)) {
+    return { ...(await _streamHttpToFile(ac, dest, timeoutMs)), source: 'http url' }
+  }
+  if (ac && ac.startsWith('movie:')) {
+    const r = resolveGalloAudio({ 'Audio File': ac, 'Track Name': t.title })
+    if (r.ok && r.kind === 'vision') {
+      const ctrl = new AbortController()
+      const to = setTimeout(() => ctrl.abort(), timeoutMs)
+      try {
+        const obj = await visionOpen(r.path)
+        const body = obj.Body?.transformToWebStream ? Readable.fromWeb(obj.Body.transformToWebStream()) : obj.Body
+        return { ...(await _pipeToFileHashed(body, dest)), source: 'Vision' }
+      } finally { clearTimeout(to) }
+    }
+    if (r.ok && r.kind === 'url') {
+      return { ...(await _streamHttpToFile(r.url, dest, timeoutMs)), source: 'legacy url' }
+    }
+    throw new Error(`unresolvable audio (${r.reason || 'no Vision path'})`)
+  }
+  const key = urlToKey(t.s3_url)
+  if (key) {
+    const buf = await downloadImport(key)
+    await writeFile(dest, buf)
+    return { md5: crypto.createHash('md5').update(buf).digest('hex').toUpperCase(), byteSize: buf.length, riffOk: buf[0] === 0x52, source: 'S3' }
+  }
+  throw new Error('no audio source on record (neither Audio File container nor File URL)')
+}
+
+// Download a Vision object fully into a buffer (used for small assets like
+// artwork, which the packager keeps in memory).
+async function _visionBuffer(rel) {
+  const obj = await visionOpen(rel)
+  const body = obj.Body?.transformToWebStream ? Readable.fromWeb(obj.Body.transformToWebStream()) : obj.Body
+  const chunks = []
+  for await (const c of body) chunks.push(c)
+  return Buffer.concat(chunks)
+}
+
+// Fetch an artwork asset from a container ref or URL. A plain http(s) URL goes
+// through the FM container fetch; a FileMaker container reference (movie:/image:
+// /audio:, or a bare path) is resolved to Vision and pulled from S3 — the ref's
+// path points into a Vision bucket, so no Mountain Duck mount is involved.
+async function _fetchArtworkBuffer(ref) {
+  if (/^https?:\/\//i.test(ref)) return fetchContainerData(ref)
+  const r = resolveGalloAudio({ 'Audio File': ref })
+  if (r.ok && r.kind === 'vision') return _visionBuffer(r.path)
+  if (r.ok && r.kind === 'url') return fetchContainerData(r.url)
+  return fetchContainerData(ref) // last resort (an FM container proxy URL)
+}
+
 async function _runDdexBuild({ catalogue_no, source, overrides, output_dir, log, warn }) {
   const src = (source || 'gallo').toLowerCase()
   const isCmsSource = src === 'cms2024' || src === 'cms-2024' || src === '2024'
@@ -934,84 +1025,29 @@ async function _runDdexBuild({ catalogue_no, source, overrides, output_dir, log,
 
   const sorted = [...tracks].sort((a, b) => (a.sequence_no || 999) - (b.sequence_no || 999))
 
-  // 2. Fetch audio — prefer FM container (Audio File), fall back to S3 if present
+  // ── Memory-safe build ──────────────────────────────────────────────────────
+  // Fetch artwork first (small; can derive the image asset id the plan needs),
+  // then PLAN metadata + filenames, then STREAM each big WAV straight to disk in
+  // parallel — never buffering ~500 MB of 24-bit audio in RAM (which OOMs a
+  // small dyno) and never fetching serially (which took ~20 min).
   const s3Base = (process.env.S3_IMPORTS_BASE_URL || '').replace(/\/$/, '')
   const urlToKey = url => (url && s3Base && url.startsWith(s3Base)) ? url.slice(s3Base.length + 1) : null
-
-  const audioBufs = []
   const fetchErrors = []
-  for (const t of sorted) {
-    let buf = null
-    let source = null
-    if (t.audio_container_url) {
-      // FileMaker "store by reference" containers look like:
-      //   movie:filename.wav\rmoviemac:/Macintosh HD/full/path/to/file.wav
-      // These are local file paths (often on a Mountain Duck mount), not HTTP URLs.
-      if (t.audio_container_url.startsWith('movie:')) {
-        const parts = t.audio_container_url.split('\r')
-        const moviemacPart = parts.find(p => p.startsWith('moviemac:'))
-        if (moviemacPart) {
-          let filePath = moviemacPart.replace('moviemac:', '').replace(/^\/Macintosh HD/, '')
-          try {
-            buf = await readFile(filePath)
-            source = 'local file (FM store-by-reference)'
-          } catch (e) {
-            fetchErrors.push(`${t.title}: local file read failed (${filePath}): ${e.message}`)
-          }
-        } else {
-          fetchErrors.push(`${t.title}: movie: container has no moviemac: path`)
-        }
-      } else {
-        try {
-          buf = await fetchContainerData(t.audio_container_url)
-          source = 'FM container'
-        } catch (e) {
-          fetchErrors.push(`${t.title}: FM container fetch failed: ${e.message}`)
-        }
-      }
-    }
-    if (!buf) {
-      const key = urlToKey(t.s3_url)
-      if (key) {
-        try {
-          buf = await downloadImport(key)
-          source = 'S3'
-        } catch (e) {
-          fetchErrors.push(`${t.title}: S3 fallback failed: ${e.message}`)
-        }
-      }
-    }
-    if (!buf) {
-      if (!t.audio_container_url && !t.s3_url) {
-        fetchErrors.push(`${t.title}: no audio source on FM record (neither Audio File container nor File URL)`)
-      }
-      audioBufs.push(Buffer.alloc(0))
-    } else {
-      log(`Audio ${t.sequence_no ?? '?'} "${t.title}" — ${(buf.length / 1024 / 1024).toFixed(2)} MB via ${source}`)
-      audioBufs.push(buf)
-    }
-  }
 
-  // 3. Fetch artwork — prefer artwork::picture container, fall back to artwork URL
+  // 1. Artwork (buffered — it's one small file)
   let artworkBuf = Buffer.alloc(0)
   let artworkExt = 'jpg'
-  let derivedImageAsset = null  // GMVi number inferred from artwork source
+  let derivedImageAsset = null
   const artContainer = sorted.find(t => t.artwork_container_url)?.artwork_container_url
   const artUrl       = sorted.find(t => t.artwork_url)?.artwork_url
-
-  // A valid Gallo asset reference looks like GMVi6506, GCAT00123, etc. — short, alphanumeric.
-  // Reject anything that looks like a content-hash (hex string ≥ 20 chars).
   const looksLikeAssetRef = s => s && s.length < 20 && /^[A-Za-z]{1,6}\d+$/.test(s)
-
   if (artContainer) {
     try {
-      artworkBuf = await fetchContainerData(artContainer)
-      const containerFilename = artContainer.split('/').pop().split('?')[0].replace(/\.[^.]+$/, '')
-      if (looksLikeAssetRef(containerFilename)) derivedImageAsset = containerFilename
+      artworkBuf = await _fetchArtworkBuffer(artContainer)
+      const cf = artContainer.split('/').pop().split('?')[0].replace(/\.[^.]+$/, '')
+      if (looksLikeAssetRef(cf)) derivedImageAsset = cf
       log(`Artwork — ${(artworkBuf.length / 1024).toFixed(0)} KB via FM container${derivedImageAsset ? ` (${derivedImageAsset})` : ''}`)
-    } catch (e) {
-      fetchErrors.push(`artwork: FM container fetch failed: ${e.message}`)
-    }
+    } catch (e) { fetchErrors.push(`artwork: FM container fetch failed: ${e.message}`) }
   }
   if (artworkBuf.length === 0 && artUrl) {
     const artKey = urlToKey(artUrl)
@@ -1019,60 +1055,36 @@ async function _runDdexBuild({ catalogue_no, source, overrides, output_dir, log,
       try {
         artworkBuf = await downloadImport(artKey)
         artworkExt = (artKey.split('.').pop() || 'jpg').toLowerCase()
-        const keyFilename = artKey.split('/').pop().replace(/\.[^.]+$/, '')
-        if (looksLikeAssetRef(keyFilename)) derivedImageAsset = keyFilename
+        const kf = artKey.split('/').pop().replace(/\.[^.]+$/, '')
+        if (looksLikeAssetRef(kf)) derivedImageAsset = kf
         log(`Artwork — ${(artworkBuf.length / 1024).toFixed(0)} KB via S3${derivedImageAsset ? ` (${derivedImageAsset})` : ''}`)
-      } catch (e) {
-        fetchErrors.push(`artwork: S3 fallback failed: ${e.message}`)
-      }
+      } catch (e) { fetchErrors.push(`artwork: S3 fallback failed: ${e.message}`) }
     }
   }
   if (artworkBuf.length === 0 && !artContainer && !artUrl) {
     fetchErrors.push('No artwork on any track (neither artwork::picture container nor Artwork URL)')
   }
-
-  // Backfill image_asset_number on all tracks if FM didn't supply it
-  if (derivedImageAsset) {
-    for (const t of sorted) {
-      if (!t.image_asset_number) t.image_asset_number = derivedImageAsset
-    }
-  }
-
+  if (derivedImageAsset) for (const t of sorted) if (!t.image_asset_number) t.image_asset_number = derivedImageAsset
   if (fetchErrors.length) {
     fetchErrors.forEach(e => warn(e))
-    throw Object.assign(new Error('Failed to fetch one or more assets from S3'), {
-      status:  424,
-      payload: { details: fetchErrors },
-    })
+    throw Object.assign(new Error('Artwork could not be fetched'), { status: 424, payload: { details: fetchErrors } })
   }
 
-  // 4. Build the package (validation runs inside; throws on hard errors)
-  let pkg
-  try {
-    log('Building DDEX package + running validation…')
-    pkg = buildDdexPackage({ tracks: sorted, audioBufs, artworkBuf, artworkExt, overrides: overrides || {} })
-    log(`Package built — ${pkg.files.length} resource files`)
-    if (pkg.validation?.warnings?.length) {
-      pkg.validation.warnings.forEach(w => warn(w))
-    }
-  } catch (e) {
-    throw Object.assign(new Error(e.message), {
-      status:  422,
-      payload: { validation: e.validation || null },
-    })
+  // 2. Plan (metadata + filenames) — needs image_asset_number backfilled above
+  let plan
+  try { plan = planDdex({ tracks: sorted, overrides: overrides || {}, artworkExt }) }
+  catch (e) { throw Object.assign(new Error(e.message), { status: 422 }) }
+  const planSorted = plan.sorted
+
+  // 3. Metadata validation — fail fast BEFORE downloading a byte of audio
+  const metaVal = validateDdexMeta(planSorted)
+  metaVal.warnings.forEach(w => warn(w))
+  if (metaVal.errors.length) {
+    throw Object.assign(new Error(`DDEX validation failed:\n  - ${metaVal.errors.join('\n  - ')}`),
+      { status: 422, payload: { validation: metaVal } })
   }
 
-  // 5. Write folder to disk. safePart preserves spaces and most readable
-  // punctuation; only strips characters that actually cause cross-platform
-  // filesystem trouble (Windows-illegal + control chars). Result reads
-  // naturally — e.g. "Spiroman - Tsa Tsawane" instead of "Spiroman_Tsa_Tsawane".
-  //
-  // Output location precedence:
-  //   1. caller-supplied output_dir (the admin UI's remembered choice)
-  //   2. DDEX_OUTPUT_DIR env var
-  //   3. ~/Desktop/Ingrooves_DDEX (default)
-  // ~ is expanded to the current user's home so we accept paths like
-  // "~/Desktop/My DDEX Output".
+  // 4. Output folder — derive now so we stream audio straight into it
   const _resolveOutDir = (p) => {
     if (!p) return null
     const s = String(p).trim()
@@ -1083,49 +1095,82 @@ async function _runDdexBuild({ catalogue_no, source, overrides, output_dir, log,
   const outRoot = _resolveOutDir(output_dir)
                 || _resolveOutDir(process.env.DDEX_OUTPUT_DIR)
                 || path.join(os.homedir(), 'Desktop', 'Ingrooves_DDEX')
-  log(`Output folder: ${outRoot}`)
   const safePart = (s) => (s || '').trim()
-    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '')   // strip filesystem-illegal + control chars
-    .replace(/\s+/g, ' ')                     // collapse runs of whitespace
-    .replace(/^[\s.]+|[\s.]+$/g, '')          // trim leading/trailing dots + whitespace
-  const folderName = `${safePart(pkg.album.artist)} - ${safePart(pkg.album.title)}`
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/^[\s.]+|[\s.]+$/g, '')
+  const folderName = `${safePart(plan.album.artist)} - ${safePart(plan.album.title)}`
   const folder = path.join(outRoot, folderName)
-
+  log(`Output folder: ${folder}`)
   try {
     await rm(folder, { recursive: true, force: true })
     await mkdir(path.join(folder, 'resources'), { recursive: true })
     await mkdir(path.join(outRoot, 'xml'), { recursive: true })
+  } catch (e) { throw Object.assign(new Error(`Failed to prepare output folder: ${e.message}`), { status: 500 }) }
 
-    // XML goes in the shared xml/ folder at the root, named after the album folder
-    const xmlPath = path.join(outRoot, 'xml', `${folderName}.xml`)
-    await writeFile(xmlPath, pkg.xml, 'utf8')
-
-    // Asset files (resources/)
-    for (const f of pkg.files) {
-      await writeFile(path.join(folder, f.path), f.buffer)
-    }
-
-    log(`Wrote ${pkg.files.length + 1} files to ${folder}`)
-    log(`XML: ${xmlPath}`)
-    log(`✓ Build complete`)
-  } catch (e) {
-    throw Object.assign(new Error(`Failed to write folder: ${e.message}`), { status: 500 })
+  // 5. Write artwork (already in memory)
+  await writeFile(path.join(folder, 'resources', plan.artwork.filename), artworkBuf)
+  const artworkInfo = {
+    byteSize: artworkBuf.length,
+    jpegOk: artworkBuf.length >= 3 && artworkBuf[0] === 0xFF && artworkBuf[1] === 0xD8 && artworkBuf[2] === 0xFF,
   }
+
+  // 6. Stream each WAV to resources/<filename>, in parallel, per-track timeout
+  const audioInfo = new Array(planSorted.length)
+  const CONCURRENCY = 4
+  const PER_TRACK_MS = 180000
+  let _next = 0
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, planSorted.length) }, async () => {
+    while (_next < planSorted.length) {
+      const t = planSorted[_next++]
+      const dest = path.join(folder, 'resources', t._wavFilename)
+      try {
+        const info = await _streamTrackAudioToFile(t, dest, { urlToKey, timeoutMs: PER_TRACK_MS })
+        audioInfo[t._origIdx] = info
+        log(`Audio ${t.sequence_no ?? '?'} "${t.title}" — ${(info.byteSize / 1024 / 1024).toFixed(2)} MB via ${info.source}`)
+      } catch (e) {
+        audioInfo[t._origIdx] = { byteSize: 0, error: e.message }
+        warn(`Audio "${t.title}": ${e.message}`)
+      }
+    }
+  }))
+
+  // 7. Audio validation (sizes + magic captured while streaming)
+  const audioVal = validateDdexAudio(audioInfo, artworkInfo)
+  audioVal.warnings.forEach(w => warn(w))
+  if (audioVal.errors.length) {
+    throw Object.assign(new Error(`DDEX validation failed:\n  - ${audioVal.errors.join('\n  - ')}`),
+      { status: 422, payload: { validation: audioVal } })
+  }
+
+  // 8. Render XML (audio already on disk) and write it
+  planSorted.forEach(t => {
+    t._md5 = (t.audio_hash_md5 && /^[A-Fa-f0-9]{32}$/.test(t.audio_hash_md5))
+               ? t.audio_hash_md5.toUpperCase()
+               : audioInfo[t._origIdx].md5
+  })
+  plan.artwork.md5 = crypto.createHash('md5').update(artworkBuf).digest('hex').toUpperCase()
+  const xml = renderDdexPackageXml({ sorted: planSorted, album: plan.album, artwork: plan.artwork, albumDuration: plan.albumDuration })
+  const xmlPath = path.join(outRoot, 'xml', `${folderName}.xml`)
+  await writeFile(xmlPath, xml, 'utf8')
+  log(`Wrote ${planSorted.length + 1} files to ${folder}`)
+  log(`XML: ${xmlPath}`)
+  log(`✓ Build complete`)
 
   return {
     ok: true,
     folder,
     folder_name: folderName,
     xml_filename: `xml/${folderName}.xml`,
-    files: pkg.files.map(f => f.path),
-    track_count: pkg.tracks.length,
-    warnings: pkg.validation.warnings,
+    files: [...planSorted.map(t => `resources/${t._wavFilename}`), `resources/${plan.artwork.filename}`],
+    track_count: planSorted.length,
+    warnings: [...metaVal.warnings, ...audioVal.warnings],
     album: {
-      title:        pkg.album.title,
-      artist:       pkg.album.artist,
-      barcode:      pkg.album.barcode,
-      catalogue_no: pkg.album.catalogue_no,
-      release_date: pkg.album.release_date,
+      title:        plan.album.title,
+      artist:       plan.album.artist,
+      barcode:      plan.album.barcode,
+      catalogue_no: plan.album.catalogue_no,
+      release_date: plan.album.release_date,
     },
   }
 }
