@@ -13,13 +13,17 @@
 import path from 'path'
 import { Router } from 'express'
 import { adminAuth } from '../lib/admin-auth.js'
-import { findGalloRecordsByCatalogue, updateGalloRecord } from '../lib/fm-gallo.js'
+import { findGalloRecordsByCatalogue, updateGalloRecord, getGalloLayoutFieldSet, getGalloFieldData } from '../lib/fm-gallo.js'
 import { findRecordsByCatalogue as cmsFind } from '../lib/fm-cms2024.js'
 import { buildVisionIndex, filesForCatalogue, matchTracksToFiles } from '../lib/gallo-vision-link.js'
 import { resolveGalloAudio } from '../lib/gallo-vision.js'
 
 const router = Router()
 const INDEX_CACHE = path.join(process.cwd(), 'tmp', 'vision-index.json')
+// The record field that stores the Vision reference. It MUST be placed on the
+// Data API layout — a field that exists in the table but not on the layout is
+// silently discarded on write (FileMaker returns success, value never persists).
+const AUDIO_URL_FIELD = process.env.GALLO_AUDIO_URL_FIELD || 'Audio_URL'
 
 async function planFor(catalogue, { refresh = false } = {}) {
   const gallo = await findGalloRecordsByCatalogue(catalogue)
@@ -73,6 +77,15 @@ router.post('/apply', adminAuth, async (req, res) => {
     const gallo = await findGalloRecordsByCatalogue(catalogue)
     if (!gallo.length) return res.status(404).json({ error: `No Gallo records for ${catalogue} — pull from CMS 2024 first` })
 
+    // Pre-flight: the target field must be ON the Data API layout, else writes
+    // are silently discarded (they succeed but never persist).
+    const known = await getGalloLayoutFieldSet()
+    if (!known.has(AUDIO_URL_FIELD)) {
+      return res.status(409).json({
+        error: `Field "${AUDIO_URL_FIELD}" is not on the Data API layout — add it to the "${process.env.GALLO_FM_LAYOUT}" layout in FileMaker (the field can exist in the table but must be PLACED on the layout), or set GALLO_AUDIO_URL_FIELD to one that is. On-layout fields: ${[...known].filter(f => /url|audio|file/i.test(f)).join(', ')}`,
+      })
+    }
+
     const index = await buildVisionIndex({ cacheFile: INDEX_CACHE })
     const files = filesForCatalogue(index, catalogue)
     const tracks = gallo.map(g => ({ ...g, gallo_record_id: g.fm_record_id }))
@@ -90,7 +103,13 @@ router.post('/apply', adminAuth, async (req, res) => {
       }
       if (dryRun) { results.push({ gallo_record_id: id, title: m.track.title, action: 'would-write', audio_Url: m.audio_Url }); continue }
       try {
-        await updateGalloRecord(id, { audio_Url: m.audio_Url })
+        await updateGalloRecord(id, { [AUDIO_URL_FIELD]: m.audio_Url })
+        // Read back — trust nothing FileMaker's write API says until confirmed.
+        const after = await getGalloFieldData(id)
+        if ((after?.[AUDIO_URL_FIELD] || '') !== m.audio_Url) {
+          results.push({ gallo_record_id: id, title: m.track.title, action: 'not-persisted', audio_Url: m.audio_Url })
+          continue
+        }
         written++; results.push({ gallo_record_id: id, title: m.track.title, action: 'written', audio_Url: m.audio_Url })
       } catch (e) {
         results.push({ gallo_record_id: id, title: m.track.title, action: 'error', error: e.message })
