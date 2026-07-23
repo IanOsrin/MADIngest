@@ -10,7 +10,7 @@ import 'dotenv/config'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { findRecordsByCatalogue as cmsFind } from '../lib/fm-cms2024.js'
-import { buildVisionIndex, filesForCatalogue, matchTracksToFiles } from '../lib/gallo-vision-link.js'
+import { buildVisionIndex, loadVisionIndex, filesForCatalogue, matchTracksToFiles } from '../lib/gallo-vision-link.js'
 
 const catalogue = process.argv[2]
 if (!catalogue) { console.error('usage: gallo-link-dryrun.mjs "<catalogue>" [--refresh-index]'); process.exit(1) }
@@ -26,9 +26,10 @@ const tracks = await cmsFind(catalogue)
 console.log(`CMS 2024: ${tracks.length} track(s)`)
 if (!tracks.length) { console.log('Nothing to do — no CMS 2024 records for this catalogue.'); process.exit(0) }
 
-// 2. Vision index → files for this catalogue
+// 2. Vision index → files for this catalogue (load cache/S3, or build if asked)
 process.stdout.write('Vision index… ')
-const index = await buildVisionIndex({ cacheFile, refresh, onProgress: (b, n) => process.stdout.write(`\rVision index… ${b}: ${n}   `) })
+let index = refresh ? null : await loadVisionIndex({ cacheFile })
+if (!index) index = await buildVisionIndex({ cacheFile, onProgress: (b, n) => process.stdout.write(`\rVision index… ${b}: ${n}   `) })
 console.log(`\rVision index: ${index.builtFiles} audio files across ${index.buckets.join(', ')}        `)
 const files = filesForCatalogue(index, catalogue)
 console.log(`Files whose path contains "${catalogue}": ${files.length}`)

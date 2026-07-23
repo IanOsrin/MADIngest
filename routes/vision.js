@@ -5,7 +5,7 @@ import path from 'path'
 import { Router } from 'express'
 import { adminAuth } from '../lib/admin-auth.js'
 import { visionStatus, visionList, visionDownloadTo } from '../lib/vision-drive.js'
-import { buildVisionIndex } from '../lib/gallo-vision-link.js'
+import { loadVisionIndex, reindexVisionIndex, indexBuilding } from '../lib/gallo-vision-link.js'
 
 const router = Router()
 const INDEX_CACHE = path.join(process.cwd(), 'tmp', 'vision-index.json')
@@ -14,14 +14,27 @@ router.get('/status', adminAuth, (_req, res) => {
   res.json(visionStatus())
 })
 
-// Fast filename/path search over a flat index of every audio file on Vision
-// (built once, cached to tmp/vision-index.json). ?refresh=1 rebuilds it.
+// Index state, so the UI can prompt a Reindex when it's missing / building.
+router.get('/index-status', adminAuth, async (_req, res) => {
+  const index = await loadVisionIndex({ cacheFile: INDEX_CACHE })
+  res.json({ built: !!index, building: indexBuilding(), indexedFiles: index?.builtFiles || 0 })
+})
+
+// Kick off an out-of-band rebuild (fire-and-forget; ~minutes). Returns at once.
+router.post('/reindex', adminAuth, (_req, res) => {
+  if (!visionStatus().configured) return res.status(503).json({ error: 'Vision drive is not configured' })
+  const r = reindexVisionIndex({ cacheFile: INDEX_CACHE })
+  res.json({ ok: true, ...r, note: r.started ? 'Rebuilding the Vision index (a few minutes). It persists to S3 when done.' : 'A rebuild is already running.' })
+})
+
+// Fast filename/path search over the persisted index. Never builds in-request.
 router.get('/search', adminAuth, async (req, res) => {
   try {
     if (!visionStatus().configured) return res.status(503).json({ error: 'Vision drive is not configured' })
     const q = String(req.query.q || '').trim()
     if (q.length < 2) return res.status(400).json({ error: 'Type at least 2 characters' })
-    const index = await buildVisionIndex({ cacheFile: INDEX_CACHE, refresh: req.query.refresh === '1' })
+    const index = await loadVisionIndex({ cacheFile: INDEX_CACHE })
+    if (!index) return res.status(409).json({ error: 'Vision index not built yet', needsReindex: true, building: indexBuilding() })
     // Match ALL words (AND), not the exact phrase — "Makeba Reflections" should
     // find …/Miriam Makeba/…_Reflections_… even with text between the words.
     const words = q.toLowerCase().split(/\s+/).filter(Boolean)

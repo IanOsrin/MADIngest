@@ -15,7 +15,7 @@ import { Router } from 'express'
 import { adminAuth } from '../lib/admin-auth.js'
 import { findGalloRecordsByCatalogue, updateGalloRecord, getGalloLayoutFieldSet, getGalloFieldData } from '../lib/fm-gallo.js'
 import { findRecordsByCatalogue as cmsFind } from '../lib/fm-cms2024.js'
-import { buildVisionIndex, filesForCatalogue, matchTracksToFiles } from '../lib/gallo-vision-link.js'
+import { loadVisionIndex, filesForCatalogue, matchTracksToFiles } from '../lib/gallo-vision-link.js'
 import { resolveGalloAudio } from '../lib/gallo-vision.js'
 
 const router = Router()
@@ -25,7 +25,7 @@ const INDEX_CACHE = path.join(process.cwd(), 'tmp', 'vision-index.json')
 // silently discarded on write (FileMaker returns success, value never persists).
 const AUDIO_URL_FIELD = process.env.GALLO_AUDIO_URL_FIELD || 'Audio_URL'
 
-async function planFor(catalogue, { refresh = false } = {}) {
+async function planFor(catalogue) {
   const gallo = await findGalloRecordsByCatalogue(catalogue)
   // Track list to match on: prefer real Gallo records; fall back to CMS 2024
   // (so a not-yet-pulled catalogue can still be previewed).
@@ -37,7 +37,8 @@ async function planFor(catalogue, { refresh = false } = {}) {
     tracks = (await cmsFind(catalogue)).map(c => ({ title: c.title, sequence_no: c.sequence_no }))
     source = 'cms2024'
   }
-  const index = await buildVisionIndex({ cacheFile: INDEX_CACHE, refresh })
+  const index = await loadVisionIndex({ cacheFile: INDEX_CACHE })
+  if (!index) { const e = new Error('Vision index not built yet — click Reindex on the Vision tab'); e.status = 409; throw e }
   const files = filesForCatalogue(index, catalogue)
   const { matched, tracksNoAudio, filesNoTrack, folders } = matchTracksToFiles(tracks, files)
   return { catalogue, source, galloCount: gallo.length, indexedFiles: index.builtFiles, folders, matched, tracksNoAudio, filesNoTrack }
@@ -47,7 +48,7 @@ router.get('/preview', adminAuth, async (req, res) => {
   try {
     const catalogue = String(req.query.catalogue || '').trim()
     if (!catalogue) return res.status(400).json({ error: 'catalogue is required' })
-    const plan = await planFor(catalogue, { refresh: req.query.refresh === '1' })
+    const plan = await planFor(catalogue)
     res.json({
       ...plan,
       matched: plan.matched.map(m => ({
@@ -63,7 +64,7 @@ router.get('/preview', adminAuth, async (req, res) => {
     })
   } catch (e) {
     console.error('[gallo-link] preview failed:', e.message)
-    res.status(500).json({ error: e.message })
+    res.status(e.status || 500).json({ error: e.message, needsReindex: e.status === 409 || undefined })
   }
 })
 
@@ -86,7 +87,8 @@ router.post('/apply', adminAuth, async (req, res) => {
       })
     }
 
-    const index = await buildVisionIndex({ cacheFile: INDEX_CACHE })
+    const index = await loadVisionIndex({ cacheFile: INDEX_CACHE })
+    if (!index) return res.status(409).json({ error: 'Vision index not built yet — click Reindex on the Vision tab', needsReindex: true })
     const files = filesForCatalogue(index, catalogue)
     const tracks = gallo.map(g => ({ ...g, gallo_record_id: g.fm_record_id }))
     const { matched, tracksNoAudio, filesNoTrack } = matchTracksToFiles(tracks, files)

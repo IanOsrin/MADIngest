@@ -1180,6 +1180,7 @@
             onkeydown="if(event.key==='Enter')viDoSearch()">
           <button class="btn" onclick="viDoSearch()">Search</button>
           <button class="btn btn-ghost" onclick="viClearSearch()" id="viClearBtn" style="display:none">Browse</button>
+          <button class="btn btn-ghost" onclick="viReindex()" id="viReindexBtn" title="Rebuild the Vision audio index (a few minutes; persists to S3)">Reindex</button>
           <span id="viSearchStatus" class="muted"></span>
         </div>
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px" id="viBrowseBar">
@@ -5253,6 +5254,10 @@ async function viDoSearch() {
     const r = await fetch(`/api/vision/search?q=${encodeURIComponent(q)}`,
       { headers: { Authorization: `Bearer ${adminToken}` } })
     const j = await r.json()
+    if (r.status === 409 && j.needsReindex) {
+      status.innerHTML = j.building ? 'Index is building — try again in a minute.' : 'No Vision index yet — click <strong>Reindex</strong> (builds once, ~a few minutes).'
+      return
+    }
     if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
     viSearchResults = j.files || []
     status.textContent = `${j.total} match${j.total === 1 ? '' : 'es'}${j.total > viSearchResults.length ? ` (showing ${viSearchResults.length})` : ''} · ${j.indexedFiles.toLocaleString()} files indexed`
@@ -5276,6 +5281,28 @@ function viClearSearch() {
   document.getElementById('viClearBtn').style.display = 'none'
   document.getElementById('viBrowseBar').style.display = ''
   viLoad(viCurrentPath)
+}
+
+async function viReindex() {
+  const status = document.getElementById('viSearchStatus')
+  if (!confirm('Rebuild the Vision audio index? Takes a few minutes; runs in the background and persists to S3.')) return
+  status.textContent = 'Starting reindex…'
+  try {
+    const r = await fetch('/api/vision/reindex', { method: 'POST', headers: { Authorization: `Bearer ${adminToken}` } })
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    status.textContent = j.note || 'Reindexing…'
+    // Poll index-status until it flips to built.
+    const poll = setInterval(async () => {
+      try {
+        const s = await (await fetch('/api/vision/index-status', { headers: { Authorization: `Bearer ${adminToken}` } })).json()
+        if (s.built && !s.building) { clearInterval(poll); status.innerHTML = `<span style="color:var(--gold)">✔ index ready — ${s.indexedFiles.toLocaleString()} files</span>` }
+        else if (s.building) status.textContent = 'Reindexing… (still building)'
+      } catch {}
+    }, 15000)
+  } catch (e) {
+    status.textContent = `Reindex failed: ${e.message}`
+  }
 }
 
 async function viGetPath(i) {
@@ -5323,6 +5350,7 @@ async function pmPreview() {
     const r = await fetch(`/api/gallo-link/preview?catalogue=${encodeURIComponent(cat)}`,
       { headers: { Authorization: `Bearer ${adminToken}` } })
     const j = await r.json()
+    if (r.status === 409 && j.needsReindex) { status.innerHTML = 'No Vision index yet — open the <strong>Vision</strong> tab and click <strong>Reindex</strong> first.'; return }
     if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
     pmPlan = j
     const src = j.source === 'gallo' ? `${j.galloCount} existing Gallo record(s)` : 'CMS 2024 (not yet in Gallo)'
