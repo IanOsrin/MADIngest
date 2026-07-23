@@ -1174,7 +1174,14 @@
           Read-only view of the Vision server. Click folders to open them; Download streams the
           file through this service.
         </p>
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+          <input id="viSearch" placeholder="Search all audio by name, catalogue, artist…" style="min-width:320px;flex:1"
+            onkeydown="if(event.key==='Enter')viDoSearch()">
+          <button class="btn" onclick="viDoSearch()">Search</button>
+          <button class="btn btn-ghost" onclick="viClearSearch()" id="viClearBtn" style="display:none">Browse</button>
+          <span id="viSearchStatus" class="muted"></span>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px" id="viBrowseBar">
           <button class="btn btn-ghost" onclick="viUp()" id="viUpBtn" disabled>&#8593; Up</button>
           <span id="viPath" style="font-family:monospace;font-size:0.82rem">/</span>
           <button class="btn" onclick="viLoad(viCurrentPath)">Refresh</button>
@@ -5201,6 +5208,66 @@ async function viGet(i) {
     document.body.appendChild(a)
     a.click()
     a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 30000)
+    stat.innerHTML = '<span style="color:var(--gold)">&#10004; saved</span>'
+  } catch (err) {
+    stat.textContent = `failed: ${err.message}`
+  }
+}
+
+// ── Vision search (flat index of all audio files) ───────────────────────────
+let viSearchResults = []
+
+async function viDoSearch() {
+  const q = document.getElementById('viSearch').value.trim()
+  const status = document.getElementById('viSearchStatus')
+  const body = document.getElementById('viBody')
+  if (q.length < 2) { status.textContent = 'Type at least 2 characters.'; return }
+  status.textContent = 'Searching (first search builds the index — can take a minute)…'
+  document.getElementById('viBrowseBar').style.display = 'none'
+  document.getElementById('viClearBtn').style.display = ''
+  try {
+    const r = await fetch(`/api/vision/search?q=${encodeURIComponent(q)}`,
+      { headers: { Authorization: `Bearer ${adminToken}` } })
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    viSearchResults = j.files || []
+    status.textContent = `${j.total} match${j.total === 1 ? '' : 'es'}${j.total > viSearchResults.length ? ` (showing ${viSearchResults.length})` : ''} · ${j.indexedFiles.toLocaleString()} files indexed`
+    body.innerHTML = viSearchResults.map((f, i) => `
+      <tr>
+        <td style="text-align:left" title="${gfEsc(f.path)}">&#127925; ${gfEsc(f.name || f.path.split('/').pop())}
+          <div class="muted" style="font-size:11px">${gfEsc(f.path.replace(/\/[^/]+$/, ''))}</div></td>
+        <td style="text-align:right;font-family:monospace;font-size:0.78rem">${viSize(f.size)}</td>
+        <td></td>
+        <td><button class="btn" onclick="viGetPath(${i})">Download</button></td>
+        <td style="text-align:left" id="viSStat${i}" class="muted"></td>
+      </tr>`).join('')
+  } catch (e) {
+    status.textContent = `Failed: ${e.message}`
+  }
+}
+
+function viClearSearch() {
+  document.getElementById('viSearch').value = ''
+  document.getElementById('viSearchStatus').textContent = ''
+  document.getElementById('viClearBtn').style.display = 'none'
+  document.getElementById('viBrowseBar').style.display = ''
+  viLoad(viCurrentPath)
+}
+
+async function viGetPath(i) {
+  const f = viSearchResults[i]
+  const stat = document.getElementById(`viSStat${i}`)
+  stat.textContent = 'downloading…'
+  try {
+    const r = await fetch(`/api/vision/download?path=${encodeURIComponent(f.path)}`,
+      { headers: { Authorization: `Bearer ${adminToken}` } })
+    if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || `HTTP ${r.status}`) }
+    const blob = await r.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = f.name || f.path.split('/').pop()
+    document.body.appendChild(a); a.click(); a.remove()
     setTimeout(() => URL.revokeObjectURL(url), 30000)
     stat.innerHTML = '<span style="color:var(--gold)">&#10004; saved</span>'
   } catch (err) {
