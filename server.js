@@ -10,7 +10,6 @@ import genreFixRouter from './routes/genre-fix.js'
 import downloadTrackRouter from './routes/download-track.js'
 import visionRouter from './routes/vision.js'
 import galloAudioRouter from './routes/gallo-audio.js'
-import galloLinkRouter from './routes/gallo-link.js'
 import { getValueList } from './lib/fm-gallo.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -129,7 +128,6 @@ app.use('/api/genre-fix', genreFixRouter)
 app.use('/api/download-track', downloadTrackRouter)
 app.use('/api/vision', visionRouter)
 app.use('/api/gallo', galloAudioRouter)
-app.use('/api/gallo-link', galloLinkRouter)
 if (YOUTUBE_ENABLED) app.use('/api/youtube', youtubeRouter)   // local-only — see YOUTUBE_ENABLED above
 
 // Health check — youtubeEnabled lets the admin UI hide the tab on hosted
