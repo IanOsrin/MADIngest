@@ -1,0 +1,253 @@
+// routes/vision-import.js — the Add Album tab: build a complete Gallo
+// Catalogue album (one Tape Files Master record + one song record per track)
+// from one or more Vision folders (vinyl A/B sides may live in separate
+// folders) plus the metadata cache (Gallo_Metadata_Extract),
+// writing Audio_URL so playback works immediately, exactly like the CYL 1054 /
+// TJL 13000 pilot records.
+//
+// Two endpoints, one shared planner:
+//   POST /preview — dry run. Lists the folder's audio, looks up the catalogue's
+//                   tracks in the metadata cache, matches rows ↔ files by
+//                   normalised title, and reports what WOULD be created.
+//                   Blocked (409-shaped payload) if the catalogue already has
+//                   Gallo records — this tab never appends to an existing album.
+//   POST /create  — re-runs the same plan server-side (never trusts a stale
+//                   browser payload), then writes: Tape Files Master first,
+//                   then each song record sequentially. createGalloRecord's
+//                   read-back verify covers Audio_URL.
+import { Router } from 'express'
+import express from 'express'
+import { adminAuth } from '../lib/admin-auth.js'
+import { visionStatus, visionList } from '../lib/vision-drive.js'
+import { loadMetadata, lookupAlbumTracks } from '../lib/metadata-cache.js'
+import { normTitle } from '../lib/gallo-vision-link.js'
+import { findGalloRecordsByCatalogue, createGalloRecord, createTapeFileRecord } from '../lib/fm-gallo.js'
+
+const router = Router()
+const AUDIO_RE = /\.(wav|flac|aif|aiff|mp3|m4a)$/i
+
+const yearOf = (s) => {
+  const m = String(s || '').match(/(\d{4})/)
+  return m ? m[1] : null
+}
+
+/**
+ * Match cache rows to the folders' audio files by normalised title.
+ * Two passes so "I Wanna See The Sun" can't steal
+ * "I Wanna See the Sun (Instrumental).wav": exact matches claim first,
+ * then containment runs over whatever is left, longest filename first.
+ * Files carry their source folder (A/B sides live in separate folders), so
+ * claims are keyed on the full path — same-named files on both sides stay
+ * individually claimable.
+ */
+function matchTracksToFiles(rows, files) {
+  const fileKey = (f) => `${f.folder}/${f.name}`
+  const claimed = new Map() // folder/name → row index
+  const matches = new Array(rows.length).fill(null)
+
+  rows.forEach((row, i) => {
+    const want = normTitle(row.track_name)
+    if (!want) return
+    const hit = files.find(f => !claimed.has(fileKey(f)) && normTitle(f.name) === want)
+    if (hit) { claimed.set(fileKey(hit), i); matches[i] = hit }
+  })
+
+  rows.forEach((row, i) => {
+    if (matches[i]) return
+    const want = normTitle(row.track_name)
+    if (!want) return
+    const candidates = files
+      .filter(f => !claimed.has(fileKey(f)))
+      .filter(f => { const nf = normTitle(f.name); return nf.includes(want) || want.includes(nf) })
+      .sort((a, b) => normTitle(b.name).length - normTitle(a.name).length)
+    if (candidates.length) { claimed.set(fileKey(candidates[0]), i); matches[i] = candidates[0] }
+  })
+
+  return { matches, unmatchedFiles: files.filter(f => !claimed.has(fileKey(f))) }
+}
+
+/** Build the full import plan. Throws {status, message} on bad input. */
+async function buildPlan({ folder, folders, catalogue, artist, album }) {
+  const fail = (status, message) => { throw Object.assign(new Error(message), { status }) }
+
+  // One or several folders (vinyl A/B sides often live in separate folders,
+  // e.g. …_ML 4090A and …_ML 4090B). Accept `folders` (array) or `folder`.
+  const folderList = [...new Set(
+    (Array.isArray(folders) ? folders : [folder])
+      .map(f => String(f || '').trim().replace(/\/+$/, ''))
+      .filter(Boolean)
+      .map(f => f.startsWith('/') ? f : '/' + f)
+  )]
+  catalogue = String(catalogue || '').trim()
+  artist    = String(artist    || '').trim()
+  album     = String(album     || '').trim()
+  if (!folderList.length) fail(400, 'At least one Vision folder path is required')
+  if (!catalogue) fail(400, 'Catalogue number is required')
+  // A slash means a folder path landed in the wrong field — catch it here
+  // rather than letting it fail as "catalogue not found in the cache".
+  if (catalogue.includes('/')) fail(400, `"${catalogue}" looks like a folder path, not a catalogue number — check the fields`)
+  if (!artist)    fail(400, 'Artist name is required')
+  if (!album)     fail(400, 'Album title is required')
+  if (!visionStatus().configured) fail(503, 'Vision drive is not configured')
+
+  // 1. The folders' audio files, each tagged with its source folder.
+  const files = []
+  const folderCounts = []
+  for (const dir of folderList) {
+    const { entries } = await visionList(dir).catch(e => fail(502, `Vision folder list failed for ${dir}: ${e.message}`))
+    const audio = (entries || []).filter(e => e.type === 'file' && AUDIO_RE.test(e.name))
+    folderCounts.push({ folder: dir, audioFiles: audio.length })
+    for (const f of audio) files.push({ name: f.name, size: f.size, folder: dir })
+  }
+  if (!files.length) fail(404, `No audio files found in ${folderList.join(' + ')}`)
+
+  // 2. The catalogue's track rows from the metadata cache.
+  await loadMetadata()
+  const rows = lookupAlbumTracks(catalogue)
+  if (!rows.length) fail(404, `Catalogue "${catalogue}" not found in the metadata cache — add it via the Cache Viewer first`)
+
+  // 3. Duplicate guard — this tab only creates brand-new albums.
+  const existing = await findGalloRecordsByCatalogue(catalogue).catch(e => fail(502, `FM duplicate check failed: ${e.message}`))
+  if (existing.length) {
+    return {
+      blocked: true,
+      existingCount: existing.length,
+      existing: existing.slice(0, 30).map(r => ({
+        fm_record_id: r.fm_record_id, title: r.title, isrc: r.isrc, sequence_no: r.sequence_no,
+      })),
+    }
+  }
+
+  // 4. Match rows ↔ files and shape the per-track create metadata.
+  const { matches, unmatchedFiles } = matchTracksToFiles(rows, files)
+  const first = rows[0]
+  const tracks = rows.map((row, i) => {
+    const file = matches[i]
+    return {
+      seq:        row.seq ?? null,
+      title:      row.track_name,
+      isrc:       row.isrc,
+      duration:   row.duration,
+      wav:        file ? file.name : null,
+      wav_folder: file ? file.folder : null,
+      size:       file ? file.size : null,
+      audio_url:  file ? `${file.folder}/${file.name}`.normalize('NFC') : null,
+      metadata: {
+        title:                 row.track_name,
+        artist:                row.track_artist || artist,
+        album_artist:          row.album_artist || artist,
+        featured_artist:       row.featured_artist,
+        album:                 album,
+        catalogue_no:          catalogue,
+        isrc:                  row.isrc,
+        barcode:               row.barcode,
+        sequence_no:           row.seq,
+        duration:              row.duration,
+        genre:                 row.genre,
+        language:              row.audio_language || row.language,
+        composers:             row.composer,
+        producers:             row.producer,
+        publishers:            row.publisher,
+        label:                 row.label,
+        p_line:                row.p_line,
+        c_line:                row.c_line,
+        release_date:          row.release_date,
+        original_release_date: row.original_release_date,
+        parental:              row.parental,
+        rights_territories:    row.rights_territories,
+        year:                  yearOf(row.release_date || row.original_release_date),
+        audio_url:             file ? `${file.folder}/${file.name}`.normalize('NFC') : null,
+        wav_filename:          file ? file.name : null,
+      },
+    }
+  })
+
+  const tapeMeta = {
+    album_artist:          first.album_artist || artist,
+    album:                 album,
+    catalogue_no:          catalogue,
+    barcode:               first.barcode,
+    year:                  yearOf(first.release_date || first.original_release_date),
+    release_date:          first.release_date,
+    original_release_date: first.original_release_date,
+    genre:                 first.genre,
+    language:              first.audio_language || first.language,
+    rights_territories:    first.rights_territories,
+    parental:              first.parental,
+    label:                 first.label,
+    p_line:                first.p_line,
+    c_line:                first.c_line,
+    publishers:            first.publisher,
+  }
+
+  return {
+    blocked: false,
+    folders: folderList, folderCounts, catalogue, artist, album,
+    tapeMeta, tracks,
+    matchedCount:   tracks.filter(t => t.wav).length,
+    unmatchedRows:  tracks.filter(t => !t.wav).length,
+    unmatchedFiles: unmatchedFiles.map(f => ({ name: f.name, size: f.size, folder: f.folder })),
+  }
+}
+
+const publicTrack = ({ metadata, ...t }) => t // strip the FM payload from responses
+
+router.post('/preview', adminAuth, express.json(), async (req, res) => {
+  try {
+    const plan = await buildPlan(req.body || {})
+    if (plan.blocked) return res.json({ ok: true, blocked: true, existingCount: plan.existingCount, existing: plan.existing })
+    res.json({
+      ok: true, blocked: false,
+      folders: plan.folders, folderCounts: plan.folderCounts, catalogue: plan.catalogue,
+      matchedCount: plan.matchedCount, unmatchedRows: plan.unmatchedRows,
+      tracks: plan.tracks.map(publicTrack),
+      unmatchedFiles: plan.unmatchedFiles,
+    })
+  } catch (e) {
+    console.error('[vision-import] preview failed:', e.message)
+    res.status(e.status || 500).json({ error: e.message })
+  }
+})
+
+router.post('/create', adminAuth, express.json(), async (req, res) => {
+  const includeUnmatched = req.body?.includeUnmatched !== false
+  try {
+    const plan = await buildPlan(req.body || {})
+    if (plan.blocked) {
+      return res.status(409).json({ error: `Catalogue "${req.body?.catalogue}" already has ${plan.existingCount} Gallo record(s) — refusing to create duplicates`, existing: plan.existing })
+    }
+
+    const toCreate = plan.tracks.filter(t => t.wav || includeUnmatched)
+    if (!toCreate.length) return res.status(400).json({ error: 'Nothing to create — no cache rows matched the folder\'s audio' })
+
+    console.log(`[vision-import] CREATE ${plan.catalogue} — "${plan.album}" by ${plan.artist}: ${toCreate.length} song record(s) (${plan.matchedCount} with audio), folder(s) ${plan.folders.join(' + ')}`)
+
+    // Tape Files Master first — album-level fields cascade onto songs via the
+    // FM relationship. A tape failure aborts the whole import (nothing else
+    // written yet), rather than leaving songs with no album record.
+    const { tapeRecordId } = await createTapeFileRecord(plan.tapeMeta)
+    console.log(`[vision-import] Tape Files Master created: ${tapeRecordId}`)
+
+    // Song records sequentially — keeps FM Data API load sane and the log readable.
+    const results = []
+    for (const t of toCreate) {
+      try {
+        const { fmRecordId } = await createGalloRecord(t.metadata)
+        results.push({ ...publicTrack(t), fmRecordId, ok: true })
+      } catch (e) {
+        console.warn(`[vision-import] ✗ ${t.title}: ${e.message}`)
+        results.push({ ...publicTrack(t), ok: false, error: e.message })
+      }
+    }
+
+    const created = results.filter(r => r.ok).length
+    const failed  = results.length - created
+    console.log(`[vision-import] DONE ${plan.catalogue}: tape ${tapeRecordId}, ${created} song(s) created${failed ? `, ${failed} FAILED` : ''}`)
+    res.json({ ok: failed === 0, tapeRecordId, created, failed, results })
+  } catch (e) {
+    console.error('[vision-import] create failed:', e.message)
+    res.status(e.status || 500).json({ error: e.message })
+  }
+})
+
+export default router

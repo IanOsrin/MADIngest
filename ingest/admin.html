@@ -294,6 +294,7 @@
       <button class="tab-btn" data-tab="youtube" onclick="showTab('youtube')">YouTube</button>
       <button class="tab-btn" data-tab="download" onclick="showTab('download')">Download</button>
       <button class="tab-btn" data-tab="vision" onclick="showTab('vision')">Vision</button>
+      <button class="tab-btn" data-tab="addalbum" onclick="showTab('addalbum')">Add Album</button>
     </nav>
 
     <!-- ── Catalog tab ──────────────────────────────────────── -->
@@ -1198,6 +1199,92 @@
               <th style="text-align:left">Status</th>
             </tr></thead>
             <tbody id="viBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Add Album tab ────────────────────────────────────── -->
+    <div id="tab-addalbum" class="tab-panel">
+      <div class="card">
+        <h3>Add Album — Vision folder &rarr; Gallo Catalogue</h3>
+        <p class="muted" style="margin:6px 0 14px">
+          Creates a complete new album: one <strong>Tape Files Master</strong> record plus a
+          <strong>song record per track</strong>, with metadata from the catalogue's rows in the
+          metadata cache and <strong>Audio_URL</strong> pointing at the Vision masters so playback
+          works immediately. Refuses to run if the catalogue already has Gallo records.
+        </p>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+          <input id="aaFolderSearch" placeholder="Find the album folder — search by artist / album / cat no…" style="min-width:320px;flex:1"
+            onkeydown="if(event.key==='Enter')aaFolderSearch()">
+          <button class="btn btn-ghost" onclick="aaFolderSearch()">Find folder</button>
+          <span id="aaFolderSearchStatus" class="muted"></span>
+        </div>
+        <div id="aaFolderHits" style="margin-bottom:12px"></div>
+        <div style="display:grid;grid-template-columns:1fr;gap:4px;margin-bottom:10px">
+          <label for="aaFolder" style="font-size:0.78rem;color:var(--muted)">Vision folder path(s) — one per line; add both folders when the A and B sides are split</label>
+          <textarea id="aaFolder" rows="2" placeholder="/gallo-digital-cupboard/Rendered Files/A-D/Artist/Artist_Album_CAT 123A&#10;/gallo-digital-cupboard/Rendered Files/A-D/Artist/Artist_Album_CAT 123B" style="font-family:monospace;font-size:0.82rem;width:100%;resize:vertical;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 10px;color:var(--text)"></textarea>
+        </div>
+        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px">
+          <div>
+            <label for="aaCat" style="font-size:0.78rem;color:var(--muted);display:block;margin-bottom:4px">Catalogue number</label>
+            <input id="aaCat" placeholder="e.g. BL 363" style="min-width:180px">
+          </div>
+          <div>
+            <label for="aaArtist" style="font-size:0.78rem;color:var(--muted);display:block;margin-bottom:4px">Artist</label>
+            <input id="aaArtist" placeholder="Artist name…" style="min-width:220px">
+          </div>
+          <div>
+            <label for="aaAlbum" style="font-size:0.78rem;color:var(--muted);display:block;margin-bottom:4px">Album title</label>
+            <input id="aaAlbum" placeholder="Album title…" style="min-width:220px">
+          </div>
+          <button class="btn" onclick="aaPreview()" id="aaPreviewBtn">Preview</button>
+          <span id="aaStatus" class="muted"></span>
+        </div>
+      </div>
+
+      <div class="card" id="aaPlanCard" style="display:none">
+        <h3 id="aaPlanTitle">Preview</h3>
+        <div id="aaBlocked" style="display:none;color:var(--red);font-size:0.86rem;margin:8px 0"></div>
+        <div id="aaSummary" class="muted" style="margin:8px 0"></div>
+        <div class="table-wrap" id="aaPlanWrap" style="display:none">
+          <table style="width:100%">
+            <thead><tr>
+              <th>Seq</th>
+              <th style="text-align:left">Track</th>
+              <th style="text-align:left">ISRC</th>
+              <th>Duration</th>
+              <th style="text-align:left">Vision audio</th>
+              <th style="text-align:right">Size</th>
+            </tr></thead>
+            <tbody id="aaPlanBody"></tbody>
+          </table>
+        </div>
+        <div id="aaExtras" class="muted" style="margin:10px 0;font-size:0.82rem"></div>
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:12px" id="aaCreateBar">
+          <label style="font-size:0.82rem;color:var(--muted)">
+            <input type="checkbox" id="aaIncludeUnmatched" checked>
+            also create tracks with no matched audio (Audio_URL left empty — link later)
+          </label>
+          <button class="btn" id="aaCreateBtn" onclick="aaCreate()">Create records in FileMaker</button>
+          <span id="aaCreateStatus" class="muted"></span>
+        </div>
+      </div>
+
+      <div class="card" id="aaResultCard" style="display:none">
+        <h3>Result</h3>
+        <div id="aaResultSummary" style="margin:8px 0;font-size:0.86rem"></div>
+        <div class="table-wrap">
+          <table style="width:100%">
+            <thead><tr>
+              <th>Seq</th>
+              <th style="text-align:left">Track</th>
+              <th style="text-align:left">FM record</th>
+              <th style="text-align:left">Audio_URL</th>
+              <th style="text-align:left">Status</th>
+              <th></th>
+            </tr></thead>
+            <tbody id="aaResultBody"></tbody>
           </table>
         </div>
       </div>
@@ -5313,6 +5400,189 @@ const _viOrigShowTab = showTab
 showTab = function (name) {
   _viOrigShowTab(name)
   if (name === 'vision' && !viChecked) { viChecked = true; viLoad('/') }
+}
+
+// ── Add Album tab ────────────────────────────────────────────────────────────
+// Folder finder: search the Vision audio index, then collapse the file hits to
+// their unique parent folders — the user picks a folder, not a file.
+async function aaFolderSearch() {
+  const q = document.getElementById('aaFolderSearch').value.trim()
+  const status = document.getElementById('aaFolderSearchStatus')
+  const hits = document.getElementById('aaFolderHits')
+  if (q.length < 2) { status.textContent = 'Type at least 2 characters.'; return }
+  status.textContent = 'Searching…'
+  hits.innerHTML = ''
+  try {
+    const r = await api(`/api/vision/search?q=${encodeURIComponent(q)}`)
+    const j = await r.json()
+    if (r.status === 409 && j.needsReindex) {
+      status.textContent = 'No Vision index yet — build it from the Vision tab (Reindex).'
+      return
+    }
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    const folders = new Map() // folder → file count
+    for (const f of (j.files || [])) {
+      const folder = f.path.replace(/\/[^/]+$/, '')
+      folders.set(folder, (folders.get(folder) || 0) + 1)
+    }
+    const top = [...folders.entries()].slice(0, 12)
+    if (!top.length) { status.textContent = 'No matches.'; return }
+    status.textContent = `${folders.size} folder${folders.size === 1 ? '' : 's'}${folders.size > top.length ? ` (showing ${top.length})` : ''}`
+    hits.innerHTML = top.map(([folder, n]) => `
+      <div style="padding:4px 0;font-family:monospace;font-size:0.78rem">
+        <a href="#" onclick="aaPickFolder(this.dataset.f);return false" data-f="${gfEsc(folder)}">${gfEsc(folder)}</a>
+        <span class="muted"> — ${n} audio file${n === 1 ? '' : 's'}</span>
+      </div>`).join('')
+  } catch (e) {
+    status.textContent = `Failed: ${e.message}`
+  }
+}
+
+function aaPickFolder(folder) {
+  // Accumulate, one folder per line — split A/B sides mean picking twice.
+  const el = document.getElementById('aaFolder')
+  const lines = el.value.split('\n').map(s => s.trim()).filter(Boolean)
+  if (!lines.includes(folder)) lines.push(folder)
+  el.value = lines.join('\n')
+  document.getElementById('aaFolderSearchStatus').textContent =
+    lines.length > 1 ? `${lines.length} folders selected — search again to add more, or Preview.` : ''
+  // Folder names follow Artist_Album Title_CAT NO — prefill what's empty.
+  const leaf = folder.split('/').pop() || ''
+  const parts = leaf.split('_')
+  if (parts.length >= 3) {
+    const catEl = document.getElementById('aaCat'), arEl = document.getElementById('aaArtist'), alEl = document.getElementById('aaAlbum')
+    if (!arEl.value.trim())  arEl.value  = parts[0].trim()
+    if (!alEl.value.trim())  alEl.value  = parts.slice(1, -1).join('_').replace(/^['"]|['"]$/g, '').trim()
+    // A trailing side letter on a numeric catalogue ("ML 4090A") isn't part of
+    // the catalogue number — strip it for the prefill (editable anyway).
+    if (!catEl.value.trim()) catEl.value = parts[parts.length - 1].trim().replace(/(\d)[ab]$/i, '$1')
+  }
+}
+
+function aaInputs() {
+  return {
+    folders:   document.getElementById('aaFolder').value.split('\n').map(s => s.trim()).filter(Boolean),
+    catalogue: document.getElementById('aaCat').value.trim(),
+    artist:    document.getElementById('aaArtist').value.trim(),
+    album:     document.getElementById('aaAlbum').value.trim(),
+  }
+}
+
+let aaPlan = null
+async function aaPreview() {
+  const status = document.getElementById('aaStatus')
+  const card = document.getElementById('aaPlanCard')
+  const inputs = aaInputs()
+  if (!inputs.folders.length || !inputs.catalogue || !inputs.artist || !inputs.album) {
+    status.textContent = 'All four fields are required.'; return
+  }
+  if (inputs.catalogue.includes('/')) {
+    status.textContent = 'The Catalogue number field contains a folder path — folder paths go in the big box above; the catalogue is e.g. "BL 363".'; return
+  }
+  if (inputs.artist.includes('/') || inputs.album.includes('/')) {
+    status.textContent = 'The Artist / Album title field contains a folder path — folder paths go in the big box above.'; return
+  }
+  status.textContent = 'Building preview (Vision + cache + duplicate check)…'
+  document.getElementById('aaResultCard').style.display = 'none'
+  card.style.display = 'none'
+  aaPlan = null
+  try {
+    const r = await api('/api/vision-import/preview', 'POST', inputs)
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    status.textContent = ''
+    card.style.display = ''
+    const blocked = document.getElementById('aaBlocked')
+    const summary = document.getElementById('aaSummary')
+    const wrap = document.getElementById('aaPlanWrap')
+    const bar = document.getElementById('aaCreateBar')
+    if (j.blocked) {
+      blocked.style.display = ''
+      blocked.innerHTML = `&#9888; Catalogue <strong>${gfEsc(inputs.catalogue)}</strong> already has
+        <strong>${j.existingCount}</strong> Gallo Catalogue record(s) — this tab only creates brand-new albums.<br>
+        ${(j.existing || []).map(x => `&nbsp;&nbsp;#${gfEsc(x.sequence_no ?? '')} ${gfEsc(x.title || '')} ${x.isrc ? `(${gfEsc(x.isrc)})` : ''}`).join('<br>')}`
+      summary.textContent = ''
+      wrap.style.display = 'none'
+      bar.style.display = 'none'
+      document.getElementById('aaExtras').textContent = ''
+      return
+    }
+    blocked.style.display = 'none'
+    bar.style.display = ''
+    aaPlan = j
+    summary.innerHTML = `<strong>${j.tracks.length}</strong> track row(s) in the metadata cache ·
+      <strong>${j.matchedCount}</strong> matched to Vision audio` +
+      (j.unmatchedRows ? ` · <span style="color:var(--gold)">${j.unmatchedRows} with no audio match</span>` : '') +
+      ((j.folderCounts || []).length > 1
+        ? `<br>${j.folderCounts.map(c => `<code>${gfEsc(c.folder.split('/').pop())}</code>: ${c.audioFiles} audio file(s)`).join(' · ')}`
+        : '')
+    wrap.style.display = ''
+    document.getElementById('aaPlanBody').innerHTML = j.tracks.map(t => `
+      <tr>
+        <td style="text-align:center">${t.seq ?? ''}</td>
+        <td style="text-align:left">${gfEsc(t.title || '')}</td>
+        <td style="text-align:left;font-family:monospace;font-size:0.78rem">${gfEsc(t.isrc || '')}</td>
+        <td style="text-align:center">${gfEsc(t.duration || '')}</td>
+        <td style="text-align:left;font-family:monospace;font-size:0.75rem">${t.wav
+          ? `&#127925; ${gfEsc(t.wav)}${(j.folderCounts || []).length > 1 && t.wav_folder
+              ? `<div class="muted" style="font-size:0.68rem">${gfEsc(t.wav_folder.split('/').pop())}</div>` : ''}`
+          : '<span style="color:var(--gold)">no match — Audio_URL will be empty</span>'}</td>
+        <td style="text-align:right;font-family:monospace;font-size:0.78rem">${t.size ? viSize(t.size) : ''}</td>
+      </tr>`).join('')
+    document.getElementById('aaExtras').innerHTML = (j.unmatchedFiles || []).length
+      ? `Audio in the folder(s) with no cache row (will NOT be imported): ` +
+        j.unmatchedFiles.map(f => `<code>${gfEsc(f.name)}</code>${(j.folderCounts || []).length > 1 && f.folder
+          ? `<span class="muted" style="font-size:0.72rem"> [${gfEsc(f.folder.split('/').pop())}]</span>` : ''}`).join(', ')
+      : ''
+  } catch (e) {
+    status.textContent = `Preview failed: ${e.message}`
+  }
+}
+
+async function aaCreate() {
+  if (!aaPlan) return
+  const inputs = aaInputs()
+  const includeUnmatched = document.getElementById('aaIncludeUnmatched').checked
+  const n = includeUnmatched ? aaPlan.tracks.length : aaPlan.matchedCount
+  if (!confirm(`Create 1 Tape Files Master record + ${n} song record(s) for ${inputs.catalogue} in the LIVE Gallo Catalogue?`)) return
+  const status = document.getElementById('aaCreateStatus')
+  const btn = document.getElementById('aaCreateBtn')
+  btn.disabled = true
+  status.textContent = `Creating ${n} record(s) — sequential FM writes, this can take a minute…`
+  try {
+    const r = await api('/api/vision-import/create', 'POST', { ...inputs, includeUnmatched })
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    status.textContent = ''
+    const card = document.getElementById('aaResultCard')
+    card.style.display = ''
+    document.getElementById('aaResultSummary').innerHTML =
+      `Tape Files Master: <code>${gfEsc(j.tapeRecordId)}</code> ·
+       <strong>${j.created}</strong> song record(s) created` +
+      (j.failed ? ` · <span style="color:var(--red)">${j.failed} FAILED</span>` : ' · all verified by read-back')
+    document.getElementById('aaResultBody').innerHTML = (j.results || []).map(t => `
+      <tr>
+        <td style="text-align:center">${t.seq ?? ''}</td>
+        <td style="text-align:left">${gfEsc(t.title || '')}</td>
+        <td style="text-align:left;font-family:monospace;font-size:0.78rem">${gfEsc(t.fmRecordId || '')}</td>
+        <td style="text-align:left;font-family:monospace;font-size:0.72rem">${gfEsc(t.audio_url || '')}</td>
+        <td style="text-align:left">${t.ok
+          ? '<span style="color:var(--gold)">&#10004; created</span>'
+          : `<span style="color:var(--red)">&#10008; ${gfEsc(t.error || 'failed')}</span>`}</td>
+        <td>${t.ok && t.audio_url
+          ? `<a class="btn btn-ghost" style="font-size:0.72rem" target="_blank" href="/api/gallo/player/${encodeURIComponent(t.fmRecordId)}">Play</a>`
+          : ''}</td>
+      </tr>`).join('')
+    // A successful create means the catalogue now EXISTS — clear the plan so a
+    // stray second click re-previews (and hits the duplicate guard) instead of
+    // double-creating.
+    aaPlan = null
+    document.getElementById('aaPlanCard').style.display = 'none'
+  } catch (e) {
+    status.textContent = `Create failed: ${e.message}`
+  } finally {
+    btn.disabled = false
+  }
 }
 
 </script>
