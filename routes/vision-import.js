@@ -19,10 +19,10 @@ import { Router } from 'express'
 import express from 'express'
 import { adminAuth } from '../lib/admin-auth.js'
 import { visionStatus, visionList } from '../lib/vision-drive.js'
-import { loadMetadata, lookupAlbumTracks } from '../lib/metadata-cache.js'
+import { loadMetadata, lookupAlbumTracks, getStatus } from '../lib/metadata-cache.js'
 import { normTitle } from '../lib/gallo-vision-link.js'
-import { findGalloRecordsByCatalogue, createGalloRecord, createTapeFileRecord } from '../lib/fm-gallo.js'
-import { readVisionWavInfo, buildSoundInfoBlock } from '../lib/wav-info.js'
+import { findGalloRecordsByCatalogue, createGalloRecord, createTapeFileRecord, reloadGalloLayoutFields } from '../lib/fm-gallo.js'
+import { readVisionWavInfo, buildSoundInfoBlock, computeVisionMd5 } from '../lib/wav-info.js'
 
 const router = Router()
 const AUDIO_RE = /\.(wav|flac|aif|aiff|mp3|m4a)$/i
@@ -121,8 +121,10 @@ async function buildPlan({ folder, folders, catalogue, artist, album }) {
   }
   if (!files.length) fail(404, `No audio files found in ${folderList.join(' + ')}`)
 
-  // 2. The catalogue's track rows from the metadata cache.
-  await loadMetadata()
+  // 2. The catalogue's track rows from the metadata cache. The cache loads at
+  // boot (routes/ingest.js); only trigger a load when that hasn't finished —
+  // reloading per-request would re-pull the whole extract from S3 every click.
+  if (!getStatus().loaded) await loadMetadata()
   const rows = lookupAlbumTracks(catalogue)
   if (!rows.length) fail(404, `Catalogue "${catalogue}" not found in the metadata cache — add it via the Cache Viewer first`)
 
@@ -177,7 +179,9 @@ async function buildPlan({ folder, folders, catalogue, artist, album }) {
         rights_territories:    row.rights_territories,
         year:                  yearOf(row.release_date || row.original_release_date),
         audio_url:             file ? `${file.folder}/${file.name}`.normalize('NFC') : null,
-        wav_filename:          file ? file.name : null,
+        // Deliberately NO wav_filename: the FM 'Filename' field must stay
+        // empty on Add Album records (Ian, 2026-07-24) — Audio_URL is the
+        // audio reference. audio_hash_md5 is computed at create time.
       },
     }
   })
@@ -213,8 +217,10 @@ async function buildPlan({ folder, folders, catalogue, artist, album }) {
 const publicTrack = ({ metadata, ...t }) => t // strip the FM payload from responses
 
 router.post('/preview', adminAuth, express.json(), async (req, res) => {
+  const t0 = Date.now()
   try {
     const plan = await buildPlan(req.body || {})
+    console.log(`[vision-import] preview ${req.body?.catalogue}: ok in ${Date.now() - t0}ms${plan.blocked ? ' (blocked)' : ''}`)
     if (plan.blocked) return res.json({ ok: true, blocked: true, existingCount: plan.existingCount, existing: plan.existing })
     res.json({
       ok: true, blocked: false,
@@ -224,7 +230,7 @@ router.post('/preview', adminAuth, express.json(), async (req, res) => {
       unmatchedFiles: plan.unmatchedFiles,
     })
   } catch (e) {
-    console.error('[vision-import] preview failed:', e.message)
+    console.error(`[vision-import] preview ${req.body?.catalogue} FAILED after ${Date.now() - t0}ms:`, e.message)
     res.status(e.status || 500).json({ error: e.message })
   }
 })
@@ -242,6 +248,11 @@ router.post('/create', adminAuth, express.json(), async (req, res) => {
 
     console.log(`[vision-import] CREATE ${plan.catalogue} — "${plan.album}" by ${plan.artist}: ${toCreate.length} song record(s) (${plan.matchedCount} with audio), folder(s) ${plan.folders.join(' + ')}`)
 
+    // Re-introspect the layout once per run — fields like "Audio details" are
+    // often added in FileMaker mid-session and the in-process cache would
+    // silently drop writes to them otherwise (same pattern as the enrich flow).
+    reloadGalloLayoutFields()
+
     // Tape Files Master first — album-level fields cascade onto songs via the
     // FM relationship. A tape failure aborts the whole import (nothing else
     // written yet), rather than leaving songs with no album record.
@@ -252,9 +263,9 @@ router.post('/create', adminAuth, express.json(), async (req, res) => {
     const results = []
     for (const t of toCreate) {
       try {
-        // Fill "Audio details" from the WAV header (the Media_GetSoundInfo
-        // block FileMaker always stored). A header-read failure never blocks
-        // the create — the field just stays empty for that track.
+        // Fill "Audio details" (the Media_GetSoundInfo block, from the WAV
+        // header) and AudioHashSum (MD5, streamed over the whole file). A
+        // read failure never blocks the create — that field just stays empty.
         if (t.audio_url) {
           try {
             const read = await readVisionWavInfo(t.audio_url)
@@ -262,9 +273,16 @@ router.post('/create', adminAuth, express.json(), async (req, res) => {
           } catch (e) {
             console.warn(`[vision-import] audio-details read failed for ${t.title}: ${e.message}`)
           }
+          try {
+            const tHash = Date.now()
+            t.metadata.audio_hash_md5 = await computeVisionMd5(t.audio_url)
+            console.log(`[vision-import] md5 ${t.title}: ${t.metadata.audio_hash_md5} (${Date.now() - tHash}ms)`)
+          } catch (e) {
+            console.warn(`[vision-import] md5 failed for ${t.title}: ${e.message}`)
+          }
         }
         const { fmRecordId } = await createGalloRecord(t.metadata)
-        results.push({ ...publicTrack(t), fmRecordId, ok: true, audioDetails: !!t.metadata.audio_details })
+        results.push({ ...publicTrack(t), fmRecordId, ok: true, audioDetails: !!t.metadata.audio_details, audioHash: t.metadata.audio_hash_md5 || null })
       } catch (e) {
         console.warn(`[vision-import] ✗ ${t.title}: ${e.message}`)
         results.push({ ...publicTrack(t), ok: false, error: e.message })

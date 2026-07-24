@@ -295,6 +295,7 @@
       <button class="tab-btn" data-tab="download" onclick="showTab('download')">Download</button>
       <button class="tab-btn" data-tab="vision" onclick="showTab('vision')">Vision</button>
       <button class="tab-btn" data-tab="addalbum" onclick="showTab('addalbum')">Add Album</button>
+      <button class="tab-btn" data-tab="visionupload" onclick="showTab('visionupload')">To Vision</button>
     </nav>
 
     <!-- ── Catalog tab ──────────────────────────────────────── -->
@@ -1290,6 +1291,64 @@
       </div>
     </div>
 
+    <!-- ── To Vision tab (local-only) ───────────────────────── -->
+    <div id="tab-visionupload" class="tab-panel">
+      <div class="card">
+        <h3>To Vision — copy a local folder up (add-only)</h3>
+        <p class="muted" style="margin:6px 0 14px">
+          Copies every file from a folder on this Mac to a Vision folder. <strong>Never overwrites:</strong>
+          files already on Vision are skipped — shown in the preview, re-checked before each upload,
+          and every upload is size-verified afterwards. Subfolders come along with their structure.
+        </p>
+        <div style="display:grid;grid-template-columns:1fr;gap:4px;margin-bottom:10px">
+          <label for="vuLocal" style="font-size:0.78rem;color:var(--muted)">Local folder on this Mac (Finder: right-click folder &rarr; hold &#8997; Option &rarr; "Copy … as Pathname")</label>
+          <input id="vuLocal" placeholder="/Users/ianosrin/Desktop/New Album Masters" style="font-family:monospace;font-size:0.82rem">
+        </div>
+        <div style="display:grid;grid-template-columns:1fr;gap:4px;margin-bottom:10px">
+          <label for="vuDest" style="font-size:0.78rem;color:var(--muted)">Vision destination folder (may be new — it's created by the upload)</label>
+          <input id="vuDest" placeholder="/gallo-digital-cupboard/Rendered Files/A-D/Artist/Artist_Album_CAT 123" style="font-family:monospace;font-size:0.82rem">
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
+          <button class="btn" onclick="vuPreview()" id="vuPreviewBtn">Preview</button>
+          <span id="vuStatus" class="muted"></span>
+        </div>
+      </div>
+
+      <div class="card" id="vuPlanCard" style="display:none">
+        <h3>Preview</h3>
+        <div id="vuSummary" class="muted" style="margin:8px 0"></div>
+        <div class="table-wrap">
+          <table style="width:100%">
+            <thead><tr>
+              <th style="text-align:left">File</th>
+              <th style="text-align:right">Size</th>
+              <th style="text-align:left">Status</th>
+            </tr></thead>
+            <tbody id="vuPlanBody"></tbody>
+          </table>
+        </div>
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:12px">
+          <button class="btn" id="vuUploadBtn" onclick="vuUpload()">Upload new files to Vision</button>
+          <span id="vuUploadStatus" class="muted"></span>
+        </div>
+      </div>
+
+      <div class="card" id="vuResultCard" style="display:none">
+        <h3>Result</h3>
+        <div id="vuResultSummary" style="margin:8px 0;font-size:0.86rem"></div>
+        <div class="table-wrap">
+          <table style="width:100%">
+            <thead><tr>
+              <th style="text-align:left">File</th>
+              <th style="text-align:right">Size</th>
+              <th style="text-align:left">Status</th>
+            </tr></thead>
+            <tbody id="vuResultBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <!-- ── YouTube tab ──────────────────────────────────────── -->
     <div id="tab-youtube" class="tab-panel">
       <div class="import-section" style="margin-bottom:24px">
@@ -1530,6 +1589,7 @@ function _removeTab(name) {
     const data = await res.json().catch(() => ({}))
     if (data && data.youtubeEnabled === false) _removeTab('youtube')
     if (data && data.ddexEnabled   === false) _removeTab('generate')
+    if (data && data.visionUploadEnabled === false) _removeTab('visionupload')
   } catch { /* health unreachable — leave the tabs as-is */ }
 })()
 
@@ -5549,7 +5609,7 @@ async function aaCreate() {
   const status = document.getElementById('aaCreateStatus')
   const btn = document.getElementById('aaCreateBtn')
   btn.disabled = true
-  status.textContent = `Creating ${n} record(s) — sequential FM writes, this can take a minute…`
+  status.textContent = `Creating ${n} record(s) — each track streams from Vision for its MD5 hash, so allow a few minutes…`
   try {
     const r = await api('/api/vision-import/create', 'POST', { ...inputs, includeUnmatched })
     const j = await r.json()
@@ -5581,6 +5641,86 @@ async function aaCreate() {
     document.getElementById('aaPlanCard').style.display = 'none'
   } catch (e) {
     status.textContent = `Create failed: ${e.message}`
+  } finally {
+    btn.disabled = false
+  }
+}
+
+// ── To Vision tab (add-only local → Vision upload) ──────────────────────────
+let vuPlan = null
+
+function vuInputs() {
+  return {
+    localFolder:  document.getElementById('vuLocal').value.trim(),
+    visionFolder: document.getElementById('vuDest').value.trim(),
+  }
+}
+
+async function vuPreview() {
+  const status = document.getElementById('vuStatus')
+  const inputs = vuInputs()
+  if (!inputs.localFolder || !inputs.visionFolder) { status.textContent = 'Both folders are required.'; return }
+  status.textContent = 'Scanning local folder and checking Vision for each file…'
+  document.getElementById('vuPlanCard').style.display = 'none'
+  document.getElementById('vuResultCard').style.display = 'none'
+  vuPlan = null
+  try {
+    const r = await api('/api/vision-upload/preview', 'POST', inputs)
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    status.textContent = ''
+    vuPlan = j
+    document.getElementById('vuPlanCard').style.display = ''
+    document.getElementById('vuSummary').innerHTML =
+      `<strong>${j.newCount}</strong> new file(s) to upload (${viSize(j.totalNewBytes)})` +
+      (j.existingCount ? ` · <span style="color:var(--gold)">${j.existingCount} already on Vision — will be skipped, never overwritten</span>` : '')
+    document.getElementById('vuPlanBody').innerHTML = j.files.map(f => `
+      <tr>
+        <td style="text-align:left;font-family:monospace;font-size:0.78rem">${gfEsc(f.rel)}</td>
+        <td style="text-align:right;font-family:monospace;font-size:0.78rem">${viSize(f.size)}</td>
+        <td style="text-align:left">${f.exists
+          ? `<span style="color:var(--gold)">already on Vision (${viSize(f.existingSize)}) — skip</span>`
+          : '<span>NEW — will upload</span>'}</td>
+      </tr>`).join('')
+    document.getElementById('vuUploadBtn').disabled = j.newCount === 0
+  } catch (e) {
+    status.textContent = `Preview failed: ${e.message}`
+  }
+}
+
+async function vuUpload() {
+  if (!vuPlan) return
+  const inputs = vuInputs()
+  if (!confirm(`Upload ${vuPlan.newCount} new file(s) (${viSize(vuPlan.totalNewBytes)}) to ${inputs.visionFolder}?\n\nExisting files are skipped — nothing is ever overwritten.`)) return
+  const status = document.getElementById('vuUploadStatus')
+  const btn = document.getElementById('vuUploadBtn')
+  btn.disabled = true
+  status.textContent = `Uploading ${vuPlan.newCount} file(s) — large masters take a while, watch the server log for per-file progress…`
+  try {
+    const r = await api('/api/vision-upload/upload', 'POST', inputs)
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    status.textContent = ''
+    document.getElementById('vuResultCard').style.display = ''
+    document.getElementById('vuResultSummary').innerHTML =
+      `<strong>${j.uploaded}</strong> uploaded &amp; size-verified` +
+      (j.failed ? ` · <span style="color:var(--red)">${j.failed} FAILED</span>` : '') +
+      (j.skippedExisting ? ` · ${j.skippedExisting} skipped (already on Vision)` : '') +
+      (j.note ? `<br><span class="muted">${gfEsc(j.note)}</span>` : '')
+    document.getElementById('vuResultBody').innerHTML = (j.results || []).map(f => `
+      <tr>
+        <td style="text-align:left;font-family:monospace;font-size:0.78rem">${gfEsc(f.rel)}</td>
+        <td style="text-align:right;font-family:monospace;font-size:0.78rem">${viSize(f.size)}</td>
+        <td style="text-align:left">${f.ok
+          ? `<span style="color:var(--gold)">&#10004; uploaded${f.seconds != null ? ` (${f.seconds}s)` : ''}</span>`
+          : `<span style="color:var(--red)">&#10008; ${gfEsc(f.error || 'failed')}</span>`}</td>
+      </tr>`).join('')
+    // Force a fresh preview before any further upload — the folder contents
+    // on Vision just changed.
+    vuPlan = null
+    document.getElementById('vuPlanCard').style.display = 'none'
+  } catch (e) {
+    status.textContent = `Upload failed: ${e.message}`
   } finally {
     btn.disabled = false
   }

@@ -9,10 +9,12 @@
 // uses a self-signed cert a browser/web-viewer would reject on a direct hit.
 import { Router } from 'express'
 import { Readable } from 'node:stream'
-import { getGalloFieldData, getGalloLayoutFieldSet, updateGalloRecord } from '../lib/fm-gallo.js'
+import { getGalloFieldData, getGalloLayoutFieldSet, updateGalloRecord, reloadGalloLayoutFields } from '../lib/fm-gallo.js'
 import { resolveGalloAudio, resolveGalloAudioLive } from '../lib/gallo-vision.js'
 import { visionOpen, visionStat } from '../lib/vision-drive.js'
 import { parseWavHeader, buildSoundInfoBlock, hmsMillis, readVisionWavInfo } from '../lib/wav-info.js'
+import { wavBufferToMp3 } from '../lib/audio-convert.js'
+import { uploadMp3ByGcat } from '../lib/s3-imports.js'
 
 const router = Router()
 
@@ -87,6 +89,7 @@ router.get('/audio/:recordId/info', async (req, res) => {
     // capitalisation; write whichever variant the layout actually has.
     let wrote = null
     if (String(req.query.write || '') === '1') {
+      reloadGalloLayoutFields() // pick up fields added in FM since boot
       const known = await getGalloLayoutFieldSet()
       const fieldName = ['Audio details', 'Audio Details', 'Audio_Details'].find(n => known.has(n))
       if (!fieldName) return res.status(422).json({ error: 'No "Audio details" field on the layout — add it in FileMaker first (same as Audio_URL)' })
@@ -114,6 +117,64 @@ router.get('/audio/:recordId/info', async (req, res) => {
   } catch (e) {
     console.error('[gallo-audio info] failed:', e.message)
     res.status(500).json({ error: e.message })
+  }
+})
+
+// ── WAV → MP3 → S3 (replaces the localhost:8765 convert helper) ─────────────
+// The old FM batch script sent a moviemac: mount path to a local helper app.
+// Same contract, no mount: FileMaker sends just the record ID; we resolve the
+// WAV like playback does (Audio_URL → Vision), convert with ffmpeg, upload to
+// s3 mp3/<Filename>.mp3 and return { ok:1, s3_url } for the script to store
+// in the File URL field (NOT Audio_URL — that's the Vision master reference).
+// Errors come back as { ok:0, step, error }, the shape the script logs.
+//   GET /audio/:recordId/convert-mp3
+const CONVERT_MAX_MB = Number(process.env.MP3_CONVERT_MAX_MB || 700)
+
+router.get('/audio/:recordId/convert-mp3', async (req, res) => {
+  let step = 'auth'
+  const t0 = Date.now()
+  const fail = (status, error) => res.status(status).json({ ok: 0, step, error })
+  try {
+    if (!keyOk(req)) return fail(403, 'Forbidden')
+
+    step = 'record'
+    const f = await getGalloFieldData(req.params.recordId)
+    if (!f) return fail(404, 'Record not found')
+
+    step = 'filename'
+    const base = String(f['Filename'] || '').trim().replace(/\.wav$/i, '')
+    if (!base) return fail(422, 'Filename field is empty — enter it before converting (it names the S3 key mp3/<Filename>.mp3)')
+
+    step = 'resolve'
+    const r = await resolveGalloAudioLive(f)
+    if (!r.ok) return fail(404, `No resolvable audio (${r.reason})`)
+    if (r.kind === 'vision' && r.exists === false) return fail(404, 'Audio file not found on Vision')
+
+    step = 'download'
+    let wavBuf
+    if (r.kind === 'url') {
+      const resp = await fetch(r.url)
+      if (!resp.ok) return fail(502, `Source URL fetch failed: HTTP ${resp.status}`)
+      wavBuf = Buffer.from(await resp.arrayBuffer())
+    } else {
+      const stat = await visionStat(r.path)
+      if (stat?.size && stat.size > CONVERT_MAX_MB * 1e6) return fail(413, `Source is ${Math.round(stat.size / 1e6)}MB — over the ${CONVERT_MAX_MB}MB conversion cap`)
+      const obj = await visionOpen(r.path)
+      wavBuf = Buffer.from(await obj.Body.transformToByteArray())
+    }
+
+    step = 'convert'
+    const mp3Buf = await wavBufferToMp3(wavBuf)
+
+    step = 'upload'
+    const { key, url } = await uploadMp3ByGcat(mp3Buf, base)
+
+    console.log(`[gallo-audio convert] ${req.params.recordId} ${base}: ${Math.round(wavBuf.length / 1e6)}MB WAV → ${Math.round(mp3Buf.length / 1e6)}MB MP3 → ${key} in ${Math.round((Date.now() - t0) / 1000)}s`)
+    res.json({ ok: 1, s3_key: key, s3_url: url, base, source: r.kind === 'url' ? r.url : r.path,
+               wav_bytes: wavBuf.length, mp3_bytes: mp3Buf.length, seconds: Math.round((Date.now() - t0) / 1000) })
+  } catch (e) {
+    console.error(`[gallo-audio convert] ${req.params.recordId} failed at ${step}:`, e.message)
+    fail(500, e.message)
   }
 })
 

@@ -10,6 +10,7 @@ import genreFixRouter from './routes/genre-fix.js'
 import downloadTrackRouter from './routes/download-track.js'
 import visionRouter from './routes/vision.js'
 import visionImportRouter from './routes/vision-import.js'
+import visionUploadRouter from './routes/vision-upload.js'
 import galloAudioRouter from './routes/gallo-audio.js'
 import { getValueList } from './lib/fm-gallo.js'
 
@@ -36,6 +37,12 @@ const YOUTUBE_ENABLED =
 const DDEX_ENABLED =
   process.env.DDEX_ENABLED === 'true' ||
   (process.env.DDEX_ENABLED !== 'false' && process.env.NODE_ENV !== 'production')
+
+// Vision Upload copies files from the LOCAL filesystem up to Vision — there is
+// no local filesystem worth reading on Render, so it's local-only like DDEX.
+const VISION_UPLOAD_ENABLED =
+  process.env.VISION_UPLOAD_ENABLED === 'true' ||
+  (process.env.VISION_UPLOAD_ENABLED !== 'false' && process.env.NODE_ENV !== 'production')
 
 app.use(cors())
 app.use(express.json())
@@ -140,11 +147,12 @@ app.use('/api/genre-fix', genreFixRouter)
 app.use('/api/download-track', downloadTrackRouter)
 app.use('/api/vision', visionRouter)
 app.use('/api/vision-import', visionImportRouter)
+if (VISION_UPLOAD_ENABLED) app.use('/api/vision-upload', visionUploadRouter) // local-only — see VISION_UPLOAD_ENABLED above
 app.use('/api/gallo', galloAudioRouter)
 if (YOUTUBE_ENABLED) app.use('/api/youtube', youtubeRouter)   // local-only — see YOUTUBE_ENABLED above
 
 // Health check — youtubeEnabled lets the admin UI hide the tab on hosted
-app.get('/health', (req, res) => res.json({ ok: true, service: 'gallo-ingest', youtubeEnabled: YOUTUBE_ENABLED, ddexEnabled: DDEX_ENABLED }))
+app.get('/health', (req, res) => res.json({ ok: true, service: 'gallo-ingest', youtubeEnabled: YOUTUBE_ENABLED, ddexEnabled: DDEX_ENABLED, visionUploadEnabled: VISION_UPLOAD_ENABLED }))
 
 // Root + shorthand redirects
 app.get('/', (req, res) => res.redirect('/ingest/admin'))
