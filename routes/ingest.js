@@ -916,37 +916,38 @@ async function _streamHttpToFile(url, dest, timeoutMs) {
   } finally { clearTimeout(to) }
 }
 
-// Fetch one track's audio and stream it to `dest`. Prefers a plain http(s) URL
-// (fast, no FM machinery); a FileMaker moviemac container is resolved to Vision
-// and streamed from S3 (no Mountain Duck mount); else the S3-imports fallback.
+// Fetch one track's audio and stream it to `dest`. Source priority mirrors
+// playback (resolveGalloAudio): the connected Vision master (Audio_URL) FIRST,
+// then the live container (a moviemac path → Vision, or a legacy http URL such
+// as digitalcupboard), then the S3-imports fallback. This is what makes the
+// build package the 24-bit Vision masters we linked — not the slow container.
 async function _streamTrackAudioToFile(t, dest, { urlToKey, timeoutMs }) {
-  const ac = t.audio_container_url
-  if (ac && /^https?:\/\//i.test(ac)) {
-    return { ...(await _streamHttpToFile(ac, dest, timeoutMs)), source: 'http url' }
+  const r = resolveGalloAudio({
+    'Audio_URL':  t.audio_url_ref || null,
+    'Audio File': t.audio_container_url || null,
+    'Track Name': t.title,
+  })
+  if (r.ok && r.kind === 'vision') {
+    const ctrl = new AbortController()
+    const to = setTimeout(() => ctrl.abort(), timeoutMs)
+    try {
+      const obj = await visionOpen(r.path)
+      const body = obj.Body?.transformToWebStream ? Readable.fromWeb(obj.Body.transformToWebStream()) : obj.Body
+      return { ...(await _pipeToFileHashed(body, dest)), source: `Vision (${r.source})` }
+    } finally { clearTimeout(to) }
   }
-  if (ac && ac.startsWith('movie:')) {
-    const r = resolveGalloAudio({ 'Audio File': ac, 'Track Name': t.title })
-    if (r.ok && r.kind === 'vision') {
-      const ctrl = new AbortController()
-      const to = setTimeout(() => ctrl.abort(), timeoutMs)
-      try {
-        const obj = await visionOpen(r.path)
-        const body = obj.Body?.transformToWebStream ? Readable.fromWeb(obj.Body.transformToWebStream()) : obj.Body
-        return { ...(await _pipeToFileHashed(body, dest)), source: 'Vision' }
-      } finally { clearTimeout(to) }
-    }
-    if (r.ok && r.kind === 'url') {
-      return { ...(await _streamHttpToFile(r.url, dest, timeoutMs)), source: 'legacy url' }
-    }
-    throw new Error(`unresolvable audio (${r.reason || 'no Vision path'})`)
+  if (r.ok && r.kind === 'url') {
+    return { ...(await _streamHttpToFile(r.url, dest, timeoutMs)), source: `http url (${r.source})` }
   }
+  // S3-imports fallback (pending-import assets not yet on Vision) — uses the S3
+  // SDK, not a plain fetch, so keep it out of the resolver above.
   const key = urlToKey(t.s3_url)
   if (key) {
     const buf = await downloadImport(key)
     await writeFile(dest, buf)
     return { md5: crypto.createHash('md5').update(buf).digest('hex').toUpperCase(), byteSize: buf.length, riffOk: buf[0] === 0x52, source: 'S3' }
   }
-  throw new Error('no audio source on record (neither Audio File container nor File URL)')
+  throw new Error(`no audio source on record (${r.reason || 'unresolved'}; no Audio_URL / Audio File / File URL)`)
 }
 
 // Download a Vision object fully into a buffer (used for small assets like
@@ -3759,6 +3760,9 @@ async function _hydrateFromGallo(cmsTracks, catalogueNo) {
     return {
       ...c,
       audio_container_url:   c.audio_container_url   || g.audio_container_url   || null,
+      // Carry the Gallo Vision master reference so CMS-source builds package the
+      // 24-bit master too (the DDEX fetch prefers Audio_URL over the container).
+      audio_url_ref:         c.audio_url_ref         || g.audio_url_ref         || null,
       s3_url:                c.s3_url                || g.s3_url                || null,
       audio_url:             c.audio_url             || g.s3_url                || null,
       artwork_container_url: c.artwork_container_url || g.artwork_container_url || albumArtContainer || null,

@@ -25,6 +25,17 @@ const YOUTUBE_ENABLED =
   process.env.YOUTUBE_ENABLED === 'true' ||
   (process.env.YOUTUBE_ENABLED !== 'false' && process.env.NODE_ENV !== 'production')
 
+// The "Generate DDEX" build packages 24-bit WAV masters into an Ingrooves folder
+// on the LOCAL disk — a heavy batch job (hundreds of MB, cross-continent pulls
+// from Vision) that writes to a real folder you can see. On the hosted plan that
+// folder is Render's ephemeral disk (invisible + wiped on deploy) and the pulls
+// OOM/crawl on 512MB. So, like YouTube, it's local-only: hosted (NODE_ENV=
+// production) → off. Set DDEX_ENABLED=true to force it on. (The lightweight DDEX
+// *validator* tab, which only parses uploaded packages, is unaffected.)
+const DDEX_ENABLED =
+  process.env.DDEX_ENABLED === 'true' ||
+  (process.env.DDEX_ENABLED !== 'false' && process.env.NODE_ENV !== 'production')
+
 app.use(cors())
 app.use(express.json())
 
@@ -131,7 +142,7 @@ app.use('/api/gallo', galloAudioRouter)
 if (YOUTUBE_ENABLED) app.use('/api/youtube', youtubeRouter)   // local-only — see YOUTUBE_ENABLED above
 
 // Health check — youtubeEnabled lets the admin UI hide the tab on hosted
-app.get('/health', (req, res) => res.json({ ok: true, service: 'gallo-ingest', youtubeEnabled: YOUTUBE_ENABLED }))
+app.get('/health', (req, res) => res.json({ ok: true, service: 'gallo-ingest', youtubeEnabled: YOUTUBE_ENABLED, ddexEnabled: DDEX_ENABLED }))
 
 // Root + shorthand redirects
 app.get('/', (req, res) => res.redirect('/ingest/admin'))

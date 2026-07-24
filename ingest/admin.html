@@ -1424,20 +1424,26 @@ function showTab(name) {
   if (name === 'youtube') youtubeInit()
 }
 
-// YouTube rendering is local-only (server gates it behind YOUTUBE_ENABLED —
-// 1080p ffmpeg encodes OOM the 512MB hosted plan). Hide the tab on the hosted
-// instance so it's never offered where it can't run. /health is unauthenticated.
+// YouTube rendering and the "Generate DDEX" build are both LOCAL-ONLY batch jobs
+// (server gates them behind YOUTUBE_ENABLED / DDEX_ENABLED — 1080p ffmpeg encodes
+// and 24-bit WAV packaging OOM/crawl the 512MB hosted plan, and DDEX writes to a
+// local folder that's invisible/ephemeral on Render). Hide their tabs on the
+// hosted instance so they're never offered where they can't run. The lightweight
+// "DDEX" validator tab (data-tab="ddex") only parses uploads, so it stays.
+// /health is unauthenticated.
+function _removeTab(name) {
+  const btn = document.querySelector(`.tab-btn[data-tab="${name}"]`)
+  if (btn) btn.remove()
+  const panel = document.getElementById(`tab-${name}`)
+  if (panel) panel.remove()
+}
 ;(async () => {
   try {
     const res  = await fetch('/health')
     const data = await res.json().catch(() => ({}))
-    if (data && data.youtubeEnabled === false) {
-      const btn = document.querySelector('.tab-btn[data-tab="youtube"]')
-      if (btn) btn.remove()
-      const panel = document.getElementById('tab-youtube')
-      if (panel) panel.remove()
-    }
-  } catch { /* health unreachable — leave the tab as-is */ }
+    if (data && data.youtubeEnabled === false) _removeTab('youtube')
+    if (data && data.ddexEnabled   === false) _removeTab('generate')
+  } catch { /* health unreachable — leave the tabs as-is */ }
 })()
 
 // ── Podcasts ───────────────────────────────────────────────────────────────
