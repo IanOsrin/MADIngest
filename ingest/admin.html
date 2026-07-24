@@ -5513,8 +5513,9 @@ async function aaPreview() {
     summary.innerHTML = `<strong>${j.tracks.length}</strong> track row(s) in the metadata cache ·
       <strong>${j.matchedCount}</strong> matched to Vision audio` +
       (j.unmatchedRows ? ` · <span style="color:var(--gold)">${j.unmatchedRows} with no audio match</span>` : '') +
-      ((j.folderCounts || []).length > 1
-        ? `<br>${j.folderCounts.map(c => `<code>${gfEsc(c.folder.split('/').pop())}</code>: ${c.audioFiles} audio file(s)`).join(' · ')}`
+      (((j.folderCounts || []).length > 1 || (j.folderCounts || []).some(c => c.filteredByCatalogue))
+        ? `<br>${j.folderCounts.map(c => `<code>${gfEsc(c.folder.split('/').pop())}</code>: ${c.audioFiles} audio file(s)` +
+            (c.filteredByCatalogue ? ` <span class="muted">(filtered by catalogue from ${c.totalAudio} — flat folder)</span>` : '')).join(' · ')}`
         : '')
     wrap.style.display = ''
     document.getElementById('aaPlanBody').innerHTML = j.tracks.map(t => `

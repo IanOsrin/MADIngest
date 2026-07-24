@@ -41,14 +41,15 @@ const yearOf = (s) => {
  * individually claimable.
  */
 function matchTracksToFiles(rows, files) {
-  const fileKey = (f) => `${f.folder}/${f.name}`
+  const fileKey  = (f) => `${f.folder}/${f.name}`
+  const fileNorm = (f) => normTitle(f.matchName || f.name) // matchName = title segment in flat folders
   const claimed = new Map() // folder/name → row index
   const matches = new Array(rows.length).fill(null)
 
   rows.forEach((row, i) => {
     const want = normTitle(row.track_name)
     if (!want) return
-    const hit = files.find(f => !claimed.has(fileKey(f)) && normTitle(f.name) === want)
+    const hit = files.find(f => !claimed.has(fileKey(f)) && fileNorm(f) === want)
     if (hit) { claimed.set(fileKey(hit), i); matches[i] = hit }
   })
 
@@ -58,8 +59,8 @@ function matchTracksToFiles(rows, files) {
     if (!want) return
     const candidates = files
       .filter(f => !claimed.has(fileKey(f)))
-      .filter(f => { const nf = normTitle(f.name); return nf.includes(want) || want.includes(nf) })
-      .sort((a, b) => normTitle(b.name).length - normTitle(a.name).length)
+      .filter(f => { const nf = fileNorm(f); return nf.includes(want) || want.includes(nf) })
+      .sort((a, b) => fileNorm(b).length - fileNorm(a).length)
     if (candidates.length) { claimed.set(fileKey(candidates[0]), i); matches[i] = candidates[0] }
   })
 
@@ -91,13 +92,31 @@ async function buildPlan({ folder, folders, catalogue, artist, album }) {
   if (!visionStatus().configured) fail(503, 'Vision drive is not configured')
 
   // 1. The folders' audio files, each tagged with its source folder.
+  //
+  // Two Vision layouts exist. Rendered Files is folder-per-album (plain track
+  // filenames); the GalloImports folders are FLAT — thousands of files from
+  // many albums named Artist_Album_CAT_Track.wav. When any filename in a
+  // folder carries the entered catalogue number, we treat the folder as flat:
+  // only those files take part, and title matching runs on the track segment
+  // AFTER the catalogue (the Artist_Album_CAT prefix would otherwise cause
+  // cross-album title collisions).
+  const normCat = catalogue.toLowerCase().replace(/[^a-z0-9]+/g, '')
+  const titlePartAfterCat = (name) => {
+    const segs = name.replace(AUDIO_RE, '').split('_')
+    const i = segs.findIndex(s => s.toLowerCase().replace(/[^a-z0-9]+/g, '') === normCat)
+    return i >= 0 && i < segs.length - 1 ? segs.slice(i + 1).join('_') : name
+  }
   const files = []
   const folderCounts = []
   for (const dir of folderList) {
     const { entries } = await visionList(dir).catch(e => fail(502, `Vision folder list failed for ${dir}: ${e.message}`))
     const audio = (entries || []).filter(e => e.type === 'file' && AUDIO_RE.test(e.name))
-    folderCounts.push({ folder: dir, audioFiles: audio.length })
-    for (const f of audio) files.push({ name: f.name, size: f.size, folder: dir })
+    const catFiles = normCat
+      ? audio.filter(f => f.name.toLowerCase().replace(/[^a-z0-9]+/g, '').includes(normCat))
+      : []
+    const use = catFiles.length ? catFiles : audio
+    folderCounts.push({ folder: dir, audioFiles: use.length, totalAudio: audio.length, filteredByCatalogue: !!catFiles.length })
+    for (const f of use) files.push({ name: f.name, size: f.size, folder: dir, matchName: catFiles.length ? titlePartAfterCat(f.name) : f.name })
   }
   if (!files.length) fail(404, `No audio files found in ${folderList.join(' + ')}`)
 
