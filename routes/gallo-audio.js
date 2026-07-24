@@ -9,9 +9,10 @@
 // uses a self-signed cert a browser/web-viewer would reject on a direct hit.
 import { Router } from 'express'
 import { Readable } from 'node:stream'
-import { getGalloFieldData } from '../lib/fm-gallo.js'
+import { getGalloFieldData, getGalloLayoutFieldSet, updateGalloRecord } from '../lib/fm-gallo.js'
 import { resolveGalloAudio, resolveGalloAudioLive } from '../lib/gallo-vision.js'
 import { visionOpen, visionStat } from '../lib/vision-drive.js'
+import { parseWavHeader, buildSoundInfoBlock, hmsMillis, readVisionWavInfo } from '../lib/wav-info.js'
 
 const router = Router()
 
@@ -41,6 +42,77 @@ router.get('/audio/:recordId/resolve', async (req, res) => {
     }
     res.json(r)
   } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// ── Technical audio info (the Media_GetSoundInfo replacement) ───────────────
+// FileMaker used to read duration/channels/sample size/sample rate off the
+// mounted file via a plugin. Same numbers, no mount, no plugin: this reads the
+// WAV header from the first 64KB of the Vision object (one Range request) and
+// FileMaker fetches it with Insert from URL.
+//   GET /audio/:recordId/info               → JSON
+//   GET /audio/:recordId/info?format=text   → Media_GetSoundInfo-style block
+//   GET /audio/:recordId/info?write=1       → ALSO store the block in the
+//                                              record's "Audio details" field
+router.get('/audio/:recordId/info', async (req, res) => {
+  try {
+    if (!keyOk(req)) return res.status(403).json({ error: 'Forbidden' })
+    const f = await getGalloFieldData(req.params.recordId)
+    if (!f) return res.status(404).json({ error: 'Record not found' })
+    const r = await resolveGalloAudioLive(f)
+    if (!r.ok) return res.status(404).json({ error: `No resolvable audio (${r.reason})` })
+
+    // First 64KB + total size, from Vision or the legacy http(s) home.
+    let wav = null, fileSize = null, modified = null
+    if (r.kind === 'url') {
+      const resp = await fetch(r.url, { headers: { Range: 'bytes=0-65535' } })
+      if (!resp.ok) return res.status(502).json({ error: `Legacy URL fetch failed: HTTP ${resp.status}` })
+      const buf = Buffer.from(await resp.arrayBuffer())
+      const cr = resp.headers.get('content-range')
+      fileSize = cr ? parseInt(cr.split('/')[1], 10) || null : (parseInt(resp.headers.get('content-length') || '', 10) || null)
+      modified = resp.headers.get('last-modified') ? new Date(resp.headers.get('last-modified')).toISOString() : null
+      wav = parseWavHeader(buf, fileSize)
+    } else {
+      if (r.exists === false) return res.status(404).json({ error: 'Audio file not found on Vision' })
+      const read = await readVisionWavInfo(r.path)
+      if (read) ({ info: wav, fileSize, modified } = read)
+    }
+    if (!wav) return res.status(415).json({ error: 'Not a parseable WAV header', filename: r.filename || null, fileSizeBytes: fileSize })
+
+    const block = buildSoundInfoBlock(wav, { modified })
+
+    // ?write=1 — store the block in the record's "Audio details" field, the
+    // same home the Media_GetSoundInfo plugin filled. Field name varies by
+    // capitalisation; write whichever variant the layout actually has.
+    let wrote = null
+    if (String(req.query.write || '') === '1') {
+      const known = await getGalloLayoutFieldSet()
+      const fieldName = ['Audio details', 'Audio Details', 'Audio_Details'].find(n => known.has(n))
+      if (!fieldName) return res.status(422).json({ error: 'No "Audio details" field on the layout — add it in FileMaker first (same as Audio_URL)' })
+      await updateGalloRecord(req.params.recordId, { [fieldName]: block })
+      wrote = fieldName
+    }
+
+    const info = {
+      ok: true,
+      recordId:      req.params.recordId,
+      filename:      r.filename || null,
+      source:        r.kind === 'url' ? r.url : r.path,
+      fileSizeBytes: fileSize,
+      modified,
+      ...wav,
+      duration:      hmsMillis(wav.durationSec),
+      ...(wrote ? { wroteField: wrote } : {}),
+    }
+
+    if (String(req.query.format || '').toLowerCase() === 'text') {
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8')
+      return res.send(block + '\n')
+    }
+    res.json(info)
+  } catch (e) {
+    console.error('[gallo-audio info] failed:', e.message)
     res.status(500).json({ error: e.message })
   }
 })

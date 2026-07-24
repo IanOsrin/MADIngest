@@ -22,6 +22,7 @@ import { visionStatus, visionList } from '../lib/vision-drive.js'
 import { loadMetadata, lookupAlbumTracks } from '../lib/metadata-cache.js'
 import { normTitle } from '../lib/gallo-vision-link.js'
 import { findGalloRecordsByCatalogue, createGalloRecord, createTapeFileRecord } from '../lib/fm-gallo.js'
+import { readVisionWavInfo, buildSoundInfoBlock } from '../lib/wav-info.js'
 
 const router = Router()
 const AUDIO_RE = /\.(wav|flac|aif|aiff|mp3|m4a)$/i
@@ -251,8 +252,19 @@ router.post('/create', adminAuth, express.json(), async (req, res) => {
     const results = []
     for (const t of toCreate) {
       try {
+        // Fill "Audio details" from the WAV header (the Media_GetSoundInfo
+        // block FileMaker always stored). A header-read failure never blocks
+        // the create — the field just stays empty for that track.
+        if (t.audio_url) {
+          try {
+            const read = await readVisionWavInfo(t.audio_url)
+            if (read) t.metadata.audio_details = buildSoundInfoBlock(read.info, { modified: read.modified })
+          } catch (e) {
+            console.warn(`[vision-import] audio-details read failed for ${t.title}: ${e.message}`)
+          }
+        }
         const { fmRecordId } = await createGalloRecord(t.metadata)
-        results.push({ ...publicTrack(t), fmRecordId, ok: true })
+        results.push({ ...publicTrack(t), fmRecordId, ok: true, audioDetails: !!t.metadata.audio_details })
       } catch (e) {
         console.warn(`[vision-import] ✗ ${t.title}: ${e.message}`)
         results.push({ ...publicTrack(t), ok: false, error: e.message })
