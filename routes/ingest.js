@@ -3182,6 +3182,11 @@ router.get('/catalogue/:catNo/status', adminAuth, async (req, res) => {
     let row = (isrc  && byIsrc.get(isrc))
            || (fname && byFilename.get(fname))
            || null
+    // A row may hold at most ONE track per DB — merging is cross-DB identity,
+    // never intra-DB. Without this, ten Gallo tracks sharing a Filename value
+    // (someone reusing the field, duplicate ISRCs, …) collapse into one row
+    // and the whole matrix lies.
+    if (row && row[`in_${db}`]) row = null
     // Fallback for legacy tracks with no ISRC and no filename: match by
     // sequence_no + fuzzy title within this catalogue. Sequence is unique
     // per DB within a catalogue, so a seq + 70% title similarity is a
@@ -3191,6 +3196,7 @@ router.get('/catalogue/:catNo/status', adminAuth, async (req, res) => {
       let bestRow = null, bestScore = 0
       for (const candidate of allRows) {
         if (candidate.sequence_no !== seq) continue
+        if (candidate[`in_${db}`]) continue // same-DB rows never merge
         const score = _fuzzyScore(candidate.title || '', title)
         if (score > bestScore && score >= _FUZZY_TITLE_THRESHOLD) {
           bestScore = score
@@ -3246,11 +3252,13 @@ router.get('/catalogue/:catNo/status', adminAuth, async (req, res) => {
   for (const m of metaTracks) {
     const isrc = m.isrc ? String(m.isrc).trim().toUpperCase() : null
     let row = isrc ? byIsrc.get(isrc) : null
+    if (row && row.in_metadata) row = null // one metadata row per matrix row
     if (!row) {
       // Sequence + fuzzy title match against existing rows
       let bestRow = null
       let bestScore = 0
       for (const candidate of allRows) {
+        if (candidate.in_metadata) continue // same-source rows never merge
         if (candidate.sequence_no == null || m.seq == null) continue
         if (candidate.sequence_no !== m.seq) continue
         const score = _fuzzyScore(candidate.title || '', m.track_name || '')

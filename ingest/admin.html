@@ -768,6 +768,10 @@
             style="flex:1;min-width:240px;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
           <button class="btn btn-gold" id="dbSyncCheckBtn" onclick="checkDbSyncStatus()">Check all 3 DBs</button>
           <button class="btn btn-ghost" id="dbSyncReplicateBtn" onclick="dbSyncReplicate()" style="display:none">Replicate missing from CMS 2024</button>
+          <button class="btn btn-ghost" id="dbSyncG2SStatusBtn" onclick="dbSyncGalloToStreamer(true)" style="display:none">⤴ Gallo → MadStreamer</button>
+          <label id="dbSyncG2SStatusAudioWrap" style="display:none;font-size:0.78rem;color:var(--muted);align-self:center">
+            <input type="checkbox" id="dbSyncG2SStatusAudio" checked> with audio
+          </label>
         </div>
 
         <div id="dbSyncCounts" style="display:none;margin-bottom:14px;display:none;gap:8px;flex-wrap:wrap"></div>
@@ -798,6 +802,7 @@
         <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
           Run a single copy operation directly. <strong>CMS 2024 → Gallo</strong> creates or updates per-track Gallo records and adds the Tape Files Master record when the catalogue is new on Gallo.
           <strong>CMS 2024 → MadStreamer</strong> upserts per-track + Tape Files Master records (metadata only — audio push still goes via Gallo).
+          <strong>Gallo → MadStreamer</strong> is for catalogues that live only in Gallo (e.g. created by Add Album): metadata upsert, plus optional WAV→MP3 audio push per track.
         </p>
 
         <div style="display:grid;grid-template-columns:1fr;gap:12px;margin-bottom:14px;max-width:520px">
@@ -805,9 +810,13 @@
             style="background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
         </div>
 
-        <div class="import-actions" style="flex-wrap:wrap;gap:10px">
+        <div class="import-actions" style="flex-wrap:wrap;gap:10px;align-items:center">
           <button class="btn btn-ghost" onclick="dbSyncCopy('pull-catalogue-to-gallo')">⤴ CMS 2024 → Gallo</button>
           <button class="btn btn-ghost" onclick="dbSyncCopy('push-catalogue-to-streamer')">⤴ CMS 2024 → MadStreamer</button>
+          <button class="btn btn-ghost" id="dbSyncG2SBtn" onclick="dbSyncGalloToStreamer()">⤴ Gallo → MadStreamer</button>
+          <label style="font-size:0.78rem;color:var(--muted)">
+            <input type="checkbox" id="dbSyncG2SAudio" checked> also push audio (WAV→MP3→S3, ~30&nbsp;s/track)
+          </label>
         </div>
         <div id="dbSyncBulkStatus" style="font-size:0.82rem;margin-top:12px;white-space:pre-wrap;font-family:ui-monospace,Menlo,monospace;color:var(--muted)"></div>
       </div>
@@ -1221,7 +1230,7 @@
           <button class="btn btn-ghost" onclick="aaFolderSearch()">Find folder</button>
           <span id="aaFolderSearchStatus" class="muted"></span>
         </div>
-        <div id="aaFolderHits" style="margin-bottom:12px"></div>
+        <div id="aaFolderHits" style="margin-bottom:12px;max-height:240px;overflow-y:auto"></div>
         <div style="display:grid;grid-template-columns:1fr;gap:4px;margin-bottom:10px">
           <label for="aaFolder" style="font-size:0.78rem;color:var(--muted)">Vision folder path(s) — one per line; add both folders when the A and B sides are split</label>
           <textarea id="aaFolder" rows="2" placeholder="/gallo-digital-cupboard/Rendered Files/A-D/Artist/Artist_Album_CAT 123A&#10;/gallo-digital-cupboard/Rendered Files/A-D/Artist/Artist_Album_CAT 123B" style="font-family:monospace;font-size:0.82rem;width:100%;resize:vertical;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 10px;color:var(--text)"></textarea>
@@ -1301,11 +1310,31 @@
           and every upload is size-verified afterwards. Subfolders come along with their structure.
         </p>
         <div style="display:grid;grid-template-columns:1fr;gap:4px;margin-bottom:10px">
-          <label for="vuLocal" style="font-size:0.78rem;color:var(--muted)">Local folder on this Mac (Finder: right-click folder &rarr; hold &#8997; Option &rarr; "Copy … as Pathname")</label>
-          <input id="vuLocal" placeholder="/Users/ianosrin/Desktop/New Album Masters" style="font-family:monospace;font-size:0.82rem">
+          <label for="vuLocal" style="font-size:0.78rem;color:var(--muted)">Local folder on this Mac</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn" onclick="vuPickLocal()" id="vuPickBtn">Choose folder&hellip;</button>
+            <input id="vuLocal" placeholder="click Choose folder — a Finder window opens on this Mac" readonly style="font-family:monospace;font-size:0.82rem;flex:1;opacity:0.9">
+          </div>
         </div>
         <div style="display:grid;grid-template-columns:1fr;gap:4px;margin-bottom:10px">
-          <label for="vuDest" style="font-size:0.78rem;color:var(--muted)">Vision destination folder (may be new — it's created by the upload)</label>
+          <label for="vuDestSearch" style="font-size:0.78rem;color:var(--muted)">Vision destination folder — search for an existing folder, or type a new path (new folders are created by the upload)</label>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <button class="btn" onclick="vuBrowseToggle()" id="vuBrowseBtn">Browse Vision&hellip;</button>
+            <input id="vuDestSearch" placeholder="…or search by artist / album / cat no" style="min-width:240px;flex:1"
+              onkeydown="if(event.key==='Enter')vuDestSearchGo()">
+            <button class="btn btn-ghost" onclick="vuDestSearchGo()">Find folder</button>
+            <span id="vuDestSearchStatus" class="muted"></span>
+          </div>
+          <div id="vuDestHits" style="max-height:240px;overflow-y:auto"></div>
+          <div id="vuBrowser" style="display:none;border:1px solid var(--border);border-radius:6px;padding:10px;margin:6px 0">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+              <button class="btn btn-ghost" onclick="vuBrowseUp()" id="vuBrowseUpBtn" disabled>&#8593; Up</button>
+              <span id="vuBrowsePath" style="font-family:monospace;font-size:0.78rem;flex:1">/</span>
+              <button class="btn" onclick="vuBrowseUse()">Use this folder</button>
+              <span id="vuBrowseStatus" class="muted"></span>
+            </div>
+            <div id="vuBrowseList" style="max-height:260px;overflow-y:auto"></div>
+          </div>
           <input id="vuDest" placeholder="/gallo-digital-cupboard/Rendered Files/A-D/Artist/Artist_Album_CAT 123" style="font-family:monospace;font-size:0.82rem">
         </div>
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
@@ -1334,7 +1363,15 @@
       </div>
 
       <div class="card" id="vuResultCard" style="display:none">
-        <h3>Result</h3>
+        <h3>Upload</h3>
+        <div id="vuOverallWrap" style="display:none;margin:10px 0">
+          <div style="display:flex;justify-content:space-between;font-size:0.78rem;color:var(--muted);margin-bottom:4px">
+            <span id="vuOverallLabel">Overall</span><span id="vuOverallPct"></span>
+          </div>
+          <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;height:14px;overflow:hidden">
+            <div id="vuOverallBar" style="height:100%;width:0%;background:var(--gold);transition:width 0.3s"></div>
+          </div>
+        </div>
         <div id="vuResultSummary" style="margin:8px 0;font-size:0.86rem"></div>
         <div class="table-wrap">
           <table style="width:100%">
@@ -4813,6 +4850,14 @@ function renderDbSyncStatus(data) {
     replicateBtn.textContent = `Replicate to ${targets}`
   }
 
+  // Gallo-sourced copy: when Gallo has tracks that Streamer is missing (fully
+  // or partially) — the Add Album case, where CMS 2024 has nothing to give.
+  const g2sBtn  = $('dbSyncG2SStatusBtn')
+  const g2sWrap = $('dbSyncG2SStatusAudioWrap')
+  const showG2S = (c.gallo || 0) > 0 && (c.streamer || 0) < (c.gallo || 0)
+  g2sBtn.style.display  = showG2S ? 'inline-block' : 'none'
+  g2sWrap.style.display = showG2S ? 'inline-flex'  : 'none'
+
   status.textContent = `✓ Status loaded — Gallo ${c.gallo}, CMS 2024 ${c.cms2024}, Streamer ${c.streamer}, Metadata ${c.metadata}`
   status.style.color = 'var(--green)'
 }
@@ -4865,6 +4910,81 @@ function dbSyncCopy(endpoint) {
     },
     onErrorColour: 'var(--gold)',
   })
+}
+
+// Gallo → MadStreamer: for catalogues that exist only in Gallo (Add Album
+// imports, etc.) — CMS 2024 has nothing to copy from. Metadata upsert for the
+// whole catalogue, then optionally the per-track audio push (WAV→MP3→S3, the
+// same endpoint the FM Submit tab uses).
+async function dbSyncGalloToStreamer(fromStatus = false) {
+  // Callable from two places: the status section (button appears after a
+  // check when Gallo has tracks Streamer lacks) and the Bulk Copy section.
+  const cat    = (fromStatus ? $('dbSyncCat') : $('dbSyncBulkCat'))?.value?.trim()
+  const status = fromStatus ? $('dbSyncStatus') : $('dbSyncBulkStatus')
+  const btn    = fromStatus ? $('dbSyncG2SStatusBtn') : $('dbSyncG2SBtn')
+  const audio  = (fromStatus ? $('dbSyncG2SStatusAudio') : $('dbSyncG2SAudio'))?.checked
+  if (!cat) { status.textContent = 'Enter a catalogue number.'; status.style.color = 'var(--red)'; return }
+
+  btn.disabled = true
+  status.style.color = 'var(--muted)'
+  const lines = [`— Gallo → MadStreamer ("${cat}") —`]
+  const render = () => { status.textContent = lines.join('\n') }
+  render()
+
+  try {
+    // 1. Metadata upsert (per-track + Tape Files Master)
+    lines.push('Syncing metadata…'); render()
+    const mRes  = await api('/api/ingest/madstreamer/sync-metadata-by-catalogue', 'POST', { catalogue_no: cat })
+    const mData = await mRes.json().catch(() => ({}))
+    if (!mRes.ok) throw new Error(mData.error || `HTTP ${mRes.status}`)
+    for (const r of (mData.results || [])) {
+      const seq = r.sequence_no != null ? String(r.sequence_no).padStart(2, '0') + '. ' : ''
+      lines.push(r.ok ? `  ✓ ${seq}${r.title || ''} → ${r.gcat || ''} (${r.action || 'upserted'})`
+                      : `  ✗ ${seq}${r.title || ''}: ${r.error}`)
+    }
+    render()
+
+    // 2. Audio push per track (optional)
+    if (audio) {
+      lines.push('Fetching Gallo track list for the audio push…'); render()
+      const tRes  = await api(`/api/ingest/catalogue/${encodeURIComponent(cat)}/records`)
+      const tData = await tRes.json().catch(() => ({}))
+      if (!tRes.ok) throw new Error(tData.error || `HTTP ${tRes.status}`)
+      const tracks = tData.records || []
+      let ok = 0, fail = 0
+      for (let i = 0; i < tracks.length; i++) {
+        const t = tracks[i]
+        const seq = t.sequence_no ?? t.track_num ?? null
+        const label = `${seq != null ? String(seq).padStart(2, '0') + '. ' : ''}${t.title || t.isrc || '(untitled)'}`
+        btn.textContent = `⟳ audio ${i + 1}/${tracks.length}…`
+        lines.push(`  ⟳ pushing audio ${i + 1}/${tracks.length}: ${label}`); render()
+        try {
+          const res  = await api('/api/ingest/madstreamer/push-by-catalogue', 'POST',
+                                 { catalogue_no: cat, sequence_no: seq, isrc: t.isrc || null })
+          const data = await res.json().catch(() => ({}))
+          if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+          ok++
+          lines[lines.length - 1] = `  ✓ ${label} → ${data.gcat || ''} (${data.fm?.action || 'upserted'})`
+        } catch (e) {
+          fail++
+          lines[lines.length - 1] = `  ✗ ${label}: ${e.message}`
+        }
+        render()
+      }
+      lines.push(`Audio push: ${ok}/${tracks.length} succeeded${fail ? `, ${fail} failed` : ''}`)
+    }
+
+    lines.push(`✓ Gallo → MadStreamer complete${audio ? '' : ' (metadata only — audio unchecked)'}`)
+    if (fromStatus) lines.push('Click "Check all 3 DBs" to refresh the ticks — this log stays put so any per-track error above remains readable.')
+    status.style.color = 'var(--green)'
+  } catch (e) {
+    lines.push(`✗ Failed: ${e.message}`)
+    status.style.color = 'var(--red)'
+  } finally {
+    render()
+    btn.disabled = false
+    btn.textContent = '⤴ Gallo → MadStreamer'
+  }
 }
 
 // Shared SSE-driven helper. Connects to an SSE URL, appends each `log` event
@@ -5485,9 +5605,9 @@ async function aaFolderSearch() {
       const folder = f.path.replace(/\/[^/]+$/, '')
       folders.set(folder, (folders.get(folder) || 0) + 1)
     }
-    const top = [...folders.entries()].slice(0, 12)
+    const top = [...folders.entries()].slice(0, 60)
     if (!top.length) { status.textContent = 'No matches.'; return }
-    status.textContent = `${folders.size} folder${folders.size === 1 ? '' : 's'}${folders.size > top.length ? ` (showing ${top.length})` : ''}`
+    status.textContent = `${folders.size} folder${folders.size === 1 ? '' : 's'}${folders.size > top.length ? ` (showing ${top.length} — narrow the search)` : ''}`
     hits.innerHTML = top.map(([folder, n]) => `
       <div style="padding:4px 0;font-family:monospace;font-size:0.78rem">
         <a href="#" onclick="aaPickFolder(this.dataset.f);return false" data-f="${gfEsc(folder)}">${gfEsc(folder)}</a>
@@ -5649,6 +5769,112 @@ async function aaCreate() {
 // ── To Vision tab (add-only local → Vision upload) ──────────────────────────
 let vuPlan = null
 
+// Native macOS folder chooser — the server pops a Finder dialog on this Mac
+// and returns the absolute path. Nothing to type, nothing to mistype.
+async function vuPickLocal() {
+  const status = document.getElementById('vuStatus')
+  const btn = document.getElementById('vuPickBtn')
+  btn.disabled = true
+  status.textContent = 'A Finder window has opened on this Mac — choose the folder there…'
+  try {
+    const r = await api('/api/vision-upload/pick-folder', 'POST', {})
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    if (j.canceled) { status.textContent = ''; return }
+    document.getElementById('vuLocal').value = j.path
+    status.textContent = ''
+  } catch (e) {
+    status.textContent = `Folder picker failed: ${e.message}`
+  } finally {
+    btn.disabled = false
+  }
+}
+
+// Vision destination finder — same index search as Add Album's folder finder:
+// file hits collapse to their parent folders, click one to fill the field.
+async function vuDestSearchGo() {
+  const q = document.getElementById('vuDestSearch').value.trim()
+  const status = document.getElementById('vuDestSearchStatus')
+  const hits = document.getElementById('vuDestHits')
+  if (q.length < 2) { status.textContent = 'Type at least 2 characters.'; return }
+  status.textContent = 'Searching…'
+  hits.innerHTML = ''
+  try {
+    const r = await api(`/api/vision/search?q=${encodeURIComponent(q)}`)
+    const j = await r.json()
+    if (r.status === 409 && j.needsReindex) { status.textContent = 'No Vision index yet — build it from the Vision tab (Reindex).'; return }
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    const folders = new Map()
+    for (const f of (j.files || [])) {
+      const folder = f.path.replace(/\/[^/]+$/, '')
+      folders.set(folder, (folders.get(folder) || 0) + 1)
+    }
+    const top = [...folders.entries()].slice(0, 60)
+    if (!top.length) { status.textContent = 'No matches — type the new folder path below.'; return }
+    status.textContent = `${folders.size} folder${folders.size === 1 ? '' : 's'}${folders.size > top.length ? ` (showing ${top.length} — narrow the search)` : ''}`
+    hits.innerHTML = top.map(([folder, n]) => `
+      <div style="padding:4px 0;font-family:monospace;font-size:0.78rem">
+        <a href="#" onclick="vuPickDest(this.dataset.f);return false" data-f="${gfEsc(folder)}">${gfEsc(folder)}</a>
+        <span class="muted"> — ${n} audio file${n === 1 ? '' : 's'}</span>
+      </div>`).join('')
+  } catch (e) {
+    status.textContent = `Failed: ${e.message}`
+  }
+}
+
+function vuPickDest(folder) {
+  document.getElementById('vuDest').value = folder
+  document.getElementById('vuDestHits').innerHTML = ''
+  document.getElementById('vuDestSearchStatus').textContent = ''
+}
+
+// Click-through Vision folder browser — same listing the Vision tab uses.
+// Click folders to descend, "Use this folder" fills the destination.
+let vuBrowsePath = '/'
+function vuBrowseToggle() {
+  const el = document.getElementById('vuBrowser')
+  const open = el.style.display === 'none'
+  el.style.display = open ? '' : 'none'
+  if (open) vuBrowseLoad(vuBrowsePath)
+}
+async function vuBrowseLoad(p) {
+  const status = document.getElementById('vuBrowseStatus')
+  const list = document.getElementById('vuBrowseList')
+  status.textContent = 'Loading…'
+  try {
+    const r = await api(`/api/vision/list?path=${encodeURIComponent(p)}`)
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    vuBrowsePath = j.path || p
+    document.getElementById('vuBrowsePath').textContent = vuBrowsePath
+    document.getElementById('vuBrowseUpBtn').disabled = vuBrowsePath === '/'
+    const dirs  = (j.entries || []).filter(e => e.type === 'dir')
+    const files = (j.entries || []).filter(e => e.type !== 'dir')
+    status.textContent = files.length ? `${files.length} file(s) here` : ''
+    list.innerHTML = dirs.length
+      ? dirs.map(d => `
+        <div style="padding:3px 0;font-family:monospace;font-size:0.8rem">
+          &#128193; <a href="#" onclick="vuBrowseLoad(this.dataset.p);return false"
+            data-p="${gfEsc((vuBrowsePath === '/' ? '' : vuBrowsePath) + '/' + d.name)}">${gfEsc(d.name)}</a>
+        </div>`).join('')
+      : '<div class="muted" style="font-size:0.8rem;padding:4px 0">No subfolders here.</div>'
+  } catch (e) {
+    status.textContent = `Failed: ${e.message}`
+  }
+}
+function vuBrowseUp() {
+  const parent = vuBrowsePath.replace(/\/[^/]+$/, '') || '/'
+  vuBrowseLoad(parent)
+}
+function vuBrowseUse() {
+  if (vuBrowsePath === '/' || vuBrowsePath.split('/').filter(Boolean).length < 2) {
+    document.getElementById('vuBrowseStatus').textContent = 'Go inside a bucket first — the destination can’t be a bucket root.'
+    return
+  }
+  document.getElementById('vuDest').value = vuBrowsePath
+  document.getElementById('vuBrowser').style.display = 'none'
+}
+
 function vuInputs() {
   return {
     localFolder:  document.getElementById('vuLocal').value.trim(),
@@ -5672,8 +5898,13 @@ async function vuPreview() {
     vuPlan = j
     document.getElementById('vuPlanCard').style.display = ''
     document.getElementById('vuSummary').innerHTML =
-      `<strong>${j.newCount}</strong> new file(s) to upload (${viSize(j.totalNewBytes)})` +
-      (j.existingCount ? ` · <span style="color:var(--gold)">${j.existingCount} already on Vision — will be skipped, never overwritten</span>` : '')
+      `Scanned <strong>${j.scannedCount ?? j.files.length}</strong> local file(s) · ` +
+      `<strong>${j.newCount}</strong> new to upload (${viSize(j.totalNewBytes)})` +
+      (j.existingCount ? ` · <span style="color:var(--gold)">${j.existingCount} already on Vision — will be skipped, never overwritten</span>` : '') +
+      ((j.warnings || []).length
+        ? `<br><span style="color:var(--red)">&#9888; ${j.warnings.length} entr${j.warnings.length === 1 ? 'y' : 'ies'} could not be read — check the count above against Finder!</span>` +
+          `<br><span class="muted" style="font-size:0.75rem">${j.warnings.slice(0, 5).map(gfEsc).join('<br>')}${j.warnings.length > 5 ? '<br>…' : ''}</span>`
+        : '')
     document.getElementById('vuPlanBody').innerHTML = j.files.map(f => `
       <tr>
         <td style="text-align:left;font-family:monospace;font-size:0.78rem">${gfEsc(f.rel)}</td>
@@ -5688,6 +5919,8 @@ async function vuPreview() {
   }
 }
 
+// Upload with live progress: the server streams NDJSON events over the POST
+// response; each line updates the overall bar and the per-file row.
 async function vuUpload() {
   if (!vuPlan) return
   const inputs = vuInputs()
@@ -5695,26 +5928,77 @@ async function vuUpload() {
   const status = document.getElementById('vuUploadStatus')
   const btn = document.getElementById('vuUploadBtn')
   btn.disabled = true
-  status.textContent = `Uploading ${vuPlan.newCount} file(s) — large masters take a while, watch the server log for per-file progress…`
+  status.textContent = ''
+
+  const card = document.getElementById('vuResultCard')
+  card.style.display = ''
+  document.getElementById('vuOverallWrap').style.display = ''
+  document.getElementById('vuResultSummary').innerHTML = ''
+  const body = document.getElementById('vuResultBody')
+  body.innerHTML = ''
+  const rows = new Map() // index → status cell
+
+  const setOverall = (done, total) => {
+    const pct = total ? Math.min(100, Math.round(done / total * 100)) : 0
+    document.getElementById('vuOverallBar').style.width = pct + '%'
+    document.getElementById('vuOverallPct').textContent = `${viSize(done)} / ${viSize(total)} · ${pct}%`
+  }
+
+  const handle = (ev) => {
+    if (ev.type === 'plan') { setOverall(0, ev.totalBytes) }
+    if (ev.type === 'file-start') {
+      const tr = document.createElement('tr')
+      tr.innerHTML = `
+        <td style="text-align:left;font-family:monospace;font-size:0.78rem">${gfEsc(ev.rel)}</td>
+        <td style="text-align:right;font-family:monospace;font-size:0.78rem">${viSize(ev.size)}</td>
+        <td style="text-align:left;min-width:180px">
+          <div style="background:var(--bg);border:1px solid var(--border);border-radius:4px;height:10px;overflow:hidden">
+            <div id="vuFileBar${ev.index}" style="height:100%;width:0%;background:var(--gold);transition:width 0.3s"></div>
+          </div></td>`
+      body.appendChild(tr)
+      rows.set(ev.index, tr.cells[2])
+    }
+    if (ev.type === 'progress') {
+      const bar = document.getElementById(`vuFileBar${ev.index}`)
+      if (bar) bar.style.width = Math.min(100, Math.round(ev.loaded / ev.size * 100)) + '%'
+      setOverall(ev.overallDone, ev.overallTotal)
+    }
+    if (ev.type === 'file-done') {
+      const cell = rows.get(ev.index)
+      if (cell) cell.innerHTML = `<span style="color:var(--gold)">&#10004; uploaded &amp; verified (${ev.seconds}s)</span>`
+    }
+    if (ev.type === 'file-error') {
+      const cell = rows.get(ev.index)
+      if (cell) cell.innerHTML = `<span style="color:var(--red)">&#10008; ${gfEsc(ev.error || 'failed')}</span>`
+    }
+    if (ev.type === 'done') {
+      if (ev.ok !== false) setOverall(1, 1)
+      document.getElementById('vuResultSummary').innerHTML = ev.error
+        ? `<span style="color:var(--red)">Upload failed: ${gfEsc(ev.error)}</span>`
+        : `<strong>${ev.uploaded}</strong> uploaded &amp; size-verified` +
+          (ev.failed ? ` · <span style="color:var(--red)">${ev.failed} FAILED</span>` : '') +
+          (ev.skippedExisting ? ` · ${ev.skippedExisting} skipped (already on Vision)` : '') +
+          (ev.note ? `<br><span class="muted">${gfEsc(ev.note)}</span>` : '')
+    }
+  }
+
   try {
     const r = await api('/api/vision-upload/upload', 'POST', inputs)
-    const j = await r.json()
-    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
-    status.textContent = ''
-    document.getElementById('vuResultCard').style.display = ''
-    document.getElementById('vuResultSummary').innerHTML =
-      `<strong>${j.uploaded}</strong> uploaded &amp; size-verified` +
-      (j.failed ? ` · <span style="color:var(--red)">${j.failed} FAILED</span>` : '') +
-      (j.skippedExisting ? ` · ${j.skippedExisting} skipped (already on Vision)` : '') +
-      (j.note ? `<br><span class="muted">${gfEsc(j.note)}</span>` : '')
-    document.getElementById('vuResultBody').innerHTML = (j.results || []).map(f => `
-      <tr>
-        <td style="text-align:left;font-family:monospace;font-size:0.78rem">${gfEsc(f.rel)}</td>
-        <td style="text-align:right;font-family:monospace;font-size:0.78rem">${viSize(f.size)}</td>
-        <td style="text-align:left">${f.ok
-          ? `<span style="color:var(--gold)">&#10004; uploaded${f.seconds != null ? ` (${f.seconds}s)` : ''}</span>`
-          : `<span style="color:var(--red)">&#10008; ${gfEsc(f.error || 'failed')}</span>`}</td>
-      </tr>`).join('')
+    if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || `HTTP ${r.status}`) }
+    const reader = r.body.getReader()
+    const dec = new TextDecoder()
+    let buf = ''
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += dec.decode(value, { stream: true })
+      let nl
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim()
+        buf = buf.slice(nl + 1)
+        if (line) try { handle(JSON.parse(line)) } catch { /* partial/garbled line */ }
+      }
+    }
     // Force a fresh preview before any further upload — the folder contents
     // on Vision just changed.
     vuPlan = null

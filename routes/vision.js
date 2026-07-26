@@ -37,8 +37,17 @@ router.get('/search', adminAuth, async (req, res) => {
     if (!index) return res.status(409).json({ error: 'Vision index not built yet', needsReindex: true, building: indexBuilding() })
     // Match ALL words (AND), not the exact phrase — "Makeba Reflections" should
     // find …/Miriam Makeba/…_Reflections_… even with text between the words.
+    // Each term must PREFIX a word in the path (not substring-anywhere): a
+    // stray "h" in "Sister H" used to match every path containing the letter.
+    // If strict matching finds nothing, fall back to substring so inner-word
+    // fragments stay findable.
     const words = q.toLowerCase().split(/\s+/).filter(Boolean)
-    const all = index.files.filter(f => { const p = f.path.toLowerCase(); return words.every(w => p.includes(w)) })
+    const wordPrefix = (f) => {
+      const pw = f.path.toLowerCase().split(/[^a-z0-9]+/)
+      return words.every(w => pw.some(x => x.startsWith(w)))
+    }
+    let all = index.files.filter(wordPrefix)
+    if (!all.length) all = index.files.filter(f => { const p = f.path.toLowerCase(); return words.every(w => p.includes(w)) })
     res.json({ total: all.length, indexedFiles: index.builtFiles, files: all.slice(0, 500) })
   } catch (e) {
     console.error('[vision] search failed:', e.message)
