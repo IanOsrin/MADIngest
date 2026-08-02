@@ -291,6 +291,7 @@
       <button class="tab-btn" data-tab="playlists" onclick="showTab('playlists')">Playlists</button>
       <button class="tab-btn" data-tab="playlistart" onclick="showTab('playlistart')">Playlist Art</button>
       <button class="tab-btn" data-tab="genrefix" onclick="showTab('genrefix')">Genre Fix</button>
+      <button class="tab-btn" data-tab="gallogenre" onclick="showTab('gallogenre')">Gallo Genre</button>
       <button class="tab-btn" data-tab="youtube" onclick="showTab('youtube')">YouTube</button>
       <button class="tab-btn" data-tab="download" onclick="showTab('download')">Download</button>
       <button class="tab-btn" data-tab="vision" onclick="showTab('vision')">Vision</button>
@@ -1142,6 +1143,36 @@
               <th style="text-align:left">New Local Genre</th><th></th><th style="text-align:left">Status</th>
             </tr></thead>
             <tbody id="gfBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div id="tab-gallogenre" class="tab-panel">
+      <div class="card">
+        <h3>Gallo Genre — tag unlabelled albums</h3>
+        <p class="muted" style="margin:6px 0 14px">
+          Gallo tracks with an empty <strong>Local Genre</strong>, grouped by album, biggest first.
+          Listen, pick a genre, Apply — it writes the whole album at once. Writes
+          <strong>Local Genre only</strong>; the <em>Genre</em> field (Ingrooves' vocabulary) is never touched.
+          Albums drop off the list once tagged, so the list is your progress.
+        </p>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
+          <button class="btn" onclick="ggLoad()">Load worklist</button>
+          <input id="ggSearch" placeholder="filter album / artist / cat…" style="min-width:220px"
+                 onkeydown="if(event.key==='Enter')ggLoad()">
+          <button class="btn" onclick="ggLoad(true)">Refresh from FM</button>
+          <span id="ggStatus" class="muted"></span>
+        </div>
+        <div class="table-wrap">
+          <table id="ggTable" style="width:100%">
+            <thead><tr>
+              <th style="text-align:left">Album</th><th style="text-align:left">Artist</th>
+              <th style="text-align:left">Cat #</th><th>Tracks</th>
+              <th style="text-align:left;min-width:270px">Audition (first track)</th>
+              <th style="text-align:left">Local Genre</th><th></th><th style="text-align:left">Status</th>
+            </tr></thead>
+            <tbody id="ggBody"></tbody>
           </table>
         </div>
       </div>
@@ -5318,7 +5349,12 @@ async function gfLoad() {
           ? `<div class="muted" style="font-size:12px;margin-bottom:3px">${gfEsc(a.sample.title)}${a.sample.year ? ' · ' + gfEsc(a.sample.year) : ''}</div>
              <audio controls preload="none" style="width:250px;height:30px" src="${gfEsc(a.sample.url)}"></audio>`
           : '<span class="muted">no audio</span>'}</td>
-        <td style="text-align:left"><input list="gfGenreList" id="gfNew${i}" placeholder="new genre…" style="min-width:170px"></td>
+        <td style="text-align:left">
+          <input list="gfGenreList" id="gfNew${i}" placeholder="new genre…" style="min-width:170px">
+          <label class="muted" style="display:block;font-size:11px;margin-top:3px;cursor:pointer">
+            <input type="checkbox" id="gfAll${i}"> all tracks by this artist
+          </label>
+        </td>
         <td><button class="btn" onclick="gfApply(${i})">Apply</button></td>
         <td style="text-align:left" id="gfStat${i}" class="muted"></td>
       </tr>`).join('')
@@ -5327,18 +5363,124 @@ async function gfLoad() {
   }
 }
 
+// ── Gallo Genre tab ─────────────────────────────────────────────────────────
+// Album-at-a-time Local Genre tagging for Gallo records that have none.
+// The worklist IS the progress tracker: an album disappears once its tracks
+// carry a genre, because the server asks FM for "Local Genre is empty".
+let ggAlbums = []
+let ggGenres = []
+const ggEsc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))
+
+async function ggLoad(forceRefresh) {
+  const status = document.getElementById('ggStatus')
+  const body   = document.getElementById('ggBody')
+  const q      = document.getElementById('ggSearch').value.trim()
+  status.textContent = forceRefresh ? 'Refreshing from FileMaker — first build takes ~25s…' : 'Loading…'
+  body.innerHTML = ''
+  try {
+    if (forceRefresh) {
+      await fetch('/api/gallo-genre/refresh', { method: 'POST', headers: { Authorization: `Bearer ${adminToken}` } })
+    }
+    const r = await fetch(`/api/gallo-genre/albums?limit=300${q ? '&q=' + encodeURIComponent(q) : ''}`,
+      { headers: { Authorization: `Bearer ${adminToken}` } })
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    ggAlbums = j.albums || []
+    ggGenres = j.genres || []
+    status.textContent = `${j.totalTracks} untagged tracks across ${j.totalAlbums} albums — showing ${ggAlbums.length}.`
+    const opts = ggGenres.map(g => `<option value="${ggEsc(g)}">`).join('')
+    body.innerHTML = `<datalist id="ggGenreList">${opts}</datalist>` + ggAlbums.map((a, i) => {
+      const first = a.tracks && a.tracks[0]
+      return `
+      <tr id="ggRow${i}">
+        <td style="text-align:left">${ggEsc(a.album || '(no album title)')}</td>
+        <td style="text-align:left">${ggEsc(a.artist || '(no artist)')}</td>
+        <td style="text-align:left"><span class="muted" style="font-size:12px">${ggEsc(a.cat)}</span></td>
+        <td style="text-align:center">${a.count}</td>
+        <td style="text-align:left">${first
+          ? `<div class="muted" style="font-size:12px;margin-bottom:3px">${ggEsc(first.title || '(untitled)')}</div>
+             <audio controls preload="none" style="width:260px;height:30px" src="/api/gallo/audio/${encodeURIComponent(first.recordId)}"></audio>`
+          : '<span class="muted">no tracks</span>'}</td>
+        <td style="text-align:left"><input list="ggGenreList" id="ggNew${i}" placeholder="genre…" style="min-width:170px"></td>
+        <td><button class="btn" onclick="ggApply(${i})">Apply</button></td>
+        <td style="text-align:left" id="ggStat${i}" class="muted"></td>
+      </tr>`
+    }).join('')
+  } catch (e) {
+    status.textContent = `Failed: ${e.message}`
+  }
+}
+
+async function ggApply(i) {
+  const a    = ggAlbums[i]
+  const to   = document.getElementById(`ggNew${i}`).value.trim()
+  const stat = document.getElementById(`ggStat${i}`)
+  if (!to) { stat.textContent = 'pick a genre first'; return }
+  // Server rejects anything outside the taxonomy, but check here too so the
+  // operator gets an immediate answer instead of a round trip.
+  if (!ggGenres.includes(to)) {
+    stat.textContent = `"${to}" is not one of the ${ggGenres.length} allowed values`
+    return
+  }
+  const ids = (a.tracks || []).map(t => t.recordId)
+  if (!confirm(`Set Local Genre = "${to}" on all ${ids.length} track(s) of "${a.album || a.cat}"?`)) return
+  stat.textContent = `applying to ${ids.length}…`
+  try {
+    const r = await fetch('/api/gallo-genre/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ recordIds: ids, genre: to }),
+    })
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    stat.innerHTML = `<span style="color:var(--gold)">✔ ${j.updated} tagged → ${ggEsc(j.genre)}</span>` +
+      (j.failed?.length ? ` <span style="color:#e66">(${j.failed.length} failed)</span>` : '')
+    document.getElementById(`ggRow${i}`).style.opacity = '0.45'
+  } catch (e) {
+    stat.textContent = `failed: ${e.message}`
+  }
+}
+
 async function gfApply(i) {
   const a = gfArtists[i]
   const to = document.getElementById(`gfNew${i}`).value.trim()
   const stat = document.getElementById(`gfStat${i}`)
+  const allTracks = document.getElementById(`gfAll${i}`)?.checked
   if (!to) { stat.textContent = 'pick a genre first'; return }
-  if (!confirm(`Re-tag ${a.count} “${gfLoadedGenre}” track(s) by ${a.artist} → “${to}”?`)) return
-  stat.textContent = `applying to ${a.count}…`
+
+  let ids = a.recordIds
+  if (allTracks) {
+    // Widen to every track by this artist — but show what ELSE gets swept up
+    // first. Artists cross genres legitimately, and silently dragging an
+    // artist's gospel or instrumental tracks into a new genre is exactly the
+    // kind of damage that is tedious to unpick.
+    stat.textContent = 'checking this artist’s other tracks…'
+    try {
+      const r = await fetch(`/api/genre-fix/artist-tracks?artist=${encodeURIComponent(a.artist)}`,
+        { headers: { Authorization: `Bearer ${adminToken}` } })
+      const j = await r.json()
+      if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+      const moving = j.genres.filter(g => g.genre !== to)
+      ids = moving.flatMap(g => g.recordIds)
+      const staying = j.genres.filter(g => g.genre === to).reduce((s, g) => s + g.count, 0)
+      const breakdown = moving.map(g => `   ${g.count}  ${g.genre}`).join('\n')
+      if (!confirm(
+        `“${a.artist}” has ${j.total} track(s) in total.\n\n` +
+        `Re-tag ${ids.length} of them → “${to}”:\n${breakdown}\n\n` +
+        (staying ? `${staying} already “${to}” — left alone.\n\n` : '') +
+        `This includes tracks OUTSIDE “${gfLoadedGenre}”. Continue?`
+      )) { stat.textContent = 'cancelled'; return }
+    } catch (e) { stat.textContent = `lookup failed: ${e.message}`; return }
+  } else {
+    if (!confirm(`Re-tag ${a.count} “${gfLoadedGenre}” track(s) by ${a.artist} → “${to}”?`)) return
+  }
+
+  stat.textContent = `applying to ${ids.length}…`
   try {
     const r = await fetch('/api/genre-fix/apply', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
-      body: JSON.stringify({ recordIds: a.recordIds, toGenre: to }),
+      body: JSON.stringify({ recordIds: ids, toGenre: to }),
     })
     const j = await r.json()
     if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)

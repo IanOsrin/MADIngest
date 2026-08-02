@@ -5,3 +5,7 @@ tmp/
 .DS_Store
 covers/
 uploads/
+
+# Rollback journals written by the genre scripts / Gallo Genre tab.
+# Thousands of FM record IDs — operational artefacts, not source.
+data/

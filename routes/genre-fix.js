@@ -8,7 +8,7 @@
 // why apply works on explicit recordIds captured at list time).
 import { Router } from 'express'
 import { adminAuth } from '../lib/admin-auth.js'
-import { findSongsByLocalGenre, setLocalGenre } from '../lib/madstreamer.js'
+import { findSongsByLocalGenre, findSongsByArtist, setLocalGenre } from '../lib/madstreamer.js'
 
 const router = Router()
 
@@ -31,6 +31,39 @@ router.get('/list', adminAuth, async (req, res) => {
     res.json({ genre, totalTracks: songs.length, artists })
   } catch (e) {
     console.error('[genre-fix] list failed:', e.message)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+
+/**
+ * GET /artist-tracks?artist=NAME
+ * Every track by an artist, whatever genre it currently carries, grouped by
+ * genre. Backs the "apply to ALL tracks by this artist" option: the operator
+ * sees exactly what else would be swept up BEFORE confirming, because artists
+ * cross genres legitimately — Ladysmith Black Mambazo have 106 gospel tracks
+ * that should stay gospel even when retagging the rest to Isicathamiya.
+ */
+router.get('/artist-tracks', adminAuth, async (req, res) => {
+  try {
+    const artist = String(req.query.artist || '').trim()
+    if (artist.length < 2) return res.status(400).json({ error: 'artist required (2+ chars)' })
+    const songs = await findSongsByArtist(artist)
+    const byGenre = new Map()
+    for (const s of songs) {
+      const g = s.localGenre || '(no genre)'
+      if (!byGenre.has(g)) byGenre.set(g, [])
+      byGenre.get(g).push(s.recordId)
+    }
+    res.json({
+      artist,
+      total: songs.length,
+      genres: [...byGenre.entries()]
+        .map(([genre, recordIds]) => ({ genre, count: recordIds.length, recordIds }))
+        .sort((a, b) => b.count - a.count),
+    })
+  } catch (e) {
+    console.error('[genre-fix] artist-tracks failed:', e.message)
     res.status(500).json({ error: e.message })
   }
 })

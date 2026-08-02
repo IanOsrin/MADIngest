@@ -7,6 +7,7 @@ import ingestRouter from './routes/ingest.js'
 import podcastsRouter from './routes/podcasts.js'
 import youtubeRouter from './routes/youtube.js'
 import genreFixRouter from './routes/genre-fix.js'
+import galloGenreRouter from './routes/gallo-genre.js'
 import downloadTrackRouter from './routes/download-track.js'
 import visionRouter from './routes/vision.js'
 import visionImportRouter from './routes/vision-import.js'
@@ -144,6 +145,7 @@ app.get('/api/genres', async (req, res) => {
 app.use('/api/ingest', ingestRouter)
 app.use('/api/podcasts', podcastsRouter)
 app.use('/api/genre-fix', genreFixRouter)
+app.use('/api/gallo-genre', galloGenreRouter)   // Gallo album-at-a-time Local Genre tagging
 app.use('/api/download-track', downloadTrackRouter)
 app.use('/api/vision', visionRouter)
 app.use('/api/vision-import', visionImportRouter)

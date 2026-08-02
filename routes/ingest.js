@@ -2492,7 +2492,11 @@ async function _runMadStreamerMetadataSync(track, gmvi) {
     sequence_no:     track.sequence_no,
     year:            track.year,
     release_date:    track.release_date,
-    genre:           track.genre,
+    // MadStreamer gets Local Genre; `genre` here is the Ingrooves-facing value
+    // and is only a fallback. lib/madstreamer.js normalises whichever wins
+    // through the 45-value taxonomy, so an Ingrooves spelling like
+    // "afro-folk" arrives as "Afro Folk" rather than re-polluting the field.
+    genre:           track.local_genre || track.genre,
     language:        track.language,
     duration:        track.duration_sec ? String(track.duration_sec) : null,
     explicit:        track.explicit,
@@ -2683,7 +2687,11 @@ async function _runMadStreamerPush(track, gmvi, opts = {}) {
     sequence_no:     track.sequence_no,
     year:            track.year,
     release_date:    track.release_date,
-    genre:           track.genre,
+    // MadStreamer gets Local Genre; `genre` here is the Ingrooves-facing value
+    // and is only a fallback. lib/madstreamer.js normalises whichever wins
+    // through the 45-value taxonomy, so an Ingrooves spelling like
+    // "afro-folk" arrives as "Afro Folk" rather than re-polluting the field.
+    genre:           track.local_genre || track.genre,
     language:        track.language,
     bpm:             track.bpm,
     duration:        track.duration,
