@@ -2239,7 +2239,7 @@ router.post('/madstreamer/bio', adminAuth, express.json(), async (req, res) => {
  * GET  /madstreamer/playlist-arts      → all rows, for the admin list
  * GET  /madstreamer/playlist-art?name= → single lookup
  * POST /madstreamer/playlist-art       → multipart: image (required) + playlistName.
- *                                        Uploads the cover to S3 (artwork/playlist-<slug>.<ext>),
+ *                                        Uploads the cover to S3 (artwork/playlist-<slug>-<stamp>.<ext>),
  *                                        then upserts the record with Image_S3_URL + Active = 1.
  */
 const uploadPlaylistImage = multer({

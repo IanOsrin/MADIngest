@@ -1080,7 +1080,10 @@
       <div class="import-section" style="margin-bottom:24px">
         <h3>Playlist Artwork</h3>
         <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
-          Uploads a cover to S3 (<code>artwork/playlist-&lt;slug&gt;.jpg</code>) and writes the
+          Uploads a cover to S3 as <code>artwork/playlist-&lt;slug&gt;-&lt;timestamp&gt;.jpg</code> and
+          generates the 300px and 800px WebP versions the site actually serves, so the cover is
+          live straight away. The timestamp means every upload gets a fresh path, so a replaced
+          cover appears immediately rather than being masked by a cached one. Then writes the
           <code>API_Playlist_Art</code> record on MadStreamer. Saving marks the record
           <strong>Active</strong>. Pick the playlist from the list — the name has to match the
           <code>PublicPlaylist</code> value exactly, and the <em>filename is irrelevant</em>, so
