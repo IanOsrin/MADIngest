@@ -1081,15 +1081,18 @@
         <h3>Playlist Artwork</h3>
         <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
           Uploads a cover to S3 (<code>artwork/playlist-&lt;slug&gt;.jpg</code>) and writes the
-          <code>API_Playlist_Art</code> record on MadStreamer. The <strong>playlist name</strong> must
-          match the <code>PublicPlaylist</code> value. Saving marks the record <strong>Active</strong>.
+          <code>API_Playlist_Art</code> record on MadStreamer. Saving marks the record
+          <strong>Active</strong>. Pick the playlist from the list — the name has to match the
+          <code>PublicPlaylist</code> value exactly, and the <em>filename is irrelevant</em>, so
+          choosing beats typing. <strong>✓</strong> marks playlists that already have a cover.
         </p>
 
         <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px">
-          <input id="plArtName" type="text" placeholder="Playlist name (e.g. Salute Lucky Dube)"
-            onkeydown="if(event.key==='Enter'){event.preventDefault();plArtLookup()}"
+          <select id="plArtName" onchange="plArtLookup()"
             style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
-          <button class="btn btn-ghost" onclick="plArtLookup()">Look up</button>
+            <option value="">Loading playlists…</option>
+          </select>
+          <button class="btn btn-ghost" onclick="plArtLoadNames(true)" title="Re-read the playlist list from MadStreamer">↺</button>
         </div>
 
         <div style="margin-bottom:14px">
@@ -2046,6 +2049,56 @@ let _plsAddSongs     = []        // results of the in-playlist "Add songs" searc
 
 function playlistsInit() { if (!_plsNamesLoaded) plsLoadPlaylists(false) }
 
+/**
+ * Delete a playlist's art record from the Playlists tab.
+ *
+ * Removes the FileMaker API_Playlist_Art record only — the S3 image stays, since
+ * keys are stable per playlist and a re-upload overwrites. The common case is a
+ * record saved under a mistyped name (the upload form takes the name you TYPE,
+ * not the filename), where the picture is fine and just needs re-filing.
+ */
+async function plsDeleteArt(i, name, artRecordId) {
+  if (!artRecordId) { showToast('No art record to delete', 'error'); return }
+  if (!confirm(
+    `Delete the artwork record for "${name}"?\n\n` +
+    `The image stays in S3 — only the FileMaker record goes. The playlist will ` +
+    `show no cover, and stays hidden on the site, until artwork is saved again.`
+  )) return
+  const stat = document.getElementById(`plsCatStat${i}`)
+  if (stat) stat.textContent = 'deleting…'
+  try {
+    const res = await api(`/api/ingest/madstreamer/playlist-art/${encodeURIComponent(artRecordId)}`, 'DELETE')
+    const j = await res.json()
+    if (!res.ok || !j.ok) throw new Error(j.error || `HTTP ${res.status}`)
+    showToast(`Artwork record deleted for "${name}"`, 'success')
+    plArtListLoaded = false          // Playlist Art tab must re-read too
+    _plArtNamesLoaded = false        // ...and its ✓ markers are now stale
+    await plsLoadPlaylists(true)
+  } catch (err) {
+    if (stat) stat.textContent = ''
+    showToast(`Delete failed: ${err.message}`, 'error')
+  }
+}
+
+let _plsCategories = []
+
+/** Save a playlist's Category. Upserts, so playlists with no art record yet still work. */
+async function plsSetCategory(i, name) {
+  const sel  = document.getElementById(`plsCat${i}`)
+  const stat = document.getElementById(`plsCatStat${i}`)
+  const category = sel.value
+  stat.textContent = 'saving…'
+  try {
+    const res = await api('/api/ingest/madstreamer/public-playlists/category', 'POST', { name, category })
+    const j = await res.json()
+    if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`)
+    stat.innerHTML = `<span style="color:var(--gold)">✔ ${category ? esc(category) : 'cleared'}</span>`
+    setTimeout(() => { stat.textContent = '' }, 2500)
+  } catch (err) {
+    stat.innerHTML = `<span style="color:var(--red)">${esc(err.message)}</span>`
+  }
+}
+
 async function plsLoadPlaylists(force) {
   if (_plsNamesLoaded && !force) return
   $('plsListWrap').innerHTML = '<div class="loading-state"><span class="spin">⟳</span> Loading…</div>'
@@ -2066,11 +2119,51 @@ async function plsLoadPlaylists(force) {
       $('plsListWrap').innerHTML = '<div class="empty-state" style="color:var(--muted)">No public playlists yet — build one above.</div>'
       return
     }
-    $('plsListWrap').innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:8px">` + playlists.map(p =>
-      `<button class="btn btn-ghost" style="font-size:0.82rem" onclick="plsOpenPlaylist('${esc(p.name).replace(/'/g, '&#39;')}')">
-        ${esc(p.name)} <span style="color:var(--muted)">· ${p.trackCount}</span>
-      </button>`
-    ).join('') + `</div>`
+    // One row per playlist: name (click to open), track count, artwork state,
+    // and the Category that decides which rail it appears on. Category is a
+    // property of the PLAYLIST — one edit here moves the whole collection
+    // between rails, rather than tagging every track in it.
+    _plsCategories = data.categories || ['Scene', 'Artist', 'Decade', 'Theme']
+    $('plsListWrap').innerHTML = `
+      <table style="width:100%;border-collapse:collapse;font-size:0.85rem">
+        <thead><tr style="color:var(--muted);text-align:left">
+          <th style="padding:6px 8px">Playlist</th>
+          <th style="padding:6px 8px;text-align:center">Tracks</th>
+          <th style="padding:6px 8px;text-align:center" title="FileMaker API_Playlist_Art record only — the site can ALSO serve art from a local file in public/img/playlists/, which this cannot see">Art rec.</th>
+          <th style="padding:6px 8px">Category (rail)</th>
+          <th style="padding:6px 8px"></th>
+        </tr></thead>
+        <tbody>` + playlists.map((p, i) => `
+          <tr style="border-top:1px solid var(--border)">
+            <td style="padding:6px 8px">
+              <a href="#" onclick="event.preventDefault();plsOpenPlaylist('${esc(p.name).replace(/'/g, '&#39;')}')"
+                 style="color:var(--text)">${esc(p.name)}</a>
+            </td>
+            <td style="padding:6px 8px;text-align:center;color:var(--muted)">${p.trackCount}</td>
+            <td style="padding:6px 8px;text-align:center;white-space:nowrap">
+              ${p.hasArt
+                ? `✓ <span class="cell-link" style="color:var(--red);font-size:0.76rem;margin-left:6px"
+                        onclick="plsDeleteArt(${i}, '${esc(p.name).replace(/'/g, '&#39;')}', '${esc(p.artRecordId || '')}')">delete</span>`
+                : '<span style="color:var(--muted)">—</span>'}
+            </td>
+            <td style="padding:6px 8px">
+              <select id="plsCat${i}" onchange="plsSetCategory(${i}, '${esc(p.name).replace(/'/g, '&#39;')}')"
+                style="background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:4px 8px;color:var(--text);font-family:inherit;font-size:0.82rem">
+                <option value=""${p.category ? '' : ' selected'}>— none —</option>
+                ${_plsCategories.map(c => `<option value="${esc(c)}"${p.category === c ? ' selected' : ''}>${esc(c)}</option>`).join('')}
+              </select>
+            </td>
+            <td style="padding:6px 8px;color:var(--muted)" id="plsCatStat${i}"></td>
+          </tr>`).join('') + `
+        </tbody>
+      </table>
+      <p style="font-size:0.78rem;color:var(--muted);margin-top:10px">
+        Category decides which rail a playlist appears on. <strong>— none —</strong> keeps it off
+        categorised rails, which is the safe default for a new playlist.<br>
+        <strong>Art rec.</strong> shows only whether a FileMaker <code>API_Playlist_Art</code> record
+        exists. The site can also serve a cover from a local file in <code>public/img/playlists/</code>,
+        which this column cannot see — so a dash does not always mean the playlist is coverless.
+      </p>`
   } catch (err) {
     $('plsListWrap').innerHTML = `<div class="empty-state" style="color:var(--red)">Error: ${esc(err.message)}</div>`
   }
@@ -2461,10 +2554,56 @@ function plArtStatus(msg, isErr) {
   el.style.color = isErr ? 'var(--red)' : 'var(--muted)'
 }
 
-function playlistArtInit() { plArtListLoad(false) }
+let _plArtNamesLoaded = false
+
+/**
+ * Fill the playlist picker from the live PublicPlaylist values.
+ *
+ * Free text was the bug: the upload takes the name you TYPE, not the filename,
+ * so "Gospel Spirits Selects" quietly created a cover that no playlist could
+ * ever match. Choosing from the real list makes that impossible.
+ */
+async function plArtLoadNames(force) {
+  if (_plArtNamesLoaded && !force) return
+  const sel  = $('plArtName')
+  const keep = sel.value
+  try {
+    const res  = await api('/api/ingest/madstreamer/public-playlists')
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || 'Load failed')
+    const playlists = data.playlists || []
+    _plArtNamesLoaded = true
+    sel.innerHTML = '<option value="">Choose a playlist…</option>' +
+      playlists.map(p =>
+        `<option value="${esc(p.name)}">${esc(p.name)}${p.hasArt ? '  ✓' : ''}</option>`).join('')
+    if (keep) plArtSelectName(keep)
+  } catch (err) {
+    // Never leave the operator with an empty, unusable picker — say why.
+    sel.innerHTML = `<option value="">Could not load playlists — ${esc(err.message)}</option>`
+  }
+}
+
+/**
+ * Select `name`, adding a flagged option first if it is not a real playlist.
+ * Art records saved under a mistyped name have no matching playlist, and Edit
+ * on such a row must still be able to show which name it is stuck under.
+ */
+function plArtSelectName(name) {
+  const sel = $('plArtName')
+  if (!name) { sel.value = ''; return }
+  if (![...sel.options].some(o => o.value === name)) {
+    const opt = document.createElement('option')
+    opt.value = name
+    opt.textContent = `${name}  ⚠ no matching playlist`
+    sel.insertBefore(opt, sel.firstChild ? sel.firstChild.nextSibling : null)
+  }
+  sel.value = name
+}
+
+function playlistArtInit() { plArtLoadNames(false); plArtListLoad(false) }
 
 function plArtReset() {
-  $('plArtName').value = ''
+  plArtSelectName('')
   plArtFileObj = null
   $('plArtFile').value = ''
   $('plArtFileName').textContent = 'No file chosen'
@@ -2483,7 +2622,7 @@ function plArtFileChosen(file) {
 
 async function plArtLookup() {
   const name = $('plArtName').value.trim()
-  if (!name) return plArtStatus('✗ Enter a playlist name to look up', true)
+  if (!name) return plArtStatus('', false)
   plArtStatus('Looking up…', false)
   if (!plArtListLoaded) await plArtListLoad(false)
   const match = plArtListData.find(p => (p.playlistName || '').trim().toLowerCase() === name.toLowerCase())
@@ -2493,7 +2632,7 @@ async function plArtLookup() {
 
 async function plArtSave() {
   const playlistName = $('plArtName').value.trim()
-  if (!playlistName)  return plArtStatus('✗ Playlist name is required', true)
+  if (!playlistName)  return plArtStatus('✗ Choose a playlist', true)
   if (!plArtFileObj)  return plArtStatus('✗ Choose a cover image', true)
 
   const btn = $('plArtSaveBtn')
@@ -2522,6 +2661,32 @@ async function plArtSave() {
   }
 }
 
+/**
+ * Delete a playlist-art record. Removes the FileMaker record only — the S3
+ * image is left alone, since keys are stable per playlist and a re-upload
+ * overwrites. The usual reason to delete is a record saved under a mistyped
+ * playlist name (e.g. "Gospel Spirits Selects" when the playlist is "Gospel
+ * Spirit Selects"), where the picture is fine and just needs re-filing.
+ */
+async function plArtDelete(i) {
+  const p = plArtListData[i]
+  if (!p) return
+  if (!confirm(
+    `Delete the playlist-art record for "${p.playlistName}"?\n\n` +
+    `The image stays in S3 — only the FileMaker record goes, so the playlist ` +
+    `will show no cover until one is saved again.`
+  )) return
+  try {
+    const res = await api(`/api/ingest/madstreamer/playlist-art/${encodeURIComponent(p.recordId)}`, 'DELETE')
+    const j = await res.json()
+    if (!res.ok || !j.ok) throw new Error(j.error || `HTTP ${res.status}`)
+    showToast(`Deleted "${p.playlistName}"`, 'success')
+    await plArtListLoad(true)
+  } catch (err) {
+    showToast(`Delete failed: ${err.message}`, 'error')
+  }
+}
+
 async function plArtListLoad(force) {
   if (plArtListLoaded && !force) return
   const wrap = $('plArtListWrap')
@@ -2543,7 +2708,11 @@ async function plArtListLoad(force) {
               <td class="cell-title">${esc(p.playlistName)}</td>
               <td class="cell-artist" style="max-width:380px;font-family:ui-monospace,Menlo,monospace;font-size:0.74rem">${esc((p.imageUrl || '').replace(/^https?:\/\/[^/]+\//, '')) || '—'}</td>
               <td>${String(p.active) === '1' ? badge('approved') : badge('pending')}</td>
-              <td><span class="cell-link" onclick="plArtEditFromIndex(${i})">Edit</span></td>
+              <td style="white-space:nowrap">
+                <span class="cell-link" onclick="plArtEditFromIndex(${i})">Edit</span>
+                <span class="cell-link" style="color:var(--red);margin-left:10px"
+                      onclick="plArtDelete(${i})">Delete</span>
+              </td>
             </tr>`).join('')}
         </tbody>
       </table>`
@@ -2555,7 +2724,7 @@ async function plArtListLoad(force) {
 function plArtEditFromIndex(i) {
   const row = plArtListData[i]
   if (!row) return
-  $('plArtName').value = row.playlistName || ''
+  plArtSelectName(row.playlistName || '')
   plArtStatus(`Editing "${row.playlistName}" (record ${row.recordId}) — choose a new image to replace the cover.`, false)
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }

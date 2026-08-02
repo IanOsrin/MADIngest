@@ -23,7 +23,7 @@ import { uploadImport, uploadArtworkImport, presignImport, presignArtworkImport,
          uploadMp3ByGcat, uploadWavByGcat, uploadArtworkByGmvi, uploadPlaylistArt, downloadAnyKey, keyFromS3Url, downloadByUrl,
          artworkKeyForGmvi, headAnyKey, deleteAnyKey, urlForKey } from '../lib/s3-imports.js'
 import { createGalloRecord, createTapeFileRecord, updateGalloRecord, runGalloScript, runScriptOnRecord, pingGallo, findGalloRecordsByCatalogue, searchGalloRecords, fetchContainerData, getGalloTrack, getGalloLayoutFields, getGalloLayoutFieldSet, reloadGalloLayoutFields, getRecentGalloCreates, clearRecentGalloCreates } from '../lib/fm-gallo.js'
-import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, searchMadStreamerRecords, findArtistBio, upsertArtistBio, listArtistBios, findPlaylistArt, upsertPlaylistArt, listPlaylistArt, findStreamerSongsByArtist, listPublicPlaylists, findSongsByPlaylist, setPublicPlaylist, getStreamerSongAudioUrl, findArtworkByCatalogue, createArtworkRecord, _config as madStreamerConfig } from '../lib/madstreamer.js'
+import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, searchMadStreamerRecords, findArtistBio, upsertArtistBio, listArtistBios, findPlaylistArt, upsertPlaylistArt, listPlaylistArt, deletePlaylistArt, PLAYLIST_CATEGORIES, findStreamerSongsByArtist, listPublicPlaylists, findSongsByPlaylist, setPublicPlaylist, getStreamerSongAudioUrl, findArtworkByCatalogue, createArtworkRecord, _config as madStreamerConfig } from '../lib/madstreamer.js'
 import {
   pingCms2024,
   findRecord            as findCms2024Record,
@@ -2253,6 +2253,19 @@ const uploadPlaylistImage = multer({
   }
 })
 
+
+/** DELETE /madstreamer/playlist-art/:recordId — removes the FM record, keeps the S3 object. */
+router.delete('/madstreamer/playlist-art/:recordId', adminAuth, async (req, res) => {
+  const id = String(req.params.recordId || '').trim()
+  if (!id) return res.status(400).json({ error: 'recordId required' })
+  try {
+    const out = await deletePlaylistArt(id)
+    res.json({ ok: true, ...out })
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
+
 router.get('/madstreamer/playlist-arts', adminAuth, async (req, res) => {
   try {
     const items = await listPlaylistArt()
@@ -2310,8 +2323,41 @@ router.get('/madstreamer/playlist-songs', adminAuth, async (req, res) => {
 
 router.get('/madstreamer/public-playlists', adminAuth, async (req, res) => {
   try {
-    const playlists = await listPublicPlaylists()
-    res.json({ ok: true, playlists })
+    // Playlist names come from the track field (PublicPlaylist); Category and
+    // artwork live on the separate API_Playlist_Art record. Merge them here so
+    // the tab can show and set the category in one place — matching on the same
+    // slug rule the site uses, since names drift in punctuation and case.
+    const [playlists, art] = await Promise.all([listPublicPlaylists(), listPlaylistArt()])
+    const slug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+    const bySlug = new Map(art.map(a => [slug(a.playlistName), a]))
+    const merged = playlists.map(p => {
+      const a = bySlug.get(slug(p.name))
+      return { ...p, category: a?.category || '', hasArt: !!a?.imageUrl, artRecordId: a?.recordId || null }
+    })
+    res.json({ ok: true, playlists: merged, categories: PLAYLIST_CATEGORIES })
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
+
+/**
+ * POST /madstreamer/public-playlists/category  { name, category }
+ * Sets the rail a playlist belongs to. Category classifies the PLAYLIST — one
+ * value per playlist, not a tag on its tracks — so one edit here moves the
+ * whole thing between rails. An empty category clears it, which takes the
+ * playlist off categorised rails without deleting anything.
+ */
+router.post('/madstreamer/public-playlists/category', adminAuth, async (req, res) => {
+  const name     = String(req.body?.name || '').trim()
+  const category = String(req.body?.category ?? '').trim()
+  if (!name) return res.status(400).json({ error: 'name required' })
+  if (category && !PLAYLIST_CATEGORIES.includes(category)) {
+    return res.status(400).json({ error: `category must be one of: ${PLAYLIST_CATEGORIES.join(', ')} (or empty to clear)` })
+  }
+  try {
+    // upsert: playlists whose art record doesn't exist yet still get a category.
+    const r = await upsertPlaylistArt({ playlistName: name, category })
+    res.json({ ok: true, name, category, action: r.action })
   } catch (err) {
     res.status(502).json({ error: err.message })
   }
