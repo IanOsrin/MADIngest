@@ -8,6 +8,7 @@ import podcastsRouter from './routes/podcasts.js'
 import youtubeRouter from './routes/youtube.js'
 import genreFixRouter from './routes/genre-fix.js'
 import galloGenreRouter from './routes/gallo-genre.js'
+import { CANONICAL_GENRES } from './lib/genre-taxonomy.js'
 import downloadTrackRouter from './routes/download-track.js'
 import visionRouter from './routes/vision.js'
 import visionImportRouter from './routes/vision-import.js'
@@ -131,14 +132,22 @@ function mergeGenres(base) {
 }
 
 const FM_GENRE_LIST = process.env.FM_GENRE_VALUE_LIST || 'Local Genre'
+// Serves the agreed Local Genre vocabulary — lib/genre-taxonomy.js, not the FM
+// value list and not GENRES_FALLBACK.
+//
+// Both of those still hold the pre-2026-08 vocabulary ("Afro-Folk", "Afro-Pop",
+// "50's", "BoereMusiek"), and mergeGenres() UNIONS them — so a dropdown built
+// from either offers spellings that no longer exist in the data, and picking one
+// reintroduces it. The taxonomy is the single source of truth for Local Genre
+// everywhere else (the sync guard, the Gallo Genre tab, the cleanup scripts);
+// this makes the dropdown agree.
+//
+// NOTE: this is the LOCAL GENRE list. It is deliberately NOT the vocabulary for
+// the `Genre` field, which carries Ingrooves' controlled values ("afro-folk")
+// and must never be normalised. If a future caller needs Ingrooves genres, that
+// is a separate endpoint, not a widening of this one.
 app.get('/api/genres', async (req, res) => {
-  try {
-    const genres = await getValueList(FM_GENRE_LIST)
-    if (genres.length) return res.json({ genres: mergeGenres(genres), source: 'filemaker+curated' })
-  } catch (e) {
-    console.warn('[Genres] FM value list fetch failed, using fallback:', e.message)
-  }
-  res.json({ genres: mergeGenres(GENRES_FALLBACK), source: 'fallback+curated' })
+  res.json({ genres: [...CANONICAL_GENRES], source: 'taxonomy' })
 })
 
 // API routes
