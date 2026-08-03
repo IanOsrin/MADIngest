@@ -2527,7 +2527,7 @@ async function _runMadStreamerMetadataSync(track, gmvi) {
   }
   const fm = await upsertMp3Record({
     gmvi:            gmvi || undefined,
-    filename:        gcat,                         // bare GCAT, no .wav
+    filename:        gcat,                         // bare GCAT — 'Filename'
     title:           track.title,
     artist:          track.artist_name,
     album_artist:    track.album_artist || track.artist_name,
@@ -2538,6 +2538,17 @@ async function _runMadStreamerMetadataSync(track, gmvi) {
     sequence_no:     track.sequence_no,
     year:            track.year,
     release_date:    track.release_date,
+    // Carried separately from release_date. The payload previously omitted
+    // these entirely, so they never reached the writer — which is why they
+    // read as "not populating" with nothing logged anywhere.
+    original_release_date: track.original_release_date,
+    label:           track.label,
+    p_line:          track.p_line || track.pline_text,
+    c_line:          track.c_line || track.cline_text,
+    technical_resource: track.technical_resource,
+    audio_hash:      track.audio_hash_md5,
+    resource_reference: track.resource_reference,
+    country:         track.country,
     // MadStreamer gets Local Genre; `genre` here is the Ingrooves-facing value
     // and is only a fallback. lib/madstreamer.js normalises whichever wins
     // through the 45-value taxonomy, so an Ingrooves spelling like
@@ -2614,7 +2625,8 @@ router.post('/madstreamer/sync-metadata-by-catalogue', adminAuth, express.json()
         artist:       sample.artist_name,
         barcode:      sample.barcode,
         year:         sample.year,
-        release_date: sample.release_date || sample.original_release_date,
+        original_release_date: sample.original_release_date,
+        release_date: sample.release_date,
         genre:        sample.genre,
       })
       tape = { ok: true, action: r.action, fm_record_id: r.recordId, dropped: r.dropped }
