@@ -144,7 +144,11 @@ const trackMeta = (t, rel) => ({
   year:               t.release_date ? String(t.release_date).slice(0, 4) : null,
   parental:           parentalOf(t.explicit),
   rights_territories: t.territories,
-  composers:          t.credits ? undefined : undefined,
+  // Country only when the territory really is one. DDEX TerritoryCode carries
+  // rights scope, and CCA deliveries say "Worldwide" — which is not a country
+  // and must not be written into a Country field. An ISO 3166 alpha-2 code
+  // passes; anything else is left empty rather than approximated.
+  country:            /^[A-Z]{2}$/.test(String(t.territories || '').trim()) ? String(t.territories).trim() : null,
   audio_url:          t.audio_url,
   wav_filename:       t.file_name,
   // Straight from the ERN. Add Album streams the whole WAV to compute this;
