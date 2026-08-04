@@ -210,7 +210,19 @@ async function buildPlan({ folder, folders, catalogue, artist, album }) {
     // the master. If this folder has no lossless audio but a subfolder does,
     // switch to it. One level only, and only when the current folder offers
     // nothing lossless — an album that already has WAVs is left alone.
-    if (!audio.some(f => LOSSLESS_RE.test(f.name))) {
+    // Bounded: the lookaside below issues extra Vision LISTs, and an unbounded
+    // one can stall the whole preview. Skipped entirely for flat folders (the
+    // GalloImports dumps hold thousands of files and their parent more still),
+    // capped at a handful of candidates, and every call is raced against a
+    // timeout so a slow LIST degrades to "no master found" instead of hanging.
+    const FLAT_FOLDER = (entries || []).length > 200
+    const LOOKASIDE_MS = 4000
+    const listQuick = (path) => Promise.race([
+      visionList(path).catch(() => ({ entries: [] })),
+      new Promise(r => setTimeout(() => r({ entries: [], timedOut: true }), LOOKASIDE_MS)),
+    ])
+
+    if (!FLAT_FOLDER && audio.length && !audio.some(f => LOSSLESS_RE.test(f.name))) {
       const subs = (entries || []).filter(e => e.type === 'dir')
       // A folder actually called WAV wins over any other candidate.
       subs.sort((a, b) => (/^wavs?$/i.test(b.name) ? 1 : 0) - (/^wavs?$/i.test(a.name) ? 1 : 0))
@@ -224,14 +236,15 @@ async function buildPlan({ folder, folders, catalogue, artist, album }) {
       // worse than importing nothing.
       const parent = dir.replace(/\/+$/, '').split('/').slice(0, -1).join('/')
       if (parent) {
-        const pr = await visionList(parent).catch(() => ({ entries: [] }))
+        const pr = await listQuick(parent)
+        if (pr.timedOut) console.warn(`[vision-import] parent listing timed out for ${dirGiven} — skipping the WAV lookaside`)
         for (const e of (pr.entries || [])) {
           if (e.type === 'dir' && /^wavs?$/i.test(e.name)) candidates.push({ name: e.name, path: `${parent}/${e.name}`, sibling: true })
         }
       }
 
-      for (const c of candidates) {
-        const r = await visionList(c.path).catch(() => ({ entries: [] }))
+      for (const c of candidates.slice(0, 8)) {
+        const r = await listQuick(c.path)
         const subAudio = (r.entries || []).filter(e => e.type === 'file' && AUDIO_RE.test(e.name))
         if (subAudio.some(f => LOSSLESS_RE.test(f.name))) {
           console.log(`[vision-import] ${dirGiven}: no lossless audio here, using ${c.sibling ? 'sibling ' : ''}${c.name}/ (${subAudio.length} file(s))`)

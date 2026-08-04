@@ -11,7 +11,9 @@
 import { Router } from 'express'
 import { adminAuth } from '../lib/admin-auth.js'
 import { listBatches, listReleases, loadRelease } from '../lib/cca-ddex.js'
-import { findGalloRecordsByCatalogue, createGalloRecord, createTapeFileRecord, reloadGalloLayoutFields } from '../lib/fm-gallo.js'
+import { findGalloRecordsByCatalogue, createGalloRecord, createTapeFileRecord, reloadGalloLayoutFields,
+         createArtworkRecord, findArtworkByCatalogue } from '../lib/fm-gallo.js'
+import { visionOpen } from '../lib/vision-drive.js'
 
 const router = Router()
 
@@ -62,6 +64,7 @@ async function planRelease(releasePath) {
     trackCount: d.tracks.length,
     matchedCount: d.matchedCount,
     artwork: d.artwork.map(a => a.name),
+    artworkUrl: d.artwork[0]?.url || null,   // first image in resources/ — the cover
     unmatchedFiles: d.unmatchedFiles,
     existingCount: existing.length,
     status: existing.length ? 'exists' : 'ready',
@@ -142,6 +145,10 @@ const datesFor = (t) => {
 }
 
 const trackMeta = (t, rel) => ({
+  // Cover art ships inside resources/ as the next numbered item
+  // (198704266508_012.jpg). Referenced by Vision path, exactly as Audio_URL
+  // references the master rather than copying it.
+  artwork_url:        rel.artworkUrl || null,
   title:              t.track_title,
   artist:             t.artist_name,
   album_artist:       t.artist_name,
@@ -179,6 +186,7 @@ const trackMeta = (t, rel) => ({
 const tapeMeta = (rel) => {
   const f = rel.tracks[0] || {}
   return {
+    artwork_url: rel.artworkUrl || null,
     album_artist: f.artist_name, album: f.album_title,
     catalogue_no: rel.catalogue, barcode: rel.barcode,
     year: (datesFor(f).original_release_date || '').slice(0, 4) || null,
@@ -225,9 +233,39 @@ router.post('/create', adminAuth, async (req, res) => {
         try { await createGalloRecord(trackMeta(t, rel)); created++ }
         catch (e) { failures.push({ title: t.track_title, error: e.message }) }
       }
+      // Artwork record — Ian's manual flow: new record on the Artwork layout,
+      // catalogue number in, image dragged into the Picture container. Send
+      // ONLY the catalogue number: 'Resource reference' is auto-enter and
+      // FileMaker issues the GMVic serial itself, which a supplied value would
+      // override. Skipped when the catalogue already has one, so re-running a
+      // batch cannot duplicate them.
+      let artwork = null
+      if (rel.artworkUrl) {
+        try {
+          const existingArt = await findArtworkByCatalogue(rel.catalogue)
+          if (existingArt.length) {
+            artwork = { skipped: true, existing: existingArt[0].recordId }
+          } else {
+            const img = Buffer.from(await (await visionOpen(rel.artworkUrl)).Body.transformToByteArray())
+            const a = await createArtworkRecord({
+              catalogue_no: rel.catalogue,
+              image: img,
+              filename: rel.artworkUrl.split('/').pop(),
+              contentType: /\.png$/i.test(rel.artworkUrl) ? 'image/png' : 'image/jpeg',
+            })
+            artwork = { recordId: a.recordId, bytes: a.bytes }
+          }
+        } catch (e) {
+          // Never fatal: the release and its audio are already in by this point.
+          artwork = { error: e.message }
+          console.warn(`[cca-import] ${rel.catalogue} artwork failed: ${e.message}`)
+        }
+      }
+
       out.push({ barcode: rel.barcode, catalogue: rel.catalogue, status: failures.length ? 'partial' : 'created',
-                 tapeRecordId, created, failed: failures.length, failures })
-      console.log(`[cca-import] ${rel.catalogue}: tape ${tapeRecordId}, ${created}/${rel.tracks.length} songs`)
+                 tapeRecordId, created, failed: failures.length, failures, artwork })
+      console.log(`[cca-import] ${rel.catalogue}: tape ${tapeRecordId}, ${created}/${rel.tracks.length} songs` +
+                  (artwork?.recordId ? `, artwork ${artwork.recordId}` : artwork?.skipped ? ', artwork already present' : ''))
     } catch (e) {
       out.push({ barcode: rel.barcode, catalogue: rel.catalogue, status: 'error', error: e.message, created: 0 })
       console.warn(`[cca-import] ${rel.barcode} FAILED: ${e.message}`)
