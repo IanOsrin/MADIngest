@@ -11,8 +11,8 @@
 import { Router } from 'express'
 import { adminAuth } from '../lib/admin-auth.js'
 import { listBatches, listReleases, loadRelease } from '../lib/cca-ddex.js'
-import { findGalloRecordsByCatalogue, createGalloRecord, createTapeFileRecord, reloadGalloLayoutFields,
-         createArtworkRecord, findArtworkByCatalogue } from '../lib/fm-gallo.js'
+import { findGalloRecordsByCatalogue, findGalloCataloguesPresent, createGalloRecord, createTapeFileRecord,
+         reloadGalloLayoutFields, createArtworkRecord, findArtworkByCatalogue } from '../lib/fm-gallo.js'
 import { visionOpen } from '../lib/vision-drive.js'
 
 const router = Router()
@@ -94,12 +94,45 @@ router.post('/scan', adminAuth, async (req, res) => {
   try {
     const all   = await listReleases(batch)
     const slice = all.slice(offset, offset + limit)
-    const results = []
-    for (const r of slice) {
-      const p = await planRelease(r.path)
-      const { tracks, ...summary } = p        // summary only — full detail via /preview
-      results.push(summary)
-    }
+
+    // Two changes make this fast. The Vision + XML work runs CONCURRENTLY —
+    // reading 401 XMLs across every batch took 14s at this concurrency, where
+    // one at a time it crawled. And the FileMaker "already imported?" check is
+    // now ONE find for the whole page instead of a round trip per release.
+    const CONC = 10
+    const loaded = new Array(slice.length)
+    let cursor = 0
+    await Promise.all(Array.from({ length: Math.min(CONC, slice.length) }, async () => {
+      for (;;) {
+        const i = cursor++
+        if (i >= slice.length) return
+        loaded[i] = await loadRelease(slice[i].path)
+          .then(d => ({ ok: true, d }))
+          .catch(e => ({ ok: false, error: e.message }))
+      }
+    }))
+
+    const catalogues = loaded.filter(x => x.ok).map(x => x.d.tracks[0]?.catalogue_no).filter(Boolean)
+    const present = await findGalloCataloguesPresent(catalogues).catch(() => new Map())
+
+    const results = slice.map((r, i) => {
+      const L = loaded[i]
+      if (!L.ok) return { path: r.path, barcode: r.barcode, status: 'error', error: L.error }
+      const d = L.d
+      const first = d.tracks[0] || {}
+      const catalogue = first.catalogue_no || null
+      const existingCount = catalogue ? (present.get(catalogue) || 0) : 0
+      return {
+        path: d.path, barcode: d.barcode, catalogue,
+        album: first.album_title || null, artist: first.artist_name || null,
+        ern_version: d.ern_version,
+        trackCount: d.tracks.length, matchedCount: d.matchedCount,
+        artwork: d.artwork.map(a => a.name),
+        unmatchedFiles: d.unmatchedFiles,
+        existingCount,
+        status: existingCount ? 'exists' : 'ready',
+      }
+    })
     res.json({
       ok: true, batch, total: all.length, offset, limit,
       returned: results.length,
