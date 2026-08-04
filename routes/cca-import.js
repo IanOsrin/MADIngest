@@ -124,6 +124,23 @@ const hhmmss = (sec) => {
 // FileMaker will not take a JS boolean — the lesson from DB Sync, 2026-08-03.
 const parentalOf = (v) => v === true ? 'Explicit' : v === false ? 'NotExplicit' : null
 
+// DDEX uses 0001-01-01 as a placeholder for "unknown" (seen on 6009551501008).
+// Writing that as a real date is worse than leaving the field empty, so it is
+// treated as absent along with anything that is not a plausible date.
+const realDate = (v) => {
+  const s = String(v || '').trim()
+  if (!/^\d{4}-\d{2}-\d{2}/.test(s)) return null
+  const y = parseInt(s.slice(0, 4), 10)
+  return y >= 1900 && y <= 2100 ? s : null
+}
+// Original release date, per Ian: use the original when stated, otherwise the
+// release date in both fields. CCA deliveries carry only one date today.
+const datesFor = (t) => {
+  const rel  = realDate(t.release_date)
+  const orig = realDate(t.original_release_date) || rel
+  return { release_date: rel, original_release_date: orig }
+}
+
 const trackMeta = (t, rel) => ({
   title:              t.track_title,
   artist:             t.artist_name,
@@ -140,8 +157,8 @@ const trackMeta = (t, rel) => ({
   label:              t.label_name,
   p_line:             t.pline_text,
   c_line:             t.cline_text,
-  release_date:       t.release_date,
-  year:               t.release_date ? String(t.release_date).slice(0, 4) : null,
+  ...datesFor(t),
+  year:               (datesFor(t).original_release_date || '').slice(0, 4) || null,
   parental:           parentalOf(t.explicit),
   rights_territories: t.territories,
   // Country only when the territory really is one. DDEX TerritoryCode carries
@@ -164,8 +181,8 @@ const tapeMeta = (rel) => {
   return {
     album_artist: f.artist_name, album: f.album_title,
     catalogue_no: rel.catalogue, barcode: rel.barcode,
-    year: f.release_date ? String(f.release_date).slice(0, 4) : null,
-    release_date: f.release_date, original_release_date: f.release_date,
+    year: (datesFor(f).original_release_date || '').slice(0, 4) || null,
+    ...datesFor(f),
     genre: f.genre, language: f.language,
     rights_territories: f.territories, parental: parentalOf(f.explicit),
     label: f.label_name, p_line: f.pline_text, c_line: f.cline_text,
