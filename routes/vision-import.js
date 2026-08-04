@@ -63,6 +63,17 @@ const FUZZY_MIN = 0.72
  * Returns per-row `methods` and `scores` so the preview can show HOW each match
  * was made. A fuzzy match is a guess and the operator should be able to see it.
  */
+// "Track 1", "track_02", "Trk 3", "01 Foo", "1. Foo", "01" -> 1, 2, 3, 1, 1, 1.
+// Returns null when the name carries no leading position.
+function trackNumFromName(name) {
+  const base = String(name || '').replace(AUDIO_RE, '').trim()
+  let m = base.match(/^(?:track|trk|tr)\s*[._-]?\s*(\d{1,3})$/i)
+  if (m) return parseInt(m[1], 10)
+  m = base.match(/^(\d{1,3})(?:\b|[._\s-])/)
+  if (m) return parseInt(m[1], 10)
+  return null
+}
+
 function matchTracksToFiles(rows, files) {
   const fileKey  = (f) => `${f.folder}/${f.name}`
   const fileNorm = (f) => normTitle(f.matchName || f.name) // matchName = title segment in flat folders
@@ -91,6 +102,35 @@ function matchTracksToFiles(rows, files) {
       methods[i] = 'contains'; scores[i] = fuzzyScore(want, fileNorm(candidates[0]))
     }
   })
+
+  // Pass 4 — track number. When files are named "Track 1", "01", "Trk 3" and
+  // the like, the filename carries NO title signal at all and position is the
+  // only thing linking a row to a file. Mirrors the FM Submit tab's pass 3,
+  // which falls back to a number when name matching fails — though its
+  // extractor is parseInt(filename), so it reads "01 Foo.wav" and not
+  // "Track 1.wav". This handles both.
+  //
+  // Runs BEFORE fuzzy on purpose: "Track 1" against a real title scores near
+  // zero, so fuzzy cannot rescue these, and a generic name must never be
+  // fuzzy-matched to a title it merely resembles.
+  const numbered = rows.some((r, i) => !matches[i]) &&
+                   files.some(f => !claimed.has(fileKey(f)) && trackNumFromName(f.matchName || f.name) != null)
+  if (numbered) {
+    rows.forEach((row, i) => {
+      if (matches[i]) return
+      const want = Number(row.seq)
+      if (!Number.isFinite(want)) return
+      const hit = files.find(f => {
+        if (claimed.has(fileKey(f))) return false
+        const n = trackNumFromName(f.matchName || f.name)
+        // Bounded by the tracklist: a title like "7 Seconds.wav" yields 7 and
+        // could otherwise steal seq 7, while "1999.wav" yields 1999 and is
+        // harmlessly out of range.
+        return n != null && n === want && n <= rows.length
+      })
+      if (hit) { claimed.set(fileKey(hit), i); matches[i] = hit; methods[i] = 'track #'; scores[i] = null }
+    })
+  }
 
   const pairs = []
   rows.forEach((row, i) => {
