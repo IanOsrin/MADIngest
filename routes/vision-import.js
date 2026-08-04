@@ -21,6 +21,7 @@ import { adminAuth } from '../lib/admin-auth.js'
 import { visionStatus, visionList } from '../lib/vision-drive.js'
 import { loadMetadata, lookupAlbumTracks, getStatus } from '../lib/metadata-cache.js'
 import { normTitle } from '../lib/gallo-vision-link.js'
+import { fuzzyScore } from '../lib/fuzzy-match.js'
 import { findGalloRecordsByCatalogue, createGalloRecord, createTapeFileRecord, reloadGalloLayoutFields } from '../lib/fm-gallo.js'
 import { readVisionWavInfo, buildSoundInfoBlock, computeVisionMd5 } from '../lib/wav-info.js'
 
@@ -32,26 +33,49 @@ const yearOf = (s) => {
   return m ? m[1] : null
 }
 
+// Minimum similarity for a fuzzy claim. Measured on real titles: typos score
+// 0.93+ ("Kuzwe"/"Kuzwa" 0.94, "Umbhulo"/"Umbulo" 0.93), a leading track number
+// 0.89, accent differences 1.00, while genuinely different titles sit under 0.2.
+// 0.72 sits in that gap with room either side. Extra-word cases ("Zahlangana
+// Ngami" vs "Zahlangana Ngami Izangoma", 0.65) score low on raw edit distance
+// but the containment pass has already claimed those, so they never reach here.
+const FUZZY_MIN = 0.72
+
 /**
  * Match cache rows to the folders' audio files by normalised title.
- * Two passes so "I Wanna See The Sun" can't steal
- * "I Wanna See the Sun (Instrumental).wav": exact matches claim first,
- * then containment runs over whatever is left, longest filename first.
+ *
+ * Three passes, narrowing from certain to plausible:
+ *   1. exact — so "I Wanna See The Sun" can't steal
+ *      "I Wanna See the Sun (Instrumental).wav"
+ *   2. containment, longest filename first
+ *   3. fuzzy (Levenshtein), for typos and transcription drift between the
+ *      metadata and whoever named the WAV
+ *
+ * The fuzzy pass assigns GLOBALLY BEST-FIRST rather than per row in order:
+ * scoring every remaining pair and taking the strongest first stops track 1
+ * claiming a file that is a far better match for track 5. Row order should not
+ * decide the outcome.
+ *
  * Files carry their source folder (A/B sides live in separate folders), so
  * claims are keyed on the full path — same-named files on both sides stay
  * individually claimable.
+ *
+ * Returns per-row `methods` and `scores` so the preview can show HOW each match
+ * was made. A fuzzy match is a guess and the operator should be able to see it.
  */
 function matchTracksToFiles(rows, files) {
   const fileKey  = (f) => `${f.folder}/${f.name}`
   const fileNorm = (f) => normTitle(f.matchName || f.name) // matchName = title segment in flat folders
   const claimed = new Map() // folder/name → row index
   const matches = new Array(rows.length).fill(null)
+  const methods = new Array(rows.length).fill(null)
+  const scores  = new Array(rows.length).fill(null)
 
   rows.forEach((row, i) => {
     const want = normTitle(row.track_name)
     if (!want) return
     const hit = files.find(f => !claimed.has(fileKey(f)) && fileNorm(f) === want)
-    if (hit) { claimed.set(fileKey(hit), i); matches[i] = hit }
+    if (hit) { claimed.set(fileKey(hit), i); matches[i] = hit; methods[i] = 'exact'; scores[i] = 1 }
   })
 
   rows.forEach((row, i) => {
@@ -62,10 +86,31 @@ function matchTracksToFiles(rows, files) {
       .filter(f => !claimed.has(fileKey(f)))
       .filter(f => { const nf = fileNorm(f); return nf.includes(want) || want.includes(nf) })
       .sort((a, b) => fileNorm(b).length - fileNorm(a).length)
-    if (candidates.length) { claimed.set(fileKey(candidates[0]), i); matches[i] = candidates[0] }
+    if (candidates.length) {
+      claimed.set(fileKey(candidates[0]), i); matches[i] = candidates[0]
+      methods[i] = 'contains'; scores[i] = fuzzyScore(want, fileNorm(candidates[0]))
+    }
   })
 
-  return { matches, unmatchedFiles: files.filter(f => !claimed.has(fileKey(f))) }
+  const pairs = []
+  rows.forEach((row, i) => {
+    if (matches[i]) return
+    const want = normTitle(row.track_name)
+    if (!want) return
+    for (const f of files) {
+      if (claimed.has(fileKey(f))) continue
+      const s = fuzzyScore(want, fileNorm(f))
+      if (s >= FUZZY_MIN) pairs.push({ i, f, s })
+    }
+  })
+  pairs.sort((a, b) => b.s - a.s)
+  for (const p of pairs) {
+    if (matches[p.i] || claimed.has(fileKey(p.f))) continue
+    claimed.set(fileKey(p.f), p.i); matches[p.i] = p.f
+    methods[p.i] = 'fuzzy'; scores[p.i] = p.s
+  }
+
+  return { matches, methods, scores, unmatchedFiles: files.filter(f => !claimed.has(fileKey(f))) }
 }
 
 /** Build the full import plan. Throws {status, message} on bad input. */
@@ -141,7 +186,7 @@ async function buildPlan({ folder, folders, catalogue, artist, album }) {
   }
 
   // 4. Match rows ↔ files and shape the per-track create metadata.
-  const { matches, unmatchedFiles } = matchTracksToFiles(rows, files)
+  const { matches, methods, scores, unmatchedFiles } = matchTracksToFiles(rows, files)
   const first = rows[0]
   const tracks = rows.map((row, i) => {
     const file = matches[i]
@@ -152,6 +197,8 @@ async function buildPlan({ folder, folders, catalogue, artist, album }) {
       duration:   row.duration,
       wav:        file ? file.name : null,
       wav_folder: file ? file.folder : null,
+      match_method: methods[i],
+      match_score:  scores[i] == null ? null : Math.round(scores[i] * 100) / 100,
       size:       file ? file.size : null,
       audio_url:  file ? `${file.folder}/${file.name}`.normalize('NFC') : null,
       metadata: {

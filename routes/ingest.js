@@ -16,6 +16,7 @@ import { pipeline } from 'stream/promises'
 import { resolveGalloAudio } from '../lib/gallo-vision.js'
 import { visionOpen } from '../lib/vision-drive.js'
 import { adminAuth } from '../lib/admin-auth.js'
+import { fuzzyScore, normForFuzzy } from '../lib/fuzzy-match.js'
 import { extractAudioMeta, detectAudioFormat, generateWarnings, titleFromFilename } from '../lib/audio-meta.js'
 import { parseDDEXPackage, parseDDEXXml } from '../lib/ddex.js'
 import { parseTrackSheet } from '../lib/excel-ingest.js'
@@ -148,25 +149,13 @@ function applyCcaRules(f, row, catalogue, lf = _DEFAULT_LINE_FIELDS) {
 // alphanumerics-only, lowercase, compute Levenshtein distance, return a
 // 0…1 similarity score.
 
-function _levenshtein(a, b) {
-  if (!a.length) return b.length
-  if (!b.length) return a.length
-  let prev = Array.from({ length: b.length + 1 }, (_, i) => i)
-  for (let i = 1; i <= a.length; i++) {
-    const curr = [i]
-    for (let j = 1; j <= b.length; j++) {
-      curr[j] = a[i-1] === b[j-1] ? prev[j-1] : 1 + Math.min(prev[j], curr[j-1], prev[j-1])
-    }
-    prev = curr
-  }
-  return prev[b.length]
-}
-function _normTitle(s) { return (s || '').toLowerCase().replace(/[^a-z0-9]/g, '') }
-function _fuzzyScore(a, b) {
-  const A = _normTitle(a), B = _normTitle(b)
-  const max = Math.max(A.length, B.length)
-  return max ? 1 - _levenshtein(A, B) / max : 1
-}
+// Moved to lib/fuzzy-match.js — Add Album's audio matching needs the same
+// scoring, and two copies of edit distance would drift. One behavioural change
+// comes with the move: the shared normaliser strips accents, so "Reen" now
+// scores 1.00 against "Reën" where it previously scored lower. That is a
+// straightforward improvement for a catalogue full of ë, è and ö.
+const _fuzzyScore = fuzzyScore
+const _normTitle  = normForFuzzy
 // Threshold used by the DB-sync matrix when matching a metadata-cache row to
 // an FM track by sequence_no + title similarity. 0.7 means "at least 70% of
 // characters line up" — empirically catches typo / casing / punctuation drift

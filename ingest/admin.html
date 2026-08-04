@@ -6012,6 +6012,15 @@ async function aaPreview() {
             (c.filteredByCatalogue ? ` <span class="muted">(filtered by catalogue from ${c.totalAudio} — flat folder)</span>` : '')).join(' · ')}`
         : '')
     wrap.style.display = ''
+    // A fuzzy match is a GUESS — the filename did not match the title exactly or
+    // by containment, only by edit distance. Flag it so the operator checks it
+    // rather than discovering it after the records are created.
+    function aaMatchBadge(t) {
+      if (t.match_method !== 'fuzzy') return ''
+      const pct = t.match_score == null ? '' : ` ${Math.round(t.match_score * 100)}%`
+      return `<div style="font-size:0.68rem;color:var(--gold);font-family:inherit">`
+           + `\u26a0 fuzzy match${pct} — check this one</div>`
+    }
     document.getElementById('aaPlanBody').innerHTML = j.tracks.map(t => `
       <tr>
         <td style="text-align:center">${t.seq ?? ''}</td>
@@ -6019,7 +6028,7 @@ async function aaPreview() {
         <td style="text-align:left;font-family:monospace;font-size:0.78rem">${gfEsc(t.isrc || '')}</td>
         <td style="text-align:center">${gfEsc(t.duration || '')}</td>
         <td style="text-align:left;font-family:monospace;font-size:0.75rem">${t.wav
-          ? `&#127925; ${gfEsc(t.wav)}${(j.folderCounts || []).length > 1 && t.wav_folder
+          ? `&#127925; ${gfEsc(t.wav)}` + aaMatchBadge(t) + `${(j.folderCounts || []).length > 1 && t.wav_folder
               ? `<div class="muted" style="font-size:0.68rem">${gfEsc(t.wav_folder.split('/').pop())}</div>` : ''}`
           : '<span style="color:var(--gold)">no match — Audio_URL will be empty</span>'}</td>
         <td style="text-align:right;font-family:monospace;font-size:0.78rem">${t.size ? viSize(t.size) : ''}</td>
