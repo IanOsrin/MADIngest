@@ -144,6 +144,17 @@ const datesFor = (t) => {
   return { release_date: rel, original_release_date: orig }
 }
 
+// Contributor names for the roles matching `re`, de-duplicated. The ERN carries
+// them as IndirectResourceContributor entries with a role — "Composer" on CCA
+// deliveries. Null when there are none, so the field simply is not sent.
+const creditNames = (credits, re) => {
+  const names = [...new Set((credits || [])
+    .filter(c => re.test(String(c?.role || '')))
+    .map(c => String(c?.name || '').trim())
+    .filter(Boolean))]
+  return names.length ? names.join('; ') : null
+}
+
 const trackMeta = (t, rel) => ({
   // Cover art ships inside resources/ as the next numbered item
   // (198704266508_012.jpg). Referenced by Vision path, exactly as Audio_URL
@@ -161,6 +172,8 @@ const trackMeta = (t, rel) => ({
   genre:              t.genre,
   sub_genre:          t.subgenre,
   language:           t.language,
+  composers:          creditNames(t.credits, /composer|writer|lyricist|author/i),
+  producers:          creditNames(t.credits, /producer/i),
   label:              t.label_name,
   p_line:             t.pline_text,
   c_line:             t.cline_text,
@@ -174,7 +187,10 @@ const trackMeta = (t, rel) => ({
   // passes; anything else is left empty rather than approximated.
   country:            /^[A-Z]{2}$/.test(String(t.territories || '').trim()) ? String(t.territories).trim() : null,
   audio_url:          t.audio_url,
-  wav_filename:       t.file_name,
+  // Filename without its extension. The ERN states "198704245985_001_001.wav";
+  // the FM Filename field holds the bare asset name, matching how Add Album
+  // writes the GCAT with no extension.
+  wav_filename:       t.file_name ? String(t.file_name).replace(/\.[^.]+$/, '') : null,
   // Straight from the ERN. Add Album streams the whole WAV to compute this;
   // a DDEX delivery states it, so a 141-release batch need not re-read
   // hundreds of gigabytes to learn what the XML already says.
