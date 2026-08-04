@@ -682,74 +682,53 @@
       <div class="import-section">
         <h3>CCA Import — DDEX delivery &rarr; Gallo Catalogue</h3>
         <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
-          Paste barcodes one per line. The app fetches those records directly from FileMaker,
-          reads the <code>Filename.wav</code> field on each record, matches it against the metadata cache, and writes the metadata back.
+          Reads a CCA delivery straight off Vision: the ERN in each barcode folder is the source of
+          truth for metadata, and <code>resources/</code> supplies the audio. Creates one
+          <strong>Tape Files Master</strong> plus a song record per track, with
+          <code>Audio_URL</code> pointing at the delivered master. Releases already in Gallo are
+          <strong>skipped, not overwritten</strong>.
         </p>
 
-        <!-- Step 1: query input -->
-        <div id="bfuStep1">
-          <div style="max-width:400px;margin-bottom:10px">
-            <label style="font-size:0.75rem;color:var(--muted);display:block;margin-bottom:4px">Barcodes — one per line</label>
-            <textarea id="bfuBarcode" rows="6" placeholder="198704266508&#10;123456789012&#10;…"
-              style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:6px 10px;font-size:0.84rem;color:var(--text);font-family:monospace;resize:vertical"></textarea>
-          </div>
-          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-            <button class="btn btn-ghost" onclick="bfuFetch()">Fetch from FileMaker →</button>
-            <button class="btn btn-ghost" onclick="bfuDebug()" style="font-size:0.78rem">🔍 Debug first barcode</button>
-            <span id="bfuFetchStatus" style="font-size:0.8rem;color:var(--muted)"></span>
-          </div>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+          <select id="ccaBatch" class="btn-browse" style="min-width:280px"><option value="">Loading batches…</option></select>
+          <button class="btn btn-ghost" onclick="ccaScan()" id="ccaScanBtn">Scan batch</button>
+          <span id="ccaScanStatus" style="font-size:0.8rem;color:var(--muted)"></span>
         </div>
 
-        <!-- Step 2: preview table -->
-        <div id="bfuStep2" style="display:none;margin-top:16px">
-          <div id="bfuSummaryBar" style="font-size:0.82rem;margin-bottom:10px"></div>
-          <div style="overflow-x:auto;max-height:440px;border:1px solid var(--border);border-radius:6px">
+        <div id="ccaSummary" style="display:none;font-size:0.82rem;margin-bottom:10px"></div>
+
+        <div id="ccaTableWrap" style="display:none">
+          <div style="overflow-x:auto;max-height:460px;border:1px solid var(--border);border-radius:6px">
             <table style="width:100%;border-collapse:collapse;font-size:0.8rem">
-              <thead>
-                <tr style="background:var(--surface);position:sticky;top:0">
-                  <th style="padding:7px 10px;text-align:left;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600">Filename.wav (from FM)</th>
-                  <th style="padding:7px 10px;text-align:left;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600">FM Record ID</th>
-                  <th style="padding:7px 10px;text-align:left;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600">Match</th>
-                  <th style="padding:7px 10px;text-align:left;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600">Track (cache)</th>
-                  <th style="padding:7px 10px;text-align:left;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600">Artist (cache)</th>
-                  <th style="padding:7px 10px;text-align:left;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600">Cat #</th>
-                </tr>
-              </thead>
-              <tbody id="bfuPreviewBody"></tbody>
+              <thead><tr style="background:var(--surface);position:sticky;top:0">
+                <th style="padding:7px 10px;width:28px"><input type="checkbox" id="ccaAll" onchange="ccaToggleAll(this.checked)"></th>
+                <th style="padding:7px 10px;text-align:left;color:var(--muted)">Barcode</th>
+                <th style="padding:7px 10px;text-align:left;color:var(--muted)">Catalogue</th>
+                <th style="padding:7px 10px;text-align:left;color:var(--muted)">Album</th>
+                <th style="padding:7px 10px;text-align:left;color:var(--muted)">Artist</th>
+                <th style="padding:7px 10px;text-align:center;color:var(--muted)">Audio</th>
+                <th style="padding:7px 10px;text-align:center;color:var(--muted)">Art</th>
+                <th style="padding:7px 10px;text-align:left;color:var(--muted)">Status</th>
+                <th style="padding:7px 10px"></th>
+              </tr></thead>
+              <tbody id="ccaBody"></tbody>
             </table>
           </div>
           <div style="display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap">
-            <button class="btn btn-blue" id="bfuUpdateBtn" onclick="bfuRunUpdate()">Update FileMaker Records</button>
-            <button class="btn btn-ghost" onclick="bfuReset()">← Start Over</button>
-            <span id="bfuUpdateStatus" style="font-size:0.8rem;color:var(--muted)"></span>
+            <button class="btn btn-blue" id="ccaImportBtn" onclick="ccaImport()">Import selected</button>
+            <label style="font-size:0.78rem;color:var(--muted);display:flex;align-items:center;gap:5px">
+              <input type="checkbox" id="ccaDryRun" checked> Dry run (plan only, writes nothing)
+            </label>
+            <span id="ccaImportStatus" style="font-size:0.8rem;color:var(--muted)"></span>
           </div>
         </div>
 
-        <!-- Step 3: results after update -->
-        <div id="bfuStep3" style="display:none;margin-top:16px">
-          <div id="bfuResultsSummary" style="font-size:0.82rem;margin-bottom:10px;font-weight:600"></div>
-          <div style="overflow-x:auto;max-height:440px;border:1px solid var(--border);border-radius:6px">
-            <table style="width:100%;border-collapse:collapse;font-size:0.8rem">
-              <thead>
-                <tr style="background:var(--surface);position:sticky;top:0">
-                  <th style="padding:7px 10px;text-align:left;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600">Filename.wav</th>
-                  <th style="padding:7px 10px;text-align:left;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600">FM Record ID</th>
-                  <th style="padding:7px 10px;text-align:left;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600">Result</th>
-                  <th style="padding:7px 10px;text-align:left;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600">Detail</th>
-                </tr>
-              </thead>
-              <tbody id="bfuResultsBody"></tbody>
-            </table>
-          </div>
-          <div style="margin-top:12px">
-            <button class="btn btn-ghost" onclick="bfuReset()">Start New Batch</button>
-          </div>
-        </div>
-
-        <div class="import-log" id="bfuLog"></div>
+        <div id="ccaDetail" style="display:none;margin-top:16px"></div>
+        <div id="ccaResults" style="display:none;margin-top:16px"></div>
       </div>
 
     </div>
+
 
     <!-- ── DB Sync tab ─────────────────────────────────────── -->
     <div id="tab-dbsync" class="tab-panel">
@@ -1632,6 +1611,167 @@ function logout() {
 $('tokenInput').addEventListener('keydown', e => { if (e.key === 'Enter') login() })
 
 // ── Tabs ───────────────────────────────────────────────────────────────────
+// ── CCA Import ────────────────────────────────────────────────────────────
+// Batch -> scan -> select -> import. The delivery's own ERN is the metadata
+// source; releases already in Gallo are skipped rather than overwritten.
+let _ccaReleases = []
+let _ccaBatchesLoaded = false
+
+async function ccaInit() {
+  if (_ccaBatchesLoaded) return
+  const sel = $('ccaBatch')
+  try {
+    const r = await api('/api/cca-import/batches')
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    _ccaBatchesLoaded = true
+    sel.innerHTML = '<option value="">Choose a delivery batch…</option>' +
+      (j.batches || []).map(b =>
+        `<option value="${esc(b.path)}">${esc(b.name)}${b.artworkFolder ? '  (+ artwork)' : ''}</option>`).join('')
+  } catch (e) {
+    sel.innerHTML = `<option value="">Could not load batches — ${esc(e.message)}</option>`
+  }
+}
+
+// Scans in pages. A batch is 85–141 releases and each costs an FM lookup plus
+// several Vision listings, so this walks it rather than firing one huge request.
+async function ccaScan() {
+  const batch = $('ccaBatch').value
+  if (!batch) { $('ccaScanStatus').textContent = 'Choose a batch first.'; return }
+  const btn = $('ccaScanBtn'); btn.disabled = true
+  _ccaReleases = []
+  $('ccaTableWrap').style.display = 'none'
+  $('ccaDetail').style.display = 'none'
+  $('ccaResults').style.display = 'none'
+
+  try {
+    let offset = 0, done = false, total = 0
+    while (!done) {
+      $('ccaScanStatus').textContent = `Scanning… ${_ccaReleases.length}${total ? ' of ' + total : ''}`
+      const r = await api('/api/cca-import/scan', 'POST', { batch, offset, limit: 25 })
+      const j = await r.json()
+      if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+      total = j.total
+      _ccaReleases.push(...j.releases)
+      offset += j.returned
+      done = j.done || j.returned === 0
+    }
+    ccaRender()
+    $('ccaScanStatus').textContent = ''
+  } catch (e) {
+    $('ccaScanStatus').textContent = `Error: ${e.message}`
+  } finally { btn.disabled = false }
+}
+
+function ccaRender() {
+  const ready  = _ccaReleases.filter(r => r.status === 'ready').length
+  const exists = _ccaReleases.filter(r => r.status === 'exists').length
+  const errors = _ccaReleases.filter(r => r.status === 'error').length
+  $('ccaSummary').style.display = ''
+  $('ccaSummary').innerHTML =
+    `<span style="color:var(--green,#4ade80)">${ready} ready</span> · ` +
+    `<span style="color:var(--muted)">${exists} already in Gallo</span> · ` +
+    `<span style="color:var(--amber,#f59e0b)">${errors} unreadable</span> · ${_ccaReleases.length} total`
+
+  $('ccaBody').innerHTML = _ccaReleases.map((r, i) => {
+    const ok = r.status === 'ready'
+    const audio = r.trackCount ? `${r.matchedCount}/${r.trackCount}` : '—'
+    const shortAudio = r.matchedCount !== r.trackCount
+      ? `<span style="color:var(--amber,#f59e0b)">${audio}</span>` : audio
+    const status = ok      ? '<span style="color:var(--green,#4ade80)">ready</span>'
+                 : r.status === 'exists' ? `<span style="color:var(--muted)">in Gallo (${r.existingCount})</span>`
+                 : `<span style="color:var(--amber,#f59e0b)" title="${esc(r.error || '')}">unreadable</span>`
+    return `<tr style="border-top:1px solid var(--border)">
+      <td style="padding:5px 10px"><input type="checkbox" class="cca-pick" data-i="${i}" ${ok ? 'checked' : 'disabled'}></td>
+      <td style="padding:5px 10px;font-family:monospace">${esc(r.barcode)}</td>
+      <td style="padding:5px 10px;font-family:monospace">${esc(r.catalogue || '—')}</td>
+      <td style="padding:5px 10px">${esc((r.album || '').slice(0, 40))}</td>
+      <td style="padding:5px 10px">${esc((r.artist || '').slice(0, 28))}</td>
+      <td style="padding:5px 10px;text-align:center">${shortAudio}</td>
+      <td style="padding:5px 10px;text-align:center">${(r.artwork || []).length || '<span style="color:var(--amber,#f59e0b)">0</span>'}</td>
+      <td style="padding:5px 10px">${status}</td>
+      <td style="padding:5px 10px"><span class="cell-link" onclick="ccaDetail(${i})">tracks</span></td>
+    </tr>`
+  }).join('')
+  $('ccaTableWrap').style.display = ''
+}
+
+function ccaToggleAll(on) {
+  document.querySelectorAll('.cca-pick').forEach(c => { if (!c.disabled) c.checked = on })
+}
+
+async function ccaDetail(i) {
+  const rel = _ccaReleases[i]
+  const box = $('ccaDetail'); box.style.display = ''
+  box.innerHTML = '<div class="loading-state"><span class="spin">⟳</span> Reading the ERN…</div>'
+  try {
+    const r = await api('/api/cca-import/preview', 'POST', { release: rel.path })
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    box.innerHTML = `<h4 style="margin:0 0 8px">${esc(j.album || j.barcode)} — ${esc(j.artist || '')}
+        <span class="muted" style="font-weight:400;font-size:0.8rem">ERN ${esc(j.ern_version)} · ${esc(j.catalogue || '')}</span></h4>
+      <div style="overflow-x:auto;max-height:300px;border:1px solid var(--border);border-radius:6px">
+      <table style="width:100%;border-collapse:collapse;font-size:0.78rem"><thead>
+        <tr style="background:var(--surface);position:sticky;top:0">
+          <th style="padding:6px 10px;color:var(--muted)">#</th>
+          <th style="padding:6px 10px;text-align:left;color:var(--muted)">Title</th>
+          <th style="padding:6px 10px;text-align:left;color:var(--muted)">ISRC</th>
+          <th style="padding:6px 10px;text-align:left;color:var(--muted)">Audio file</th>
+          <th style="padding:6px 10px;text-align:left;color:var(--muted)">Matched by</th>
+        </tr></thead><tbody>` +
+      j.tracks.map(t => `<tr style="border-top:1px solid var(--border)">
+        <td style="padding:5px 10px;text-align:center">${t.track_number ?? ''}</td>
+        <td style="padding:5px 10px">${esc(t.track_title || '')}</td>
+        <td style="padding:5px 10px;font-family:monospace">${esc(t.isrc || '')}</td>
+        <td style="padding:5px 10px;font-family:monospace;font-size:0.72rem">${t.audio_file
+            ? esc(t.audio_file) : '<span style="color:var(--amber,#f59e0b)">no audio — Audio_URL will be empty</span>'}</td>
+        <td style="padding:5px 10px">${t.match_method === 'fuzzy'
+            ? `<span style="color:var(--gold,#f59e0b)">⚠ fuzzy ${Math.round((t.match_score || 0) * 100)}% — check</span>`
+            : esc(t.match_method || '—')}</td>
+      </tr>`).join('') + '</tbody></table></div>' +
+      ((j.unmatchedFiles || []).length
+        ? `<div class="muted" style="font-size:0.78rem;margin-top:8px">Audio with no ERN resource: ${j.unmatchedFiles.map(esc).join(', ')}</div>` : '')
+  } catch (e) {
+    box.innerHTML = `<span style="color:var(--red)">Error: ${esc(e.message)}</span>`
+  }
+}
+
+async function ccaImport() {
+  const picked = [...document.querySelectorAll('.cca-pick')].filter(c => c.checked && !c.disabled)
+    .map(c => _ccaReleases[+c.dataset.i])
+  if (!picked.length) { $('ccaImportStatus').textContent = 'Nothing selected.'; return }
+
+  const dry = $('ccaDryRun').checked
+  if (!dry && !confirm(
+    `Create records in FileMaker for ${picked.length} release(s)?\n\n` +
+    `This writes a Tape Files Master plus a song record per track. Releases already ` +
+    `in Gallo are skipped. There is no undo from here.`)) return
+
+  const btn = $('ccaImportBtn'); btn.disabled = true
+  $('ccaImportStatus').textContent = dry ? 'Planning…' : `Importing ${picked.length} release(s)…`
+  try {
+    const r = await api('/api/cca-import/create', 'POST',
+      { releases: picked.map(p => p.path), apply: !dry })
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    const s = j.summary
+    $('ccaResults').style.display = ''
+    $('ccaResults').innerHTML =
+      `<div style="font-weight:600;margin-bottom:8px">${j.applied ? 'Imported' : 'Dry run — nothing written'}: ` +
+      `${j.applied ? `${s.created} created, ${s.partial} partial, ${s.skipped} skipped, ${s.errors} failed`
+                   : `${s.wouldCreate} release(s) would be created`}</div>` +
+      j.releases.map(x => `<div style="font-size:0.8rem;padding:2px 0">
+        <code>${esc(x.barcode)}</code> ${esc(x.catalogue || '')} — ${esc(x.status)}` +
+        (x.created ? ` · ${x.created} song(s)` : '') +
+        (x.tapeRecordId ? ` · tape ${esc(x.tapeRecordId)}` : '') +
+        (x.error ? ` · <span style="color:var(--red)">${esc(x.error)}</span>` : '') + '</div>').join('')
+    $('ccaImportStatus').textContent = ''
+    if (j.applied) await ccaScan()   // refresh: imported releases now read as "in Gallo"
+  } catch (e) {
+    $('ccaImportStatus').textContent = `Error: ${e.message}`
+  } finally { btn.disabled = false }
+}
+
 function showTab(name) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name))
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `tab-${name}`))
@@ -1642,6 +1782,7 @@ function showTab(name) {
   if (name === 'playlists') playlistsInit()
   if (name === 'playlistart') playlistArtInit()
   if (name === 'youtube') youtubeInit()
+  if (name === 'fmupdate') ccaInit()
 }
 
 // YouTube rendering and the "Generate DDEX" build are both LOCAL-ONLY batch jobs
