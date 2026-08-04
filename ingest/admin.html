@@ -288,6 +288,7 @@
       <button class="tab-btn" data-tab="podcasts" onclick="showTab('podcasts')">Podcasts</button>
       <button class="tab-btn" data-tab="biography" onclick="showTab('biography')">Biography</button>
       <button class="tab-btn" data-tab="artwork" onclick="showTab('artwork')">Artwork</button>
+      <button class="tab-btn" data-tab="s3upload" onclick="showTab('s3upload')">S3 Upload</button>
       <button class="tab-btn" data-tab="playlists" onclick="showTab('playlists')">Playlists</button>
       <button class="tab-btn" data-tab="playlistart" onclick="showTab('playlistart')">Playlist Art</button>
       <button class="tab-btn" data-tab="genrefix" onclick="showTab('genrefix')">Genre Fix</button>
@@ -1005,6 +1006,54 @@
     </div>
 
     <!-- Public Playlists -->
+    <div id="tab-s3upload" class="tab-panel">
+      <div class="import-section">
+        <h3>Folder &rarr; S3</h3>
+        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
+          Pick a folder and upload everything in it. Replaces the <em>Export To S3</em> app, which
+          drove Terminal through AppleScript to run <code>rclone copy</code> — that appeared to hang
+          because rclone lists the whole destination before transferring, and enumerating 7,589
+          objects in <code>artwork/</code> to place a handful of files shows no progress for
+          most of a minute. This writes straight to the keys, so there is nothing to enumerate.
+          <br><br>
+          Same-named keys are <strong>overwritten</strong>, as the old script did. Local files are
+          <strong>not deleted</strong> — the browser cannot, and the old script's <code>rm -rf</code>
+          ran whether or not you meant it to.
+        </p>
+
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+          <select id="s3Target" class="btn-browse" style="min-width:220px">
+            <option value="artwork">artwork/ &mdash; cover images</option>
+            <option value="mp3">mp3/ &mdash; audio</option>
+          </select>
+          <input type="file" id="s3Folder" webkitdirectory directory multiple style="display:none" onchange="s3FolderChosen(this.files)">
+          <button class="btn btn-ghost" onclick="document.getElementById('s3Folder').click()">Choose folder…</button>
+          <button class="btn btn-ghost" onclick="document.getElementById('s3Files').click()" style="font-size:0.8rem">or pick files…</button>
+          <input type="file" id="s3Files" multiple style="display:none" onchange="s3FolderChosen(this.files)">
+          <span id="s3Picked" style="font-size:0.82rem;color:var(--muted)"></span>
+        </div>
+
+        <div id="s3ListWrap" style="display:none">
+          <div style="overflow-x:auto;max-height:300px;border:1px solid var(--border);border-radius:6px">
+            <table style="width:100%;border-collapse:collapse;font-size:0.8rem">
+              <thead><tr style="background:var(--surface);position:sticky;top:0">
+                <th style="padding:6px 10px;text-align:left;color:var(--muted)">File</th>
+                <th style="padding:6px 10px;text-align:right;color:var(--muted)">Size</th>
+                <th style="padding:6px 10px;text-align:left;color:var(--muted)">Destination key</th>
+              </tr></thead>
+              <tbody id="s3Body"></tbody>
+            </table>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap">
+            <button class="btn btn-blue" id="s3UploadBtn" onclick="s3Upload()">Upload to S3</button>
+            <span id="s3Status" style="font-size:0.82rem;color:var(--muted)"></span>
+          </div>
+        </div>
+
+        <div id="s3Results" style="display:none;margin-top:16px"></div>
+      </div>
+    </div>
+
     <div id="tab-playlists" class="tab-panel">
       <div class="import-section" style="margin-bottom:24px">
         <h3>Build a Public Playlist</h3>
@@ -1769,6 +1818,58 @@ async function ccaImport() {
     if (j.applied) await ccaScan()   // refresh: imported releases now read as "in Gallo"
   } catch (e) {
     $('ccaImportStatus').textContent = `Error: ${e.message}`
+  } finally { btn.disabled = false }
+}
+
+// ── Folder -> S3 ──────────────────────────────────────────────────────────
+let _s3Files = []
+
+function s3FolderChosen(fileList) {
+  // Hidden files come along with a folder pick (.DS_Store especially) and have
+  // no business on S3.
+  _s3Files = [...fileList].filter(f => f.size > 0 && !f.name.startsWith('.'))
+  const skipped = fileList.length - _s3Files.length
+  const total = _s3Files.reduce((n, f) => n + f.size, 0)
+  $('s3Picked').textContent = _s3Files.length
+    ? `${_s3Files.length} file(s), ${viSize(total)}${skipped ? ` · ${skipped} hidden/empty skipped` : ''}`
+    : 'Nothing usable in that folder.'
+  $('s3Results').style.display = 'none'
+  if (!_s3Files.length) { $('s3ListWrap').style.display = 'none'; return }
+  const prefix = $('s3Target').value
+  $('s3Body').innerHTML = _s3Files.map(f => `<tr style="border-top:1px solid var(--border)">
+      <td style="padding:5px 10px">${esc(f.name)}</td>
+      <td style="padding:5px 10px;text-align:right;font-family:monospace">${viSize(f.size)}</td>
+      <td style="padding:5px 10px;font-family:monospace;font-size:0.74rem;color:var(--muted)">${esc(prefix)}/${esc(f.name)}</td>
+    </tr>`).join('')
+  $('s3ListWrap').style.display = ''
+}
+
+async function s3Upload() {
+  if (!_s3Files.length) return
+  const target = $('s3Target').value
+  if (!confirm(`Upload ${_s3Files.length} file(s) to ${target}/ on S3?\n\nAny existing key with the same name is overwritten.`)) return
+
+  const btn = $('s3UploadBtn'); btn.disabled = true
+  $('s3Status').textContent = `Uploading ${_s3Files.length} file(s)…`
+  try {
+    const fd = new FormData()
+    fd.append('target', target)
+    for (const f of _s3Files) fd.append('files', f, f.name)
+    const res = await fetch('/api/ingest/s3/upload-folder', {
+      method: 'POST', headers: { Authorization: `Bearer ${adminToken}` }, body: fd,
+    })
+    const j = await res.json()
+    if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`)
+    $('s3Results').style.display = ''
+    $('s3Results').innerHTML =
+      `<div style="font-weight:600;margin-bottom:8px">${j.uploaded} uploaded${j.failed ? `, ${j.failed} FAILED` : ''} to ${esc(j.prefix)}/</div>` +
+      j.results.filter(r => !r.ok).map(r =>
+        `<div style="font-size:0.8rem;color:var(--red)"><code>${esc(r.name)}</code> — ${esc(r.error)}</div>`).join('')
+    $('s3Status').textContent = ''
+    showToast(`${j.uploaded} file(s) uploaded to ${j.prefix}/`, j.failed ? 'warning' : 'success')
+  } catch (e) {
+    $('s3Status').textContent = `Error: ${e.message}`
+    showToast(e.message, 'error')
   } finally { btn.disabled = false }
 }
 

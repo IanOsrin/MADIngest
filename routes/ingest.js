@@ -22,7 +22,7 @@ import { parseDDEXPackage, parseDDEXXml } from '../lib/ddex.js'
 import { parseTrackSheet } from '../lib/excel-ingest.js'
 import { uploadImport, uploadArtworkImport, presignImport, presignArtworkImport, downloadImport,
          uploadMp3ByGcat, uploadWavByGcat, uploadArtworkByGmvi, uploadPlaylistArt, downloadAnyKey, keyFromS3Url, downloadByUrl,
-         artworkKeyForGmvi, headAnyKey, deleteAnyKey, urlForKey } from '../lib/s3-imports.js'
+         artworkKeyForGmvi, headAnyKey, deleteAnyKey, urlForKey, uploadAnyKey } from '../lib/s3-imports.js'
 import { createGalloRecord, createTapeFileRecord, updateGalloRecord, runGalloScript, runScriptOnRecord, pingGallo, findGalloRecordsByCatalogue, searchGalloRecords, fetchContainerData, getGalloTrack, getGalloLayoutFields, getGalloLayoutFieldSet, reloadGalloLayoutFields, getRecentGalloCreates, clearRecentGalloCreates } from '../lib/fm-gallo.js'
 import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, searchMadStreamerRecords, findArtistBio, upsertArtistBio, listArtistBios, findPlaylistArt, upsertPlaylistArt, listPlaylistArt, deletePlaylistArt, PLAYLIST_CATEGORIES, findStreamerSongsByArtist, listPublicPlaylists, findSongsByPlaylist, setPublicPlaylist, getStreamerSongAudioUrl, findArtworkByCatalogue, createArtworkRecord, _config as madStreamerConfig } from '../lib/madstreamer.js'
 import {
@@ -1221,6 +1221,50 @@ router.post('/ddex/build-preview', adminAuth, express.json(), async (req, res) =
 
 // ── DDEX XML-only preview ─────────────────────────────────────────────────────
 const uploadXml = multer({ dest: 'tmp/uploads/', limits: { fileSize: 5 * 1024 * 1024 } })
+
+// ── Bulk folder -> S3 artwork ────────────────────────────────────────────────
+// Replaces the "Export To S3" Automator app, which drove Terminal via
+// AppleScript to run rclone. That looked like it hung: `rclone copy` traverses
+// the whole destination before transferring, and listing 7,589 objects in
+// artwork/ to place 17 files shows no progress for most of a minute.
+// Uploading straight to the keys we already know avoids the traversal entirely.
+const uploadFolder = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 100 * 1024 * 1024, files: 500 },
+})
+
+const S3_FOLDER_TARGETS = {
+  artwork: 'artwork',
+  mp3:     'mp3',
+}
+
+router.post('/s3/upload-folder', adminAuth, uploadFolder.array('files', 500), async (req, res) => {
+  const target = String(req.body?.target || 'artwork')
+  const prefix = S3_FOLDER_TARGETS[target]
+  if (!prefix) return res.status(400).json({ error: `target must be one of: ${Object.keys(S3_FOLDER_TARGETS).join(', ')}` })
+
+  const files = req.files || []
+  if (!files.length) return res.status(400).json({ error: 'no files received' })
+
+  const results = []
+  for (const f of files) {
+    // Flatten: a picked folder yields paths like "ArtTemp/cover.jpg", and the
+    // artwork prefix is flat. Basename only, and never a path that could climb.
+    const name = String(f.originalname || '').split('/').pop().replace(/^\.+/, '')
+    if (!name) { results.push({ name: f.originalname, ok: false, error: 'unusable filename' }); continue }
+    try {
+      const key = `${prefix}/${name}`
+      await uploadAnyKey(f.buffer, key, f.mimetype || 'application/octet-stream')
+      results.push({ name, key, bytes: f.size, ok: true })
+    } catch (e) {
+      results.push({ name, ok: false, error: e.message })
+    }
+  }
+
+  const ok = results.filter(r => r.ok).length
+  console.log(`[s3-upload] ${target}: ${ok}/${results.length} uploaded`)
+  res.json({ ok: true, target, prefix, uploaded: ok, failed: results.length - ok, results })
+})
 
 router.post('/ddex/xml-preview', adminAuth, uploadXml.single('xml'), async (req, res) => {
   try {
