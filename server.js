@@ -12,6 +12,7 @@ import { CANONICAL_GENRES } from './lib/genre-taxonomy.js'
 import downloadTrackRouter from './routes/download-track.js'
 import visionRouter from './routes/vision.js'
 import visionImportRouter from './routes/vision-import.js'
+import ccaImportRouter from './routes/cca-import.js'
 import visionUploadRouter from './routes/vision-upload.js'
 import galloAudioRouter from './routes/gallo-audio.js'
 import { getValueList } from './lib/fm-gallo.js'
@@ -158,6 +159,7 @@ app.use('/api/gallo-genre', galloGenreRouter)   // Gallo album-at-a-time Local G
 app.use('/api/download-track', downloadTrackRouter)
 app.use('/api/vision', visionRouter)
 app.use('/api/vision-import', visionImportRouter)
+app.use('/api/cca-import', ccaImportRouter)
 if (VISION_UPLOAD_ENABLED) app.use('/api/vision-upload', visionUploadRouter) // local-only — see VISION_UPLOAD_ENABLED above
 app.use('/api/gallo', galloAudioRouter)
 if (YOUTUBE_ENABLED) app.use('/api/youtube', youtubeRouter)   // local-only — see YOUTUBE_ENABLED above
