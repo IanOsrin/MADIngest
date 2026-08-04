@@ -27,6 +27,9 @@ import { readVisionWavInfo, buildSoundInfoBlock, computeVisionMd5 } from '../lib
 
 const router = Router()
 const AUDIO_RE = /\.(wav|flac|aif|aiff|mp3|m4a)$/i
+// The formats that count as a master. m4a is an MP4 container — lossy — and
+// must never be ingested as the master when a WAV exists.
+const LOSSLESS_RE = /\.(wav|flac|aif|aiff)$/i
 
 const yearOf = (s) => {
   const m = String(s || '').match(/(\d{4})/)
@@ -194,9 +197,61 @@ async function buildPlan({ folder, folders, catalogue, artist, album }) {
   }
   const files = []
   const folderCounts = []
-  for (const dir of folderList) {
-    const { entries } = await visionList(dir).catch(e => fail(502, `Vision folder list failed for ${dir}: ${e.message}`))
-    const audio = (entries || []).filter(e => e.type === 'file' && AUDIO_RE.test(e.name))
+  for (const dirGiven of folderList) {
+    let dir = dirGiven
+    let { entries } = await visionList(dir).catch(e => fail(502, `Vision folder list failed for ${dir}: ${e.message}`))
+    let audio = (entries || []).filter(e => e.type === 'file' && AUDIO_RE.test(e.name))
+
+    // Prefer the masters. Some albums keep lossy copies in the album-named
+    // folder and the WAVs in a subfolder beside them — e.g.
+    //   izingane zamakhuze/amathambo/  8 x .m4a
+    //   izingane zamakhuze/WAV/        8 x .wav
+    // Pointing at the album folder would otherwise ingest the m4a as if it were
+    // the master. If this folder has no lossless audio but a subfolder does,
+    // switch to it. One level only, and only when the current folder offers
+    // nothing lossless — an album that already has WAVs is left alone.
+    if (!audio.some(f => LOSSLESS_RE.test(f.name))) {
+      const subs = (entries || []).filter(e => e.type === 'dir')
+      // A folder actually called WAV wins over any other candidate.
+      subs.sort((a, b) => (/^wavs?$/i.test(b.name) ? 1 : 0) - (/^wavs?$/i.test(a.name) ? 1 : 0))
+      const candidates = subs.map(s => ({ name: s.name, path: `${dir.replace(/\/+$/, '')}/${s.name}` }))
+
+      // …and beside them. The real layout puts the masters in a SIBLING:
+      //   izingane zamakhuze/amathambo/  8 x .m4a   <- the album folder
+      //   izingane zamakhuze/WAV/        8 x .wav   <- the masters
+      // Only a sibling explicitly named WAV/WAVS is considered. Any other
+      // sibling is a different album, and guessing across albums would be far
+      // worse than importing nothing.
+      const parent = dir.replace(/\/+$/, '').split('/').slice(0, -1).join('/')
+      if (parent) {
+        const pr = await visionList(parent).catch(() => ({ entries: [] }))
+        for (const e of (pr.entries || [])) {
+          if (e.type === 'dir' && /^wavs?$/i.test(e.name)) candidates.push({ name: e.name, path: `${parent}/${e.name}`, sibling: true })
+        }
+      }
+
+      for (const c of candidates) {
+        const r = await visionList(c.path).catch(() => ({ entries: [] }))
+        const subAudio = (r.entries || []).filter(e => e.type === 'file' && AUDIO_RE.test(e.name))
+        if (subAudio.some(f => LOSSLESS_RE.test(f.name))) {
+          console.log(`[vision-import] ${dirGiven}: no lossless audio here, using ${c.sibling ? 'sibling ' : ''}${c.name}/ (${subAudio.length} file(s))`)
+          dir = c.path; entries = r.entries; audio = subAudio
+          break
+        }
+      }
+    }
+
+    // Same track delivered twice — keep the lossless copy, drop the lossy one.
+    const byBase = new Map()
+    for (const f of audio) {
+      const base = f.name.replace(AUDIO_RE, '').toLowerCase()
+      const prev = byBase.get(base)
+      if (!prev || (LOSSLESS_RE.test(f.name) && !LOSSLESS_RE.test(prev.name))) byBase.set(base, f)
+    }
+    if (byBase.size < audio.length) {
+      console.log(`[vision-import] ${dir}: ${audio.length - byBase.size} lossy duplicate(s) ignored in favour of the lossless copy`)
+      audio = [...byBase.values()]
+    }
     const catFiles = normCat
       ? audio.filter(f => f.name.toLowerCase().replace(/[^a-z0-9]+/g, '').includes(normCat))
       : []
