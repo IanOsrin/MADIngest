@@ -6059,10 +6059,38 @@ async function aaPreview() {
   if (inputs.artist.includes('/') || inputs.album.includes('/')) {
     status.textContent = 'The Artist / Album title field contains a folder path — folder paths go in the big box above.'; return
   }
-  status.textContent = 'Building preview (Vision + cache + duplicate check)…'
   document.getElementById('aaResultCard').style.display = 'none'
   card.style.display = 'none'
   aaPlan = null
+
+  // The request does three things and the slow one was invisible: a cold
+  // metadata cache pulls ~46 MB from S3 and parses ~70,000 rows, which runs to
+  // a minute after a restart. One static "Building preview…" line made that
+  // read as a hang (Ian, 2026-08-06). Poll the cache's own status endpoint so
+  // the line names the step actually running, and show a clock so a slow step
+  // never looks like a stopped one. Listing Vision takes ~200ms — it is never
+  // what you are waiting for.
+  const startedAt = Date.now()
+  const secs = () => `${Math.round((Date.now() - startedAt) / 1000)}s`
+  let cacheReady = false
+  let cacheRows = 0
+  let done = false        // a tick already awaiting its own fetch must not
+                          // repaint the line after the preview has finished
+  const tick = async () => {
+    if (!cacheReady) {
+      try {
+        const s = await (await api('/api/ingest/metadata/status')).json()
+        cacheReady = !!s.loaded
+        cacheRows = s.count || 0
+      } catch (e) { /* a nicety — never let the status line break the preview */ }
+    }
+    if (done) return
+    status.textContent = cacheReady
+      ? `Metadata cache ready (${cacheRows.toLocaleString()} rows) — listing the Vision folder and checking FileMaker for duplicates… ${secs()}`
+      : `Loading the metadata cache from S3 (~70,000 rows) — a minute or so after a restart… ${secs()}`
+  }
+  await tick()
+  const poll = setInterval(tick, 2000)
   try {
     const r = await api('/api/vision-import/preview', 'POST', inputs)
     const j = await r.json()
@@ -6123,6 +6151,9 @@ async function aaPreview() {
       : ''
   } catch (e) {
     status.textContent = `Preview failed: ${e.message}`
+  } finally {
+    done = true           // stops an in-flight tick repainting the finished line
+    clearInterval(poll)   // the clock must stop whichever way the request ends
   }
 }
 
