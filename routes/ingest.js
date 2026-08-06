@@ -22,7 +22,8 @@ import { parseDDEXPackage, parseDDEXXml } from '../lib/ddex.js'
 import { parseTrackSheet } from '../lib/excel-ingest.js'
 import { uploadImport, uploadArtworkImport, presignImport, presignArtworkImport, downloadImport,
          uploadMp3ByGcat, uploadWavByGcat, uploadArtworkByGmvi, uploadPlaylistArt, downloadAnyKey, keyFromS3Url, downloadByUrl,
-         artworkKeyForGmvi, headAnyKey, deleteAnyKey, urlForKey, uploadAnyKey } from '../lib/s3-imports.js'
+         artworkKeyForGmvi, headAnyKey, deleteAnyKey, urlForKey, uploadAnyKey,
+         writeArtworkDerivatives } from '../lib/s3-imports.js'
 import { createGalloRecord, createTapeFileRecord, updateGalloRecord, runGalloScript, runScriptOnRecord, pingGallo, findGalloRecordsByCatalogue, searchGalloRecords, fetchContainerData, getGalloTrack, getGalloLayoutFields, getGalloLayoutFieldSet, reloadGalloLayoutFields, getRecentGalloCreates, clearRecentGalloCreates } from '../lib/fm-gallo.js'
 import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, searchMadStreamerRecords, findArtistBio, upsertArtistBio, listArtistBios, findPlaylistArt, upsertPlaylistArt, listPlaylistArt, deletePlaylistArt, PLAYLIST_CATEGORIES, findStreamerSongsByArtist, listPublicPlaylists, findSongsByPlaylist, setPublicPlaylist, getStreamerSongAudioUrl, findArtworkByCatalogue, createArtworkRecord, _config as madStreamerConfig } from '../lib/madstreamer.js'
 import {
@@ -1238,6 +1239,10 @@ const S3_FOLDER_TARGETS = {
   mp3:     'mp3',
 }
 
+// Only these get derivatives — sharp can't read a PDF or a stray .DS_Store, and
+// a folder pick sweeps up whatever is sitting next to the covers.
+const ARTWORK_IMAGE_RE = /\.(jpe?g|png|webp|tiff?)$/i
+
 router.post('/s3/upload-folder', adminAuth, uploadFolder.array('files', 500), async (req, res) => {
   const target = String(req.body?.target || 'artwork')
   const prefix = S3_FOLDER_TARGETS[target]
@@ -1255,7 +1260,23 @@ router.post('/s3/upload-folder', adminAuth, uploadFolder.array('files', 500), as
     try {
       const key = `${prefix}/${name}`
       await uploadAnyKey(f.buffer, key, f.mimetype || 'application/octet-stream')
-      results.push({ name, key, bytes: f.size, ok: true })
+      // Artwork is served from artwork/resized/<name>_<size>.webp, never the
+      // master. A cover uploaded without its derivatives showed no cover until
+      // the 05:00 cron caught up — and once the app had asked for the missing
+      // derivative, the CDN cached that 403 and the cover stayed broken even
+      // after the file existed. Generating them in the same breath as the
+      // upload is what stops a 403 ever being served (Ian, 2026-08-06).
+      let derivatives = null
+      if (target === 'artwork' && ARTWORK_IMAGE_RE.test(name)) {
+        try {
+          derivatives = await writeArtworkDerivatives(key, f.buffer)
+        } catch (e) {
+          results.push({ name, key, bytes: f.size, ok: false,
+            error: `uploaded, but could not be resized (${e.message}) — the app serves the derivative, so this cover will not appear` })
+          continue
+        }
+      }
+      results.push({ name, key, bytes: f.size, ok: true, derivatives })
     } catch (e) {
       results.push({ name, ok: false, error: e.message })
     }
