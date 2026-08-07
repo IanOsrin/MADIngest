@@ -1209,9 +1209,9 @@
             <input id="hbEyebrow" placeholder="New release" style="width:100%;margin-bottom:8px">
             <label class="muted" style="font-size:12px">Opens</label>
             <select id="hbTargetType" style="width:100%;margin-bottom:8px" onchange="hbSyncTargetUi()">
-              <option value="track">track &mdash; plays a recordId</option>
+              <option value="track">track &mdash; plays a song</option>
+              <option value="album">album &mdash; opens an album by catalogue number</option>
               <option value="external">external &mdash; opens a URL</option>
-              <option value="album">album (not wired yet &mdash; slide will do nothing)</option>
               <option value="playlist">playlist (not wired yet &mdash; slide will do nothing)</option>
             </select>
             <label class="muted" style="font-size:12px">Target (recordId, or the URL for external)</label>
@@ -5901,8 +5901,12 @@ function hbSyncTargetUi() {
   const t = document.getElementById('hbTargetType').value;
   const wrap = document.getElementById('hbFindWrap');
   const box  = document.getElementById('hbTargetId');
+  // The finder returns recordIds, which only mean anything for a track target.
   if (wrap) wrap.style.display = t === 'track' ? '' : 'none';
-  if (box)  box.placeholder = t === 'external' ? 'https://…' : '121708';
+  if (box) box.placeholder =
+    t === 'external' ? 'https://…' :
+    t === 'album'    ? 'CDGMP40296  (catalogue number)' :
+    t === 'playlist' ? '(not wired yet)' : '121708';
 }
 
 async function hbCreate() {
