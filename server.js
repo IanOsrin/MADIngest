@@ -11,6 +11,7 @@ import galloGenreRouter from './routes/gallo-genre.js'
 import { CANONICAL_GENRES } from './lib/genre-taxonomy.js'
 import downloadTrackRouter from './routes/download-track.js'
 import visionRouter from './routes/vision.js'
+import { startVisionIndexAutoRefresh } from './lib/gallo-vision-link.js'
 import visionImportRouter from './routes/vision-import.js'
 import ccaImportRouter from './routes/cca-import.js'
 import visionUploadRouter from './routes/vision-upload.js'
@@ -186,4 +187,8 @@ app.use((err, req, res, _next) => {
 app.listen(PORT, () => {
   console.log(`Gallo Ingest running on http://localhost:${PORT}`)
   console.log(`  Admin:  http://localhost:${PORT}/ingest/admin`)
+  // Keep the Vision index current without anyone pressing Reindex: each tick
+  // picks up folders that have appeared and refreshes the stalest known ones
+  // within a small budget. Set VISION_INDEX_AUTO_MS=0 to switch it off.
+  startVisionIndexAutoRefresh({ cacheFile: path.join(process.cwd(), 'tmp', 'vision-index.json') })
 })

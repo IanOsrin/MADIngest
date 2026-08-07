@@ -5,7 +5,7 @@ import path from 'path'
 import { Router } from 'express'
 import { adminAuth } from '../lib/admin-auth.js'
 import { visionStatus, visionList, visionDownloadTo } from '../lib/vision-drive.js'
-import { loadVisionIndex, reindexVisionIndex, indexBuilding } from '../lib/gallo-vision-link.js'
+import { loadVisionIndex, reindexVisionIndex, indexBuilding, indexStatus } from '../lib/gallo-vision-link.js'
 
 const router = Router()
 const INDEX_CACHE = path.join(process.cwd(), 'tmp', 'vision-index.json')
@@ -14,17 +14,27 @@ router.get('/status', adminAuth, (_req, res) => {
   res.json(visionStatus())
 })
 
-// Index state, so the UI can prompt a Reindex when it's missing / building.
+// Index state. Reports which folder is being worked on and the last error, so a
+// refresh that dies is visible instead of leaving a stale index and a button
+// that only ever said "started".
 router.get('/index-status', adminAuth, async (_req, res) => {
   const index = await loadVisionIndex({ cacheFile: INDEX_CACHE })
-  res.json({ built: !!index, building: indexBuilding(), indexedFiles: index?.builtFiles || 0 })
+  res.json({ built: !!index, building: indexBuilding(), indexedFiles: index?.builtFiles || 0, ...indexStatus() })
 })
 
-// Kick off an out-of-band rebuild (fire-and-forget; ~minutes). Returns at once.
-router.post('/reindex', adminAuth, (_req, res) => {
+// Refresh out of band. Cheap by default: new folders are indexed at once and the
+// stalest known folders are refreshed within a time budget. ?full=1 forces the
+// whole estate, which takes tens of minutes.
+router.post('/reindex', adminAuth, (req, res) => {
   if (!visionStatus().configured) return res.status(503).json({ error: 'Vision drive is not configured' })
-  const r = reindexVisionIndex({ cacheFile: INDEX_CACHE })
-  res.json({ ok: true, ...r, note: r.started ? 'Rebuilding the Vision index (a few minutes). It persists to S3 when done.' : 'A rebuild is already running.' })
+  const full = req.query.full === '1' || req.body?.full === true
+  const r = reindexVisionIndex({ cacheFile: INDEX_CACHE, full })
+  res.json({
+    ok: true, ...r, full,
+    note: !r.started ? 'A refresh is already running.'
+      : full ? 'Full rebuild started — this lists every object on both drives and takes tens of minutes.'
+             : 'Refreshing: new folders are picked up first, then the stalest ones. Watch the status line.',
+  })
 })
 
 // Fast filename/path search over the persisted index. Never builds in-request.
