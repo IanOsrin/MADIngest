@@ -291,6 +291,7 @@
       <button class="tab-btn" data-tab="s3upload" onclick="showTab('s3upload')">S3 Upload</button>
       <button class="tab-btn" data-tab="playlists" onclick="showTab('playlists')">Playlists</button>
       <button class="tab-btn" data-tab="playlistart" onclick="showTab('playlistart')">Playlist Art</button>
+      <button class="tab-btn" data-tab="hero" onclick="showTab('hero')">Hero Banner</button>
       <button class="tab-btn" data-tab="genrefix" onclick="showTab('genrefix')">Genre Fix</button>
       <button class="tab-btn" data-tab="gallogenre" onclick="showTab('gallogenre')">Gallo Genre</button>
       <button class="tab-btn" data-tab="youtube" onclick="showTab('youtube')">YouTube</button>
@@ -1179,6 +1180,85 @@
             <tbody id="gfBody"></tbody>
           </table>
         </div>
+      </div>
+    </div>
+
+    <!-- ── Hero Banner tab ──────────────────────────────────── -->
+    <div id="tab-hero" class="tab-panel">
+      <div class="card">
+        <h3>Hero Banner — the home carousel on musicafricadirect.com</h3>
+        <p class="muted" style="margin:6px 0 14px">
+          Upload a designed banner and it goes live within a minute. Masters are
+          <strong>2000&times;475</strong> (4.21:1) JPEG, under 500KB — the shape is checked before anything
+          is written, because a wrong ratio crops the sides and takes any type near the edges with it.
+          The image is uploaded <em>before</em> the record is created, so the CDN can never cache a
+          missing-image error against it.
+        </p>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;max-width:900px">
+          <div>
+            <label class="muted" style="font-size:12px">Banner image</label>
+            <input type="file" id="hbFile" accept="image/jpeg,image/png" onchange="hbInspect()" style="width:100%">
+            <div id="hbShape" class="muted" style="font-size:12px;margin-top:6px"></div>
+            <img id="hbPreview" style="display:none;width:100%;margin-top:8px;border-radius:8px">
+          </div>
+          <div>
+            <label class="muted" style="font-size:12px">Title (required &mdash; also the screen-reader label)</label>
+            <input id="hbTitle" placeholder="Amy Tjasink" style="width:100%;margin-bottom:8px">
+            <label class="muted" style="font-size:12px">Eyebrow (optional)</label>
+            <input id="hbEyebrow" placeholder="New release" style="width:100%;margin-bottom:8px">
+            <label class="muted" style="font-size:12px">Opens</label>
+            <select id="hbTargetType" style="width:100%;margin-bottom:8px">
+              <option value="track">track &mdash; plays a recordId</option>
+              <option value="external">external &mdash; opens a URL</option>
+              <option value="album">album (not wired yet &mdash; slide will do nothing)</option>
+              <option value="playlist">playlist (not wired yet &mdash; slide will do nothing)</option>
+            </select>
+            <label class="muted" style="font-size:12px">Target (recordId, or the URL for external)</label>
+            <input id="hbTargetId" placeholder="121708" style="width:100%;margin-bottom:8px">
+            <div style="display:flex;gap:8px">
+              <div style="flex:1">
+                <label class="muted" style="font-size:12px">Order</label>
+                <input id="hbSort" type="number" placeholder="1" style="width:100%">
+              </div>
+              <div style="flex:1">
+                <label class="muted" style="font-size:12px">Button text</label>
+                <input id="hbCta" placeholder="Play" style="width:100%">
+              </div>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:8px">
+              <div style="flex:1">
+                <label class="muted" style="font-size:12px">Show from (optional)</label>
+                <input id="hbStart" type="date" style="width:100%">
+              </div>
+              <div style="flex:1">
+                <label class="muted" style="font-size:12px">Show until (optional)</label>
+                <input id="hbEnd" type="date" style="width:100%">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top:14px;display:flex;gap:10px;align-items:center">
+          <button class="btn btn-gold" id="hbCreateBtn" onclick="hbCreate()">Upload &amp; publish</button>
+          <span id="hbStatus" class="muted"></span>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <h3 style="display:flex;align-items:center;gap:10px">Live banners
+          <button class="btn btn-ghost" onclick="hbLoad()" style="font-size:12px;padding:4px 10px">&#8635; Refresh</button>
+        </h3>
+        <div class="table-wrap">
+          <table style="width:100%">
+            <thead><tr>
+              <th style="text-align:left">Banner</th><th style="text-align:left">Title</th>
+              <th>Order</th><th style="text-align:left">Opens</th><th>Active</th><th></th>
+            </tr></thead>
+            <tbody id="hbBody"></tbody>
+          </table>
+        </div>
+        <div id="hbListStatus" class="muted" style="margin-top:8px"></div>
       </div>
     </div>
 
@@ -5743,6 +5823,145 @@ async function gfApply(i) {
     document.getElementById(`gfRow${i}`).style.opacity = '0.45'
   } catch (e) {
     stat.textContent = `failed: ${e.message}`
+  }
+}
+
+/* ── Hero Banner tab ─────────────────────────────────────────
+   Puts a designed banner on the home carousel. The image is uploaded and
+   confirmed before the FileMaker record is written — the other order lets the
+   CDN cache a 403 against a URL that does not exist yet, and nothing clears it.
+*/
+let hbShapeOk = null;   // null = not checked yet, false = wrong ratio
+
+function hbFile() { return document.getElementById('hbFile').files[0] || null }
+
+async function hbInspect() {
+  const f = hbFile(), out = document.getElementById('hbShape'), prev = document.getElementById('hbPreview');
+  hbShapeOk = null;
+  out.textContent = ''; prev.style.display = 'none';
+  if (!f) return;
+  prev.src = URL.createObjectURL(f); prev.style.display = '';
+  const fd = new FormData(); fd.append('image', f);
+  try {
+    const r = await fetch('/api/hero/inspect', { method: 'POST', headers: { Authorization: `Bearer ${adminToken}` }, body: fd });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    hbShapeOk = j.ok;
+    const size = `${j.width}\u00d7${j.height} \u00b7 ${j.ratio}:1 \u00b7 ${Math.round(j.bytes/1024)}KB`;
+    const warn = (j.warnings || []).length ? ` \u2014 ${j.warnings.join('; ')}` : '';
+    out.innerHTML = j.ok
+      ? `<span style="color:var(--green)">\u2713 ${size}</span>${warn ? '<span style="color:var(--gold)">' + warn + '</span>' : ''}`
+      : `<span style="color:#e66">\u2717 ${size}</span><br><span style="color:#e66">${gfEsc(j.reason)}</span>`;
+  } catch (e) {
+    out.innerHTML = `<span style="color:#e66">Could not read that image: ${gfEsc(e.message)}</span>`;
+  }
+}
+
+async function hbCreate() {
+  const f = hbFile(), status = document.getElementById('hbStatus'), btn = document.getElementById('hbCreateBtn');
+  const title = document.getElementById('hbTitle').value.trim();
+  if (!f)     { status.textContent = 'Choose a banner image first.'; return }
+  if (!title) { status.textContent = 'Title is required — the site drops a slide without one.'; return }
+  if (hbShapeOk === false &&
+      !confirm('That image is not the hero shape, so the sides will be cropped on the live site. Publish it anyway?')) return;
+
+  const fd = new FormData();
+  fd.append('image', f);
+  fd.append('title', title);
+  for (const [k, id] of [['eyebrow','hbEyebrow'],['targetType','hbTargetType'],['targetId','hbTargetId'],
+                         ['ctaLabel','hbCta'],['sortOrder','hbSort'],['startDate','hbStart'],['endDate','hbEnd']]) {
+    fd.append(k, document.getElementById(id).value.trim());
+  }
+  if (hbShapeOk === false) fd.append('force', 'true');
+
+  btn.disabled = true;
+  status.textContent = 'Uploading the image, then creating the record…';
+  try {
+    const r = await fetch('/api/hero/create', { method: 'POST', headers: { Authorization: `Bearer ${adminToken}` }, body: fd });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    status.innerHTML = `<span style="color:var(--green)">\u2713 Live within a minute \u2014 ${gfEsc(j.key)}</span>`;
+    document.getElementById('hbFile').value = '';
+    document.getElementById('hbTitle').value = '';
+    document.getElementById('hbShape').textContent = '';
+    document.getElementById('hbPreview').style.display = 'none';
+    hbLoad();
+  } catch (e) {
+    status.innerHTML = `<span style="color:#e66">Failed: ${gfEsc(e.message)}</span>`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function hbLoad() {
+  const body = document.getElementById('hbBody'), st = document.getElementById('hbListStatus');
+  st.textContent = 'Loading…'; body.innerHTML = '';
+  try {
+    const r = await fetch('/api/hero/list', { headers: { Authorization: `Bearer ${adminToken}` } });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    const rows = j.banners || [];
+    const live = j.liveTypes || ['track','external'];
+    st.textContent = rows.length
+      ? `${rows.filter(b => b.active).length} active of ${rows.length}`
+      : 'No banners yet — the site falls back to new-release artwork.';
+    body.innerHTML = rows.map(b => `
+      <tr${b.active ? '' : ' style="opacity:.5"'}>
+        <td style="width:220px"><img src="${gfEsc(b.imageUrl)}" style="width:210px;border-radius:5px;display:block"
+             onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'image missing',className:'muted'}))"></td>
+        <td style="text-align:left">
+          <strong>${gfEsc(b.title)}</strong>
+          ${b.eyebrow ? `<div class="muted" style="font-size:11px">${gfEsc(b.eyebrow)}</div>` : ''}
+          ${b.startDate || b.endDate ? `<div class="muted" style="font-size:11px">${gfEsc(b.startDate || '…')} → ${gfEsc(b.endDate || '…')}</div>` : ''}
+        </td>
+        <td style="text-align:center">
+          <input type="number" value="${gfEsc(b.sortOrder)}" style="width:56px"
+                 onchange="hbPatch('${gfEsc(b.recordId)}', { sortOrder: this.value })">
+        </td>
+        <td style="text-align:left;font-size:12px">
+          ${gfEsc(b.targetType || '—')}
+          ${b.targetType && !live.includes(b.targetType) ? '<div style="color:var(--gold);font-size:11px">not wired — click does nothing</div>' : ''}
+          <div class="muted" style="font-size:11px">${gfEsc(b.targetId)}</div>
+        </td>
+        <td style="text-align:center">
+          <input type="checkbox" ${b.active ? 'checked' : ''}
+                 onchange="hbPatch('${gfEsc(b.recordId)}', { active: this.checked })">
+        </td>
+        <td><button class="btn btn-ghost" style="font-size:12px"
+              onclick="hbDelete('${gfEsc(b.recordId)}', '${gfEsc(b.title)}')">Delete</button></td>
+      </tr>`).join('');
+  } catch (e) {
+    st.innerHTML = `<span style="color:#e66">Could not load: ${gfEsc(e.message)}</span>`;
+  }
+}
+
+async function hbPatch(recordId, patch) {
+  const st = document.getElementById('hbListStatus');
+  try {
+    const r = await fetch(`/api/hero/${encodeURIComponent(recordId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify(patch),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    st.innerHTML = '<span style="color:var(--green)">\u2713 Saved — live within a minute</span>';
+  } catch (e) {
+    st.innerHTML = `<span style="color:#e66">Save failed: ${gfEsc(e.message)}</span>`;
+  }
+}
+
+async function hbDelete(recordId, title) {
+  if (!confirm(`Delete the banner "${title}"? Unticking Active hides it without losing the record.`)) return;
+  try {
+    const r = await fetch(`/api/hero/${encodeURIComponent(recordId)}`, {
+      method: 'DELETE', headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    hbLoad();
+  } catch (e) {
+    document.getElementById('hbListStatus').innerHTML = `<span style="color:#e66">Delete failed: ${gfEsc(e.message)}</span>`;
   }
 }
 

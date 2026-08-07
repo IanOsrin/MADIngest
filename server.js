@@ -16,6 +16,7 @@ import visionImportRouter from './routes/vision-import.js'
 import ccaImportRouter from './routes/cca-import.js'
 import visionUploadRouter from './routes/vision-upload.js'
 import galloAudioRouter from './routes/gallo-audio.js'
+import heroBannerRouter from './routes/hero-banner.js'
 import { getValueList } from './lib/fm-gallo.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -158,6 +159,7 @@ app.use('/api/podcasts', podcastsRouter)
 app.use('/api/genre-fix', genreFixRouter)
 app.use('/api/gallo-genre', galloGenreRouter)   // Gallo album-at-a-time Local Genre tagging
 app.use('/api/download-track', downloadTrackRouter)
+app.use('/api/hero', heroBannerRouter)
 app.use('/api/vision', visionRouter)
 app.use('/api/vision-import', visionImportRouter)
 app.use('/api/cca-import', ccaImportRouter)
