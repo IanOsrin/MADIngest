@@ -17,7 +17,7 @@ import { adminAuth } from '../lib/admin-auth.js'
 import { inspectHeroImage, uploadHeroBanner } from '../lib/s3-imports.js'
 import {
   listHeroBanners, createHeroBanner, updateHeroBanner, deleteHeroBanner,
-  HERO_TARGET_TYPES, HERO_TARGET_TYPES_LIVE,
+  findStreamerTracks, HERO_TARGET_TYPES, HERO_TARGET_TYPES_LIVE,
 } from '../lib/madstreamer.js'
 
 const router = Router()
@@ -75,6 +75,35 @@ router.post('/create', adminAuth, upload.single('image'), async (req, res) => {
   } catch (e) {
     console.error('[hero] create failed:', e.message)
     res.status(500).json({ error: e.message })
+  }
+})
+
+/**
+ * Find a track's recordId for Target_ID.
+ *
+ * This exists because the number FileMaker SHOWS on a layout is the record's
+ * position in the found set, NOT the Data API recordId the site plays by — a
+ * Tape Files record displayed as 8590 was recordId 30864. Typing the visible
+ * number would give a banner that plays the wrong song or silently nothing,
+ * because an unknown id just falls through playSong with no error.
+ */
+router.get('/track-search', adminAuth, async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim()
+    if (q.length < 2) return res.status(400).json({ error: 'type at least 2 characters' })
+    // One box, both fields: try it as an artist and as a title, then merge.
+    const [byArtist, byTitle] = await Promise.all([
+      findStreamerTracks({ artist: q }, { limit: 40 }).catch(() => []),
+      findStreamerTracks({ track: q },  { limit: 40 }).catch(() => []),
+    ])
+    const seen = new Set()
+    const tracks = [...byArtist, ...byTitle]
+      .filter(t => t.recordId && !seen.has(t.recordId) && seen.add(t.recordId))
+      .slice(0, 40)
+      .map(t => ({ recordId: t.recordId, title: t.title, artist: t.artist, album: t.album, year: t.year }))
+    res.json({ ok: true, tracks })
+  } catch (e) {
+    res.status(502).json({ error: e.message })
   }
 })
 

@@ -1208,14 +1208,24 @@
             <label class="muted" style="font-size:12px">Eyebrow (optional)</label>
             <input id="hbEyebrow" placeholder="New release" style="width:100%;margin-bottom:8px">
             <label class="muted" style="font-size:12px">Opens</label>
-            <select id="hbTargetType" style="width:100%;margin-bottom:8px">
+            <select id="hbTargetType" style="width:100%;margin-bottom:8px" onchange="hbSyncTargetUi()">
               <option value="track">track &mdash; plays a recordId</option>
               <option value="external">external &mdash; opens a URL</option>
               <option value="album">album (not wired yet &mdash; slide will do nothing)</option>
               <option value="playlist">playlist (not wired yet &mdash; slide will do nothing)</option>
             </select>
             <label class="muted" style="font-size:12px">Target (recordId, or the URL for external)</label>
-            <input id="hbTargetId" placeholder="121708" style="width:100%;margin-bottom:8px">
+            <input id="hbTargetId" placeholder="121708" style="width:100%">
+            <!-- The recordId is NOT the number FileMaker shows on a layout: that
+                 is the position in the found set. Search here instead. -->
+            <div id="hbFindWrap" style="margin:6px 0 8px">
+              <div style="display:flex;gap:6px">
+                <input id="hbFind" placeholder="Find a track — artist or title…" style="flex:1"
+                       onkeydown="if(event.key==='Enter'){event.preventDefault();hbTrackSearch()}">
+                <button class="btn btn-ghost" style="font-size:12px" onclick="hbTrackSearch()">Search</button>
+              </div>
+              <div id="hbFindResults" style="max-height:190px;overflow:auto;margin-top:6px"></div>
+            </div>
             <div style="display:flex;gap:8px">
               <div style="flex:1">
                 <label class="muted" style="font-size:12px">Order</label>
@@ -5855,6 +5865,44 @@ async function hbInspect() {
   } catch (e) {
     out.innerHTML = `<span style="color:#e66">Could not read that image: ${gfEsc(e.message)}</span>`;
   }
+}
+
+async function hbTrackSearch() {
+  const q = document.getElementById('hbFind').value.trim();
+  const out = document.getElementById('hbFindResults');
+  if (q.length < 2) { out.innerHTML = '<span class="muted" style="font-size:12px">Type at least 2 characters.</span>'; return }
+  out.innerHTML = '<span class="muted" style="font-size:12px">Searching…</span>';
+  try {
+    const r = await fetch('/api/hero/track-search?q=' + encodeURIComponent(q), { headers: { Authorization: `Bearer ${adminToken}` } });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    const rows = j.tracks || [];
+    if (!rows.length) { out.innerHTML = '<span class="muted" style="font-size:12px">Nothing found.</span>'; return }
+    out.innerHTML = rows.map(t => `
+      <div onclick="hbPickTrack('${gfEsc(t.recordId)}')" title="recordId ${gfEsc(t.recordId)}"
+           style="padding:5px 7px;border-radius:5px;cursor:pointer;font-size:12px;border-bottom:1px solid var(--border)"
+           onmouseover="this.style.background='rgba(127,127,127,.12)'" onmouseout="this.style.background=''">
+        <strong>${gfEsc(t.title || '(untitled)')}</strong> — ${gfEsc(t.artist || '')}
+        <div class="muted" style="font-size:11px">${gfEsc(t.album || '')}${t.year ? ' · ' + gfEsc(t.year) : ''} · id ${gfEsc(t.recordId)}</div>
+      </div>`).join('');
+  } catch (e) {
+    out.innerHTML = `<span style="color:#e66;font-size:12px">${gfEsc(e.message)}</span>`;
+  }
+}
+
+function hbPickTrack(recordId) {
+  document.getElementById('hbTargetId').value = recordId;
+  document.getElementById('hbFindResults').innerHTML =
+    `<span style="color:var(--green);font-size:12px">\u2713 Target set to ${gfEsc(recordId)}</span>`;
+}
+
+// The finder only makes sense for track targets — external takes a URL.
+function hbSyncTargetUi() {
+  const t = document.getElementById('hbTargetType').value;
+  const wrap = document.getElementById('hbFindWrap');
+  const box  = document.getElementById('hbTargetId');
+  if (wrap) wrap.style.display = t === 'track' ? '' : 'none';
+  if (box)  box.placeholder = t === 'external' ? 'https://…' : '121708';
 }
 
 async function hbCreate() {
