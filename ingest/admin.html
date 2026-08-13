@@ -1181,6 +1181,31 @@
           </table>
         </div>
       </div>
+
+      <div class="card" style="margin-top:14px">
+        <h3>Bad audio — flagged for repair</h3>
+        <p class="muted" style="margin:6px 0 14px">
+          Tracks flagged from the audition player above (any operator, any genre). Fix the audio at the
+          source, then <strong>Clear</strong> the flag here. Also findable in FileMaker: MadStreamer
+          records where <em>Bad_Audio</em> is not empty.
+        </p>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+          <button class="btn" onclick="gfBadList()">Load list</button>
+          <button class="btn" onclick="gfBadCsv()">Download CSV</button>
+          <span id="gfBadStatus" class="muted"></span>
+        </div>
+        <div class="table-wrap">
+          <table id="gfBadTable" style="width:100%">
+            <thead><tr>
+              <th style="text-align:left">Flagged</th><th style="text-align:left">Artist</th>
+              <th style="text-align:left">Track</th><th style="text-align:left">Album</th>
+              <th style="text-align:left">Cat #</th>
+              <th style="text-align:left;min-width:260px">Audition</th><th></th>
+            </tr></thead>
+            <tbody id="gfBadBody"></tbody>
+          </table>
+        </div>
+      </div>
     </div>
 
     <!-- ── Hero Banner tab ──────────────────────────────────── -->
@@ -5692,10 +5717,14 @@ async function gfLoad() {
         <td style="text-align:center">${a.albumCount}</td>
         <td style="text-align:left">${a.sample
           ? `<div class="muted" style="font-size:12px;margin-bottom:3px">${gfEsc(a.sample.title)}${a.sample.year ? ' · ' + gfEsc(a.sample.year) : ''}</div>
-             <audio controls preload="none" style="width:250px;height:30px" src="${gfEsc(a.sample.url)}"></audio>`
+             <audio controls preload="none" style="width:250px;height:30px" src="${gfEsc(a.sample.url)}"></audio>
+             <div style="margin-top:3px"><button class="btn" id="gfBad${i}" onclick="gfBadAudio(${i})"
+               style="font-size:11px;padding:2px 8px${a.sample.badAudio ? ';background:#a33;color:#fff' : ''}"
+               >${a.sample.badAudio ? '⚠ bad audio ' + gfEsc(a.sample.badAudio) + ' — click to clear' : '⚠ flag bad audio'}</button></div>`
           : '<span class="muted">no audio</span>'}</td>
         <td style="text-align:left">
           <input list="gfGenreList" id="gfNew${i}" placeholder="new genre…" style="min-width:170px">
+          <input id="gfSub${i}" placeholder="sub genre (optional)…" style="min-width:170px;display:block;margin-top:4px">
           <label class="muted" style="display:block;font-size:11px;margin-top:3px;cursor:pointer">
             <input type="checkbox" id="gfAll${i}"> all tracks by this artist
           </label>
@@ -5706,6 +5735,95 @@ async function gfLoad() {
   } catch (e) {
     status.textContent = `Failed: ${e.message}`
   }
+}
+
+// ── Genre Fix: bad-audio flagging ────────────────────────────────────────────
+// The operator flags the SAMPLE track they just auditioned; the flag (a date)
+// is written to the MadStreamer record's Bad_Audio field. The list card below
+// the table is the repair worklist; Clear empties the field once fixed.
+let gfBadTracks = []
+
+async function gfBadAudio(i) {
+  const a = gfArtists[i]
+  if (!a?.sample?.recordId) return
+  const flag = !a.sample.badAudio
+  const btn = document.getElementById(`gfBad${i}`)
+  btn.disabled = true
+  try {
+    const r = await fetch('/api/genre-fix/bad-audio', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ recordId: a.sample.recordId, flag }),
+    })
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    a.sample.badAudio = j.value || ''
+    btn.textContent = a.sample.badAudio ? `⚠ bad audio ${a.sample.badAudio} — click to clear` : '⚠ flag bad audio'
+    btn.style.background = a.sample.badAudio ? '#a33' : ''
+    btn.style.color = a.sample.badAudio ? '#fff' : ''
+  } catch (e) {
+    alert(`Bad-audio flag failed: ${e.message}`)
+  } finally {
+    btn.disabled = false
+  }
+}
+
+async function gfBadList() {
+  const status = document.getElementById('gfBadStatus')
+  const body = document.getElementById('gfBadBody')
+  status.textContent = 'Loading…'
+  try {
+    const r = await fetch('/api/genre-fix/bad-audio', { headers: { Authorization: `Bearer ${adminToken}` } })
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    gfBadTracks = j.tracks || []
+    status.textContent = `${j.total} track(s) flagged.`
+    body.innerHTML = gfBadTracks.map((t, i) => `
+      <tr id="gfBadRow${i}">
+        <td style="text-align:left" class="muted">${gfEsc(t.flagged)}</td>
+        <td style="text-align:left">${gfEsc(t.artist)}</td>
+        <td style="text-align:left">${gfEsc(t.title || '(untitled)')}</td>
+        <td style="text-align:left">${gfEsc(t.album || '')}</td>
+        <td style="text-align:left" class="muted">${gfEsc(t.catalogue || '')}</td>
+        <td style="text-align:left">${t.s3url
+          ? `<audio controls preload="none" style="width:250px;height:30px" src="${gfEsc(t.s3url)}"></audio>`
+          : '<span class="muted">no audio</span>'}</td>
+        <td><button class="btn" onclick="gfBadClear(${i})" style="font-size:11px;padding:2px 8px">Clear</button></td>
+      </tr>`).join('')
+  } catch (e) {
+    status.textContent = `Failed: ${e.message}`
+  }
+}
+
+async function gfBadClear(i) {
+  const t = gfBadTracks[i]
+  if (!t) return
+  if (!confirm(`Clear the bad-audio flag on “${t.title}” by ${t.artist}? Only do this once the audio is fixed.`)) return
+  try {
+    const r = await fetch('/api/genre-fix/bad-audio', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ recordId: t.recordId, flag: false }),
+    })
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    document.getElementById(`gfBadRow${i}`).style.opacity = '0.4'
+  } catch (e) {
+    alert(`Clear failed: ${e.message}`)
+  }
+}
+
+function gfBadCsv() {
+  if (!gfBadTracks.length) { alert('Load the list first.'); return }
+  const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`
+  const rows = [['Flagged', 'Artist', 'Track', 'Album', 'Cat #', 'RecordId', 'S3 URL']]
+    .concat(gfBadTracks.map(t => [t.flagged, t.artist, t.title, t.album, t.catalogue, t.recordId, t.s3url]))
+  const csv = rows.map(r => r.map(esc).join(',')).join('\n')
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+  a.download = `bad-audio-${new Date().toISOString().slice(0, 10)}.csv`
+  a.click()
+  URL.revokeObjectURL(a.href)
 }
 
 // ── Gallo Genre tab ─────────────────────────────────────────────────────────
@@ -5789,6 +5907,7 @@ async function ggApply(i) {
 async function gfApply(i) {
   const a = gfArtists[i]
   const to = document.getElementById(`gfNew${i}`).value.trim()
+  const sub = document.getElementById(`gfSub${i}`)?.value.trim() || ''
   const stat = document.getElementById(`gfStat${i}`)
   const allTracks = document.getElementById(`gfAll${i}`)?.checked
   if (!to) { stat.textContent = 'pick a genre first'; return }
@@ -5811,13 +5930,13 @@ async function gfApply(i) {
       const breakdown = moving.map(g => `   ${g.count}  ${g.genre}`).join('\n')
       if (!confirm(
         `“${a.artist}” has ${j.total} track(s) in total.\n\n` +
-        `Re-tag ${ids.length} of them → “${to}”:\n${breakdown}\n\n` +
+        `Re-tag ${ids.length} of them → “${to}”${sub ? ` (sub genre: “${sub}”)` : ''}:\n${breakdown}\n\n` +
         (staying ? `${staying} already “${to}” — left alone.\n\n` : '') +
         `This includes tracks OUTSIDE “${gfLoadedGenre}”. Continue?`
       )) { stat.textContent = 'cancelled'; return }
     } catch (e) { stat.textContent = `lookup failed: ${e.message}`; return }
   } else {
-    if (!confirm(`Re-tag ${a.count} “${gfLoadedGenre}” track(s) by ${a.artist} → “${to}”?`)) return
+    if (!confirm(`Re-tag ${a.count} “${gfLoadedGenre}” track(s) by ${a.artist} → “${to}”${sub ? ` (sub genre: “${sub}”)` : ''}?`)) return
   }
 
   stat.textContent = `applying to ${ids.length}…`
@@ -5825,11 +5944,11 @@ async function gfApply(i) {
     const r = await fetch('/api/genre-fix/apply', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
-      body: JSON.stringify({ recordIds: ids, toGenre: to }),
+      body: JSON.stringify({ recordIds: ids, toGenre: to, ...(sub ? { subGenre: sub } : {}) }),
     })
     const j = await r.json()
     if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
-    stat.innerHTML = `<span style="color:var(--gold)">✔ ${j.updated} re-tagged → ${gfEsc(to)}</span>${j.failed?.length ? ` <span style="color:#e66">(${j.failed.length} failed)</span>` : ''}`
+    stat.innerHTML = `<span style="color:var(--gold)">✔ ${j.updated} re-tagged → ${gfEsc(to)}${sub ? ' / ' + gfEsc(sub) : ''}</span>${j.failed?.length ? ` <span style="color:#e66">(${j.failed.length} failed)</span>` : ''}`
     document.getElementById(`gfRow${i}`).style.opacity = '0.45'
   } catch (e) {
     stat.textContent = `failed: ${e.message}`
