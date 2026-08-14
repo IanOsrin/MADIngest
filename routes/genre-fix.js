@@ -8,7 +8,7 @@
 // why apply works on explicit recordIds captured at list time).
 import { Router } from 'express'
 import { adminAuth } from '../lib/admin-auth.js'
-import { findSongsByLocalGenre, findSongsByArtist, setLocalGenre, setBadAudio, findBadAudioSongs } from '../lib/madstreamer.js'
+import { findSongsByLocalGenre, findSongsByArtist, setLocalGenre, setAudioFlag, findAudioFlaggedSongs, AUDIO_FLAG_FIELDS } from '../lib/madstreamer.js'
 
 const router = Router()
 
@@ -23,7 +23,7 @@ router.get('/list', adminAuth, async (req, res) => {
       if (!a) byArtist.set(s.artist, (a = { artist: s.artist, recordIds: [], sample: null, albums: new Set() }))
       a.recordIds.push(s.recordId)
       if (s.album) a.albums.add(s.album)
-      if (!a.sample && s.s3url) a.sample = { recordId: s.recordId, title: s.title, album: s.album, year: s.year, url: s.s3url, badAudio: s.badAudio || '' }
+      if (!a.sample && s.s3url) a.sample = { recordId: s.recordId, title: s.title, album: s.album, year: s.year, url: s.s3url, badAudio: s.badAudio || '', faultyAudio: s.faultyAudio || '' }
     }
     const artists = [...byArtist.values()]
       .map(a => ({ artist: a.artist, count: a.recordIds.length, albumCount: a.albums.size, sample: a.sample, recordIds: a.recordIds }))
@@ -93,32 +93,35 @@ router.post('/apply', adminAuth, async (req, res) => {
 })
 
 /**
- * POST /bad-audio { recordId, flag } — mark (or clear) the auditioned track's
- * audio as bad. Writes today's date into Bad_Audio on the MadStreamer record
- * so the repair list shows when each problem was caught.
+ * POST /audio-flag { recordId, kind, flag } — mark (or clear) an audio problem
+ * on the auditioned track. kind 'bad' → Bad_Audio, 'faulty' → Faulty_Audio;
+ * the stored value is today's date so the repair list shows when it was caught.
  */
-router.post('/bad-audio', adminAuth, async (req, res) => {
+router.post('/audio-flag', adminAuth, async (req, res) => {
   try {
     const recordId = String(req.body?.recordId || '').trim()
+    const kind = String(req.body?.kind || '').trim()
     const flag = Boolean(req.body?.flag)
     if (!recordId) return res.status(400).json({ error: 'recordId required' })
-    const value = await setBadAudio(recordId, flag)
-    console.log(`[genre-fix] bad-audio ${flag ? 'flagged' : 'cleared'}: record ${recordId}`)
+    if (!AUDIO_FLAG_FIELDS[kind]) return res.status(400).json({ error: `kind must be one of: ${Object.keys(AUDIO_FLAG_FIELDS).join(', ')}` })
+    const value = await setAudioFlag(recordId, kind, flag)
+    console.log(`[genre-fix] ${kind}-audio ${flag ? 'flagged' : 'cleared'}: record ${recordId}`)
     res.json({ ok: true, value })
   } catch (e) {
-    console.error('[genre-fix] bad-audio failed:', e.message)
+    console.error('[genre-fix] audio-flag failed:', e.message)
     res.status(500).json({ error: e.message })
   }
 })
 
-/** GET /bad-audio — every track flagged for audio repair. */
-router.get('/bad-audio', adminAuth, async (_req, res) => {
+/** GET /audio-flags — every track flagged bad OR faulty, newest first. */
+router.get('/audio-flags', adminAuth, async (_req, res) => {
   try {
-    const tracks = await findBadAudioSongs()
-    tracks.sort((a, b) => (a.flagged < b.flagged ? 1 : a.flagged > b.flagged ? -1 : 0))
+    const tracks = await findAudioFlaggedSongs()
+    const latest = (t) => (t.badAudio > t.faultyAudio ? t.badAudio : t.faultyAudio)
+    tracks.sort((a, b) => (latest(a) < latest(b) ? 1 : latest(a) > latest(b) ? -1 : 0))
     res.json({ total: tracks.length, tracks })
   } catch (e) {
-    console.error('[genre-fix] bad-audio list failed:', e.message)
+    console.error('[genre-fix] audio-flags list failed:', e.message)
     res.status(500).json({ error: e.message })
   }
 })
