@@ -20,12 +20,13 @@ import { fuzzyScore, normForFuzzy } from '../lib/fuzzy-match.js'
 import { extractAudioMeta, detectAudioFormat, generateWarnings, titleFromFilename } from '../lib/audio-meta.js'
 import { parseDDEXPackage, parseDDEXXml } from '../lib/ddex.js'
 import { parseTrackSheet } from '../lib/excel-ingest.js'
-import { uploadImport, uploadArtworkImport, presignImport, presignArtworkImport, downloadImport,
+import { uploadImport, uploadArtworkImport, presignImport, presignArtworkImport, presignAudioDownload, downloadImport,
          uploadMp3ByGcat, uploadWavByGcat, uploadArtworkByGmvi, uploadPlaylistArt, downloadAnyKey, keyFromS3Url, downloadByUrl,
          artworkKeyForGmvi, headAnyKey, deleteAnyKey, urlForKey, uploadAnyKey,
          writeArtworkDerivatives } from '../lib/s3-imports.js'
 import { createGalloRecord, createTapeFileRecord, updateGalloRecord, runGalloScript, runScriptOnRecord, pingGallo, findGalloRecordsByCatalogue, searchGalloRecords, fetchContainerData, getGalloTrack, getGalloLayoutFields, getGalloLayoutFieldSet, reloadGalloLayoutFields, getRecentGalloCreates, clearRecentGalloCreates } from '../lib/fm-gallo.js'
-import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, searchMadStreamerRecords, findArtistBio, upsertArtistBio, listArtistBios, findPlaylistArt, upsertPlaylistArt, listPlaylistArt, deletePlaylistArt, PLAYLIST_CATEGORIES, findStreamerSongsByArtist, listPublicPlaylists, findSongsByPlaylist, setPublicPlaylist, getStreamerSongAudioUrl, findArtworkByCatalogue, createArtworkRecord, _config as madStreamerConfig } from '../lib/madstreamer.js'
+import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, searchMadStreamerRecords, findArtistBio, upsertArtistBio, listArtistBios, findPlaylistArt, upsertPlaylistArt, listPlaylistArt, deletePlaylistArt, PLAYLIST_CATEGORIES, findStreamerSongsByArtist, findStreamerSongsByGenre, listPublicPlaylists, findSongsByPlaylist, setPublicPlaylist, getStreamerSongAudioUrl, findArtworkByCatalogue, createArtworkRecord, _config as madStreamerConfig } from '../lib/madstreamer.js'
+import { CANONICAL_GENRES } from '../lib/genre-taxonomy.js'
 import {
   pingCms2024,
   findRecord            as findCms2024Record,
@@ -2375,6 +2376,28 @@ router.get('/madstreamer/playlist-songs', adminAuth, async (req, res) => {
   }
 })
 
+/**
+ * GET /madstreamer/playlist-genres              → the canonical 45-genre list
+ * GET /madstreamer/playlist-genre-songs?genre=&sub=
+ *   → every streamer track in the genre (exact Local Genre match, optional
+ *     Sub Genre substring), grouped client-side by artist. Read-only.
+ */
+router.get('/madstreamer/playlist-genres', adminAuth, (_req, res) => {
+  res.json({ ok: true, genres: CANONICAL_GENRES })
+})
+
+router.get('/madstreamer/playlist-genre-songs', adminAuth, async (req, res) => {
+  const genre = String(req.query.genre || '').trim()
+  const sub   = String(req.query.sub || '').trim()
+  if (!genre) return res.status(400).json({ error: 'genre required' })
+  try {
+    const songs = await findStreamerSongsByGenre(genre, { sub })
+    res.json({ ok: true, genre, sub: sub || null, count: songs.length, songs })
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
+
 router.get('/madstreamer/public-playlists', adminAuth, async (req, res) => {
   try {
     // Playlist names come from the track field (PublicPlaylist); Category and
@@ -2550,11 +2573,10 @@ router.get('/madstreamer/audition/:recordId', async (req, res) => {
     if (!url) return res.status(404).json({ error: 'No audio on this record' })
     const key = keyFromS3Url(url)
     if (!key) return res.redirect(url) // not our bucket — let the browser fetch it directly
-    const { buffer, contentType } = await downloadAnyKey(key)
-    res.set('Content-Type', contentType || 'audio/mpeg')
-    res.set('Content-Length', String(buffer.length))
-    res.set('Cache-Control', 'private, max-age=3600')
-    res.send(buffer)
+    // Redirect to a short-lived presigned S3 URL: the <audio> element then
+    // streams straight from S3 with Range support — instant start, seekable —
+    // instead of waiting for this server to buffer the whole MP3 first.
+    res.redirect(await presignAudioDownload(url, null))
   } catch (err) {
     res.status(502).json({ error: err.message })
   }

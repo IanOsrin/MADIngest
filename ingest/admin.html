@@ -1066,13 +1066,31 @@
           The live site reads the Postgres mirror, so changes appear there after the next metadata sync.
         </p>
 
-        <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px">
+        <div style="display:flex;gap:6px;margin-bottom:10px">
+          <button class="btn btn-gold" id="plsModeArtist" onclick="plsSetMode('artist')" style="font-size:0.78rem">Search by Artist</button>
+          <button class="btn btn-ghost" id="plsModeGenre"  onclick="plsSetMode('genre')"  style="font-size:0.78rem">Browse by Genre</button>
+        </div>
+
+        <div id="plsArtistRow" style="display:flex;gap:8px;align-items:center;margin-bottom:14px">
           <input id="plsQuery" type="text" placeholder="Artist name, e.g. Lucky Dube"
             onkeydown="if(event.key==='Enter'){event.preventDefault();plsSearch()}"
             style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
           <button class="btn btn-gold" onclick="plsSearch()">Search Streamer</button>
           <button class="btn btn-ghost" onclick="plsClearSearch()" title="Clear the search results">✕ Clear</button>
           <span id="plsCount" style="font-size:0.78rem;color:var(--muted)"></span>
+        </div>
+
+        <div id="plsGenreRow" style="display:none;gap:8px;align-items:center;margin-bottom:14px">
+          <select id="plsGenreSel"
+            style="min-width:220px;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
+            <option value="">Loading genres…</option>
+          </select>
+          <input id="plsGenreSub" type="text" placeholder="Sub-genre filter (optional)"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();plsGenreBrowse()}"
+            style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
+          <button class="btn btn-gold" onclick="plsGenreBrowse()">Browse Genre</button>
+          <button class="btn btn-ghost" onclick="plsClearSearch()" title="Clear the results">✕ Clear</button>
+          <span id="plsGenreCount" style="font-size:0.78rem;color:var(--muted)"></span>
         </div>
 
         <div id="plsResults"></div>
@@ -2550,21 +2568,9 @@ async function plsSearch() {
   }
 }
 
-function plsRenderResults() {
-  if (!_plsSongs.length) {
-    $('plsResults').innerHTML = '<div class="empty-state" style="color:var(--muted);padding:20px 0">No streamer tracks matched.</div>'
-    $('plsAssignBar').style.display = 'none'
-    return
-  }
-  let html = `<div class="table-wrap"><table>
-    <thead><tr>
-      <th style="width:30px"><input type="checkbox" id="plsCheckAll" onchange="plsToggleAll(this.checked)"></th>
-      <th style="width:40px"></th><th style="width:36px">#</th>
-      <th>Title</th><th>Artist</th><th>Album</th><th>Catalogue</th><th>Playlist</th>
-    </tr></thead><tbody>`
-  for (const s of _plsSongs) {
-    const noAudio = !s.has_audio
-    html += `<tr${noAudio ? ' style="opacity:0.45"' : ''}>
+function plsSongRowHtml(s) {
+  const noAudio = !s.has_audio
+  return `<tr${noAudio ? ' style="opacity:0.45"' : ''}>
       <td><input type="checkbox" data-rid="${esc(s.recordId)}" ${noAudio ? 'disabled title="No audio on this record"' : ''}
         ${_plsChecked.has(s.recordId) ? 'checked' : ''} onchange="plsTick('${esc(s.recordId)}', this.checked)"></td>
       <td><button class="btn btn-ghost" style="padding:1px 8px;font-size:0.8rem" ${noAudio ? 'disabled' : ''}
@@ -2576,10 +2582,121 @@ function plsRenderResults() {
       <td style="font-family:monospace;font-size:0.78rem;color:var(--muted)">${esc(s.catalogue_no || '')}</td>
       <td>${s.playlist ? `<span style="background:var(--gold-glow);border:1px solid var(--border-hi);border-radius:4px;padding:2px 8px;font-size:0.76rem;white-space:nowrap">${esc(s.playlist)}</span>` : ''}</td>
     </tr>`
+}
+const PLS_TABLE_HEAD = `<thead><tr>
+      <th style="width:30px"><input type="checkbox" onchange="plsToggleAll(this.checked)"></th>
+      <th style="width:40px"></th><th style="width:36px">#</th>
+      <th>Title</th><th>Artist</th><th>Album</th><th>Catalogue</th><th>Playlist</th>
+    </tr></thead>`
+
+function plsRenderResults() {
+  if (!_plsSongs.length) {
+    $('plsResults').innerHTML = '<div class="empty-state" style="color:var(--muted);padding:20px 0">No streamer tracks matched.</div>'
+    $('plsAssignBar').style.display = 'none'
+    return
   }
+  let html = `<div class="table-wrap"><table>${PLS_TABLE_HEAD}<tbody>`
+  for (const s of _plsSongs) html += plsSongRowHtml(s)
   html += '</tbody></table></div>'
   $('plsResults').innerHTML = html
   $('plsAssignBar').style.display = 'flex'
+  plsUpdateAssign()
+}
+
+// ── Browse by Genre (artists-first) ──────────────────────────────────────────
+let _plsMode = 'artist'
+let _plsGenresLoaded = false
+
+function plsSetMode(mode) {
+  _plsMode = mode
+  $('plsArtistRow').style.display = mode === 'artist' ? 'flex' : 'none'
+  $('plsGenreRow').style.display  = mode === 'genre'  ? 'flex' : 'none'
+  $('plsModeArtist').className = 'btn ' + (mode === 'artist' ? 'btn-gold' : 'btn-ghost')
+  $('plsModeGenre').className  = 'btn ' + (mode === 'genre'  ? 'btn-gold' : 'btn-ghost')
+  if (mode === 'genre' && !_plsGenresLoaded) plsLoadGenres()
+}
+
+async function plsLoadGenres() {
+  try {
+    const res  = await api('/api/ingest/madstreamer/playlist-genres')
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || 'Failed to load genres')
+    const sel = $('plsGenreSel')
+    sel.innerHTML = '<option value="">Choose a genre…</option>' +
+      (data.genres || []).map(g => `<option value="${esc(g)}">${esc(g)}</option>`).join('')
+    _plsGenresLoaded = true
+  } catch (err) {
+    $('plsGenreSel').innerHTML = `<option value="">Error: ${esc(err.message)}</option>`
+  }
+}
+
+async function plsGenreBrowse() {
+  const genre = $('plsGenreSel').value
+  if (!genre) { showToast('Choose a genre first', 'error'); return }
+  const sub = $('plsGenreSub').value.trim()
+  plsStopAudition()
+  _plsChecked.clear()
+  $('plsGenreCount').textContent = ''
+  $('plsResults').innerHTML = '<div class="loading-state"><span class="spin">⟳</span> Fetching every ' + esc(genre) + ' track from the streamer…</div>'
+  try {
+    const res  = await api(`/api/ingest/madstreamer/playlist-genre-songs?genre=${encodeURIComponent(genre)}${sub ? '&sub=' + encodeURIComponent(sub) : ''}`)
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || 'Genre browse failed')
+    _plsSongs = data.songs || []
+    plsRenderGenreResults(genre)
+  } catch (err) {
+    $('plsResults').innerHTML = `<div class="empty-state" style="color:var(--red)">Error: ${esc(err.message)}</div>`
+    $('plsAssignBar').style.display = 'none'
+  }
+}
+
+function plsRenderGenreResults(genre) {
+  if (!_plsSongs.length) {
+    $('plsResults').innerHTML = `<div class="empty-state" style="color:var(--muted);padding:20px 0">No streamer tracks in ${esc(genre)}.</div>`
+    $('plsAssignBar').style.display = 'none'
+    $('plsGenreCount').textContent = '0 songs'
+    return
+  }
+  // group by artist, alphabetical; songs keep album/sequence order
+  const byArtist = new Map()
+  for (const s of _plsSongs) {
+    const k = (s.artist || s.album_artist || '— unknown artist —').trim() || '— unknown artist —'
+    if (!byArtist.has(k)) byArtist.set(k, [])
+    byArtist.get(k).push(s)
+  }
+  const artists = [...byArtist.keys()].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+  $('plsGenreCount').textContent = `${_plsSongs.length} songs · ${artists.length} artists`
+  let html = ''
+  artists.forEach((name, i) => {
+    const songs = byArtist.get(name)
+    const audible = songs.filter(x => x.has_audio).length
+    html += `<details class="pls-artist" ${artists.length === 1 ? 'open' : ''} style="border:1px solid var(--border);border-radius:6px;margin-bottom:6px;background:var(--bg)">
+      <summary style="display:flex;align-items:center;gap:10px;padding:8px 12px;cursor:pointer;list-style:none">
+        <input type="checkbox" data-artist-ix="${i}" onclick="event.stopPropagation()"
+          onchange="plsTickArtist(${i}, this.checked)" ${audible ? '' : 'disabled'}
+          title="Select every ${esc(name)} song">
+        <strong style="font-size:0.86rem">${esc(name)}</strong>
+        <span style="font-size:0.76rem;color:var(--muted)">${songs.length} song${songs.length === 1 ? '' : 's'}${audible < songs.length ? ` · ${songs.length - audible} without audio` : ''}</span>
+        <span style="margin-left:auto;font-size:0.72rem;color:var(--muted)">▾</span>
+      </summary>
+      <div class="table-wrap" style="padding:0 8px 8px"><table>${PLS_TABLE_HEAD}<tbody>`
+    for (const s of songs) html += plsSongRowHtml(s)
+    html += `</tbody></table></div></details>`
+  })
+  window._plsArtistGroups = artists.map(a => byArtist.get(a))
+  $('plsResults').innerHTML = html
+  $('plsAssignBar').style.display = 'flex'
+  plsUpdateAssign()
+}
+
+function plsTickArtist(ix, on) {
+  const songs = (window._plsArtistGroups || [])[ix] || []
+  for (const s of songs) {
+    if (!s.has_audio) continue
+    if (on) _plsChecked.add(s.recordId); else _plsChecked.delete(s.recordId)
+  }
+  const details = document.querySelectorAll('#plsResults details.pls-artist')[ix]
+  if (details) details.querySelectorAll('input[data-rid]').forEach(cb => { if (!cb.disabled) cb.checked = on })
   plsUpdateAssign()
 }
 
