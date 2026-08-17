@@ -3323,51 +3323,6 @@ function renderSearchAllResults(songs, sources) {
 }
 
 
-// ── Generate DDEX ──────────────────────────────────────────────────────────
-async function generateDdexPackage() {
-  const cat    = $('ddexGenCat')?.value?.trim()
-  const status = $('ddexGenStatus')
-  const btn    = $('ddexGenBtn')
-  if (!cat) { status.textContent = 'Please enter a catalogue number.'; status.style.color = 'var(--red)'; return }
-
-  btn.disabled = true; btn.textContent = '⟳ Building…'
-  status.textContent = 'Querying FileMaker and fetching files…'
-  status.style.color = 'var(--muted)'
-
-  try {
-    const body = {
-      catalogue_no: cat,
-      recipient: {
-        partyId: $('ddexGenRecipientId')?.value?.trim() || 'UNKNOWN',
-        name:    $('ddexGenRecipientName')?.value?.trim() || 'Recipient'
-      }
-    }
-    const res = await fetch('/api/ingest/ddex/export', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
-      body: JSON.stringify(body)
-    })
-    if (!res.ok) {
-      const d = await res.json().catch(() => ({}))
-      throw new Error(d.error || `Server error ${res.status}`)
-    }
-    // Trigger browser download
-    const blob = await res.blob()
-    const url  = URL.createObjectURL(blob)
-    const a    = document.createElement('a')
-    const disp = res.headers.get('Content-Disposition') || ''
-    const name = disp.match(/filename="([^"]+)"/)?.[1] || `${cat}_DDEX.zip`
-    a.href = url; a.download = name; a.click()
-    URL.revokeObjectURL(url)
-    status.textContent = `✓ Downloaded ${name}`
-    status.style.color = 'var(--green, #2e9e4f)'
-  } catch(err) {
-    status.textContent = `Error: ${err.message}`
-    status.style.color = 'var(--red)'
-  } finally {
-    btn.disabled = false; btn.textContent = 'Generate & Download ZIP'
-  }
-}
 
 // ── Build Ingrooves Folder ────────────────────────────────────────────────
 function toggleDdexBackfill() {
