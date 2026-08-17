@@ -26,6 +26,11 @@ COPY --from=build /app .
 
 ENV NODE_ENV=production
 ENV METADATA_FILE=/app/data/metadata.json
+# Node sizes its own heap conservatively and settled on ~256MB here, so parsing
+# the Vision index died with "Reached heap limit Allocation failed" inside
+# JSON.parse while half the plan's 512MB sat unused. 400MB leaves room for the
+# process itself and for ffmpeg, which runs as a child and needs its own.
+ENV NODE_OPTIONS=--max-old-space-size=400
 # Render injects PORT; server.js falls back to 3001 locally
 EXPOSE 3001
 
