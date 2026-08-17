@@ -5,7 +5,7 @@ import path from 'path'
 import { Router } from 'express'
 import { adminAuth } from '../lib/admin-auth.js'
 import { visionStatus, visionList, visionDownloadTo } from '../lib/vision-drive.js'
-import { loadVisionIndex, reindexVisionIndex, indexBuilding, indexStatus } from '../lib/gallo-vision-link.js'
+import { loadVisionIndex, reindexVisionIndex, reindexVisionPath, indexBuilding, indexStatus } from '../lib/gallo-vision-link.js'
 
 const router = Router()
 const INDEX_CACHE = path.join(process.cwd(), 'tmp', 'vision-index.json')
@@ -37,6 +37,29 @@ router.post('/reindex', adminAuth, (req, res) => {
   })
 })
 
+// Index just the folder you are looking at. Unlike /reindex this runs INSIDE the
+// request — safe because the unit is one subfolder (seconds), not the estate —
+// so the response can report what it actually found.
+router.post('/reindex-path', adminAuth, async (req, res) => {
+  try {
+    if (!visionStatus().configured) return res.status(503).json({ error: 'Vision drive is not configured' })
+    const p = String(req.query.path || req.body?.path || '').trim()
+    if (!p) return res.status(400).json({ error: 'No path given' })
+    const r = await reindexVisionPath(p, { cacheFile: INDEX_CACHE })
+    // Retryable, not fatal: the background pass runs every 15 minutes for
+    // several of them, so a manual index has a real chance of landing on one.
+    // The UI waits and retries rather than making the user click again.
+    if (!r.ok) return res.status(409).json({ error: 'A full refresh is running.', retryable: true, ...r })
+    res.json({
+      ok: true, ...r,
+      note: `Indexed ${r.audio} audio file${r.audio === 1 ? '' : 's'} in ${Math.round(r.tookMs / 1000)}s — searchable now.`,
+    })
+  } catch (e) {
+    console.error('[vision] reindex-path failed:', e.message)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // Fast filename/path search over the persisted index. Never builds in-request.
 router.get('/search', adminAuth, async (req, res) => {
   try {
@@ -56,9 +79,24 @@ router.get('/search', adminAuth, async (req, res) => {
       const pw = f.path.toLowerCase().split(/[^a-z0-9]+/)
       return words.every(w => pw.some(x => x.startsWith(w)))
     }
-    let all = index.files.filter(wordPrefix)
-    if (!all.length) all = index.files.filter(f => { const p = f.path.toLowerCase(); return words.every(w => p.includes(w)) })
-    res.json({ total: all.length, indexedFiles: index.builtFiles, files: all.slice(0, 500) })
+
+    // kind: audio (default) | other | all. The DEFAULT MUST STAY 'audio' —
+    // Add Album and the catalogue linker both call this endpoint to find a
+    // track's master, and quietly widening them to artwork and XML would put a
+    // JPEG in audio_Url. Only the Vision tab asks for more.
+    const kind = String(req.query.kind || 'audio').toLowerCase()
+    const pool = kind === 'all' ? [...index.files, ...(index.others || [])]
+      : kind === 'other' ? (index.others || [])
+      : index.files
+
+    let all = pool.filter(wordPrefix)
+    if (!all.length) all = pool.filter(f => { const p = f.path.toLowerCase(); return words.every(w => p.includes(w)) })
+    res.json({
+      total: all.length, kind,
+      indexedFiles: index.builtFiles,
+      indexedOthers: index.builtOthers || 0,
+      files: all.slice(0, 500),
+    })
   } catch (e) {
     console.error('[vision] search failed:', e.message)
     res.status(500).json({ error: e.message })

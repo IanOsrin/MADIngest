@@ -17,6 +17,12 @@ services:
       # set YOUTUBE_ENABLED=true.
       - key: INGEST_ADMIN_SECRET
         sync: false
+      # The Vision Utility's upload / zip-download / rename work here. DELETE
+      # does not: Vision has no trash, so a wrong click from anywhere with the
+      # admin password destroys a master. Deleting is local-GalloIngest-only
+      # unless you deliberately set VISION_DELETE_ENABLED=true here.
+      - key: VISION_DELETE_ENABLED
+        value: "false"
       # FileMaker — Gallo Catalogue
       - key: GALLO_FM_HOST
         value: https://digitalcupboard.app

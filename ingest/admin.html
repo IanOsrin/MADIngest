@@ -1385,8 +1385,14 @@
           file through this service.
         </p>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
-          <input id="viSearch" placeholder="Search all audio by name, catalogue, artist…" style="min-width:320px;flex:1"
+          <input id="viSearch" placeholder="Search Vision by name, catalogue, artist…" style="min-width:320px;flex:1"
             onkeydown="if(event.key==='Enter')viDoSearch()">
+          <select id="viSearchKind" onchange="if(document.getElementById('viSearch').value.trim().length>1)viDoSearch()"
+                  title="Which files to search" style="font-size:0.8rem">
+            <option value="all">everything</option>
+            <option value="audio">audio only</option>
+            <option value="other">non-audio only</option>
+          </select>
           <button class="btn" onclick="viDoSearch()">Search</button>
           <button class="btn btn-ghost" onclick="viClearSearch()" id="viClearBtn" style="display:none">Browse</button>
           <button class="btn btn-ghost" onclick="viReindex()" id="viReindexBtn" title="Rebuild the Vision audio index (a few minutes; persists to S3)">Reindex</button>
@@ -1396,7 +1402,22 @@
           <button class="btn btn-ghost" onclick="viUp()" id="viUpBtn" disabled>&#8593; Up</button>
           <span id="viPath" style="font-family:monospace;font-size:0.82rem">/</span>
           <button class="btn" onclick="viLoad(viCurrentPath)">Refresh</button>
+          <button class="btn btn-ghost" onclick="viReindexHere()" id="viReindexHereBtn"
+                  title="Index just this folder so its files become searchable straight away (seconds, not minutes)">Index this folder</button>
           <span id="viStatus" class="muted"></span>
+        </div>
+        <!-- Vision Utility: general file handling, any type — not the audio ingest path. -->
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:10px 12px;border:1px solid var(--line);border-radius:8px">
+          <strong style="font-size:0.82rem">Utility</strong>
+          <input type="file" id="viUploadInput" multiple style="display:none" onchange="viUpload()">
+          <button class="btn" onclick="document.getElementById('viUploadInput').click()" id="viUploadBtn"
+                  title="Upload files of any type into the folder you are viewing">&#8593; Upload files here</button>
+          <label style="font-size:0.78rem;color:var(--muted);display:flex;align-items:center;gap:4px">
+            <input type="checkbox" id="viOverwrite"> overwrite existing
+          </label>
+          <button class="btn btn-ghost" onclick="viZipFolder()" id="viZipBtn"
+                  title="Download every file in this folder as a single zip">&#8595; Download folder (zip)</button>
+          <span class="muted" style="font-size:0.75rem">Uploads replace nothing unless you tick overwrite. Deletes are permanent — Vision has no trash.</span>
         </div>
         <div class="table-wrap">
           <table id="viTable" style="width:100%">
@@ -2040,6 +2061,9 @@ function _removeTab(name) {
     if (data && data.youtubeEnabled === false) _removeTab('youtube')
     if (data && data.ddexEnabled   === false) _removeTab('generate')
     if (data && data.visionUploadEnabled === false) _removeTab('visionupload')
+    // Delete is off on hosted by default. Hide the buttons rather than let
+    // someone type a folder name into a confirm prompt only to be refused.
+    if (data && data.visionDeleteEnabled === false) window.viDeleteEnabled = false
   } catch { /* health unreachable — leave the tabs as-is */ }
 })()
 
@@ -6368,10 +6392,15 @@ async function viLoad(p) {
       <tr>
         <td style="text-align:left">${e.type === 'dir'
           ? `<a href="#" onclick="viOpen(${i});return false" style="color:var(--gold);text-decoration:none">&#128193; ${gfEsc(e.name)}</a>`
-          : `&#127925; ${gfEsc(e.name)}`}</td>
+          : `${viIcon(e.name)} ${gfEsc(e.name)}`}</td>
         <td style="text-align:right;font-family:monospace;font-size:0.78rem">${e.type === 'dir' ? '' : viSize(e.size)}</td>
         <td style="text-align:left;font-size:0.8rem;color:var(--muted)">${e.modified ? gfEsc(e.modified.slice(0, 16).replace('T', ' ')) : ''}</td>
-        <td>${e.type === 'file' ? `<button class="btn" onclick="viGet(${i})">Download</button>` : ''}</td>
+        <td style="white-space:nowrap">
+          ${e.type === 'file' ? `<button class="btn" onclick="viGet(${i})">Download</button>` : ''}
+          <button class="btn btn-ghost" onclick="viRename(${i})" title="Rename or move">Rename</button>
+          ${window.viDeleteEnabled === false ? '' :
+            `<button class="btn btn-ghost" onclick="viDelete(${i})" title="Delete permanently" style="color:var(--red)">Delete</button>`}
+        </td>
         <td style="text-align:left" id="viStat${i}" class="muted"></td>
       </tr>`).join('')
   } catch (e) {
@@ -6386,6 +6415,144 @@ function viSize(n) {
   if (n >= 1e6) return (n / 1e6).toFixed(1) + ' MB'
   if (n >= 1e3) return (n / 1e3).toFixed(0) + ' KB'
   return n + ' B'
+}
+
+// This view is no longer audio-only, so the row icon should not claim it is.
+function viIcon(name) {
+  const x = (name.split('.').pop() || '').toLowerCase()
+  if (/^(wav|flac|aiff?|mp3|m4a|aac|ogg)$/.test(x)) return '&#127925;'      // note
+  if (/^(jpe?g|png|webp|tiff?|gif|bmp)$/.test(x)) return '&#128444;'        // frame
+  if (/^(pdf|docx?|txt|rtf)$/.test(x)) return '&#128196;'                   // page
+  if (/^(xlsx?|csv|tsv)$/.test(x)) return '&#128202;'                       // chart
+  if (/^(xml|json|ya?ml)$/.test(x)) return '&#128209;'                      // tabs
+  if (/^(zip|rar|7z|tar|gz)$/.test(x)) return '&#128230;'                   // box
+  return '&#128195;'
+}
+
+// ── Vision Utility ──────────────────────────────────────────────────────────
+// Upload any file type into the folder in view. Uses XHR rather than fetch for
+// the one thing fetch still cannot do: report upload progress, which matters
+// when the file is a 600MB master over a South African line.
+function viUpload() {
+  const input = document.getElementById('viUploadInput')
+  const status = document.getElementById('viStatus')
+  const btn = document.getElementById('viUploadBtn')
+  const files = [...(input.files || [])]
+  if (!files.length) return
+  if (viCurrentPath.split('/').filter(Boolean).length < 2) {
+    status.textContent = 'Open a folder inside a bucket first.'
+    input.value = ''
+    return
+  }
+  const fd = new FormData()
+  files.forEach(f => fd.append('files', f))
+  const overwrite = document.getElementById('viOverwrite').checked
+  const total = files.reduce((a, f) => a + f.size, 0)
+
+  btn.disabled = true
+  status.textContent = `Uploading ${files.length} file${files.length === 1 ? '' : 's'}…`
+  const xhr = new XMLHttpRequest()
+  xhr.open('POST', `/api/vision-util/upload?path=${encodeURIComponent(viCurrentPath)}${overwrite ? '&overwrite=1' : ''}`)
+  xhr.setRequestHeader('Authorization', `Bearer ${adminToken}`)
+  xhr.upload.onprogress = (e) => {
+    if (!e.lengthComputable) return
+    status.textContent = `Uploading… ${Math.round((e.loaded / e.total) * 100)}% of ${viSize(total)}`
+  }
+  xhr.onload = () => {
+    btn.disabled = false
+    input.value = ''
+    let j = {}
+    try { j = JSON.parse(xhr.responseText) } catch {}
+    if (xhr.status >= 400) { status.textContent = `Upload failed: ${j.error || xhr.status}`; return }
+    const bad = (j.results || []).filter(r => !r.ok)
+    status.innerHTML = `<span style="color:${j.failed ? 'var(--red)' : 'var(--gold)'}">${gfEsc(j.note || 'Done')}</span>`
+    if (bad.length) status.innerHTML += `<br><span style="font-size:0.75rem">${bad.map(b => gfEsc(`${b.name}: ${b.error}`)).join('<br>')}</span>`
+    viLoad(viCurrentPath)
+  }
+  xhr.onerror = () => { btn.disabled = false; status.textContent = 'Upload failed: connection lost' }
+  xhr.send(fd)
+}
+
+// Zip is streamed by the server, so this is a plain navigation rather than a
+// fetch — the browser writes it straight to disk instead of us holding a blob
+// of a multi-GB folder in memory.
+async function viZipFolder() {
+  const status = document.getElementById('viStatus')
+  if (viCurrentPath.split('/').filter(Boolean).length < 2) {
+    status.textContent = 'Open a folder inside a bucket first.'
+    return
+  }
+  // Ask first, so a folder that is too big to zip reports why instead of
+  // downloading an error page as a .zip.
+  try {
+    const probe = await fetch(`/api/vision/list?path=${encodeURIComponent(viCurrentPath)}`,
+      { headers: { Authorization: `Bearer ${adminToken}` } })
+    const j = await probe.json()
+    const files = (j.entries || []).filter(e => e.type !== 'dir')
+    const dirs = (j.entries || []).filter(e => e.type === 'dir')
+    const size = files.reduce((a, f) => a + (f.size || 0), 0)
+    const note = dirs.length ? ` (plus everything in ${dirs.length} subfolder${dirs.length === 1 ? '' : 's'})` : ''
+    if (!confirm(`Download this folder as a zip?\n\n${files.length} file${files.length === 1 ? '' : 's'} here${note}\n~${viSize(size)} before subfolders\n\nLarge folders take a while — keep the tab open.`)) return
+  } catch { /* fall through to the download; the server guards the size */ }
+  status.textContent = 'Building zip — the download will start shortly…'
+  try {
+    // Swap the admin token for a single-use ticket, so the secret never appears
+    // in the URL the browser is about to navigate to (and log, and remember).
+    const r = await fetch(`/api/vision-util/download-ticket?path=${encodeURIComponent(viCurrentPath)}`,
+      { method: 'POST', headers: { Authorization: `Bearer ${adminToken}` } })
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    window.location.href = `/api/vision-util/download-folder?ticket=${encodeURIComponent(j.ticket)}`
+    status.innerHTML = '<span style="color:var(--gold)">Zip started — it streams as it builds, so the size is unknown until it finishes.</span>'
+  } catch (err) {
+    status.innerHTML = `<span style="color:var(--red)">Could not start download: ${gfEsc(err.message)}</span>`
+  }
+}
+
+async function viRename(i) {
+  const e = viEntries[i]
+  const status = document.getElementById('viStatus')
+  const to = prompt(`Rename "${e.name}" to:\n\n(a plain name renames it here; include "/" to move it elsewhere)`, e.name)
+  if (to === null || to.trim() === '' || to === e.name) return
+  status.textContent = 'Renaming…'
+  try {
+    const r = await fetch('/api/vision-util/rename', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: viJoin(viCurrentPath, e.name), to: to.trim() }),
+    })
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    status.innerHTML = `<span style="color:var(--gold)">${gfEsc(j.note)}</span>`
+    viLoad(viCurrentPath)
+  } catch (err) {
+    status.innerHTML = `<span style="color:var(--red)">Rename failed: ${gfEsc(err.message)}</span>`
+  }
+}
+
+// Typed confirmation, not an OK button: these are masters and there is no trash
+// to fish them out of. The server enforces the same check independently.
+async function viDelete(i) {
+  const e = viEntries[i]
+  const status = document.getElementById('viStatus')
+  const what = e.type === 'dir' ? 'folder and EVERYTHING inside it' : 'file'
+  const typed = prompt(`Permanently delete this ${what}:\n\n${e.name}\n\nThis cannot be undone — Vision has no trash or versioning.\nType the name exactly to confirm:`)
+  if (typed === null) return
+  if (typed !== e.name) { status.innerHTML = '<span style="color:var(--red)">Name did not match — nothing was deleted.</span>'; return }
+  status.textContent = 'Deleting…'
+  try {
+    const r = await fetch('/api/vision-util/delete', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: viJoin(viCurrentPath, e.name), confirm: typed }),
+    })
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    status.innerHTML = `<span style="color:var(--gold)">${gfEsc(j.note)}</span>`
+    viLoad(viCurrentPath)
+  } catch (err) {
+    status.innerHTML = `<span style="color:var(--red)">Delete failed: ${gfEsc(err.message)}</span>`
+  }
 }
 
 function viJoin(base, name) { return (base === '/' ? '' : base) + '/' + name }
@@ -6434,7 +6601,10 @@ async function viDoSearch() {
   document.getElementById('viBrowseBar').style.display = 'none'
   document.getElementById('viClearBtn').style.display = ''
   try {
-    const r = await fetch(`/api/vision/search?q=${encodeURIComponent(q)}`,
+    // Only this search widens beyond audio — Add Album and the catalogue linker
+    // deliberately keep the endpoint's audio-only default.
+    const kind = document.getElementById('viSearchKind').value
+    const r = await fetch(`/api/vision/search?q=${encodeURIComponent(q)}&kind=${kind}`,
       { headers: { Authorization: `Bearer ${adminToken}` } })
     const j = await r.json()
     if (r.status === 409 && j.needsReindex) {
@@ -6443,10 +6613,13 @@ async function viDoSearch() {
     }
     if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
     viSearchResults = j.files || []
-    status.textContent = `${j.total} match${j.total === 1 ? '' : 'es'}${j.total > viSearchResults.length ? ` (showing ${viSearchResults.length})` : ''} · ${j.indexedFiles.toLocaleString()} files indexed`
+    const counts = kind === 'audio' ? `${j.indexedFiles.toLocaleString()} audio files indexed`
+      : kind === 'other' ? `${(j.indexedOthers || 0).toLocaleString()} non-audio files indexed`
+      : `${(j.indexedFiles + (j.indexedOthers || 0)).toLocaleString()} files indexed`
+    status.textContent = `${j.total} match${j.total === 1 ? '' : 'es'}${j.total > viSearchResults.length ? ` (showing ${viSearchResults.length})` : ''} · ${counts}`
     body.innerHTML = viSearchResults.map((f, i) => `
       <tr>
-        <td style="text-align:left" title="${gfEsc(f.path)}">&#127925; ${gfEsc(f.name || f.path.split('/').pop())}
+        <td style="text-align:left" title="${gfEsc(f.path)}">${viIcon(f.name || f.path)} ${gfEsc(f.name || f.path.split('/').pop())}
           <div class="muted" style="font-size:11px">${gfEsc(f.path.replace(/\/[^/]+$/, ''))}</div></td>
         <td style="text-align:right;font-family:monospace;font-size:0.78rem">${viSize(f.size)}</td>
         <td></td>
@@ -6485,6 +6658,41 @@ async function viReindex() {
     }, 15000)
   } catch (e) {
     status.textContent = `Reindex failed: ${e.message}`
+  }
+}
+
+// Index only the folder in view. The whole-drive Reindex works in top-level
+// folders, so files dropped into a subfolder of a big one (e.g. "Rendered
+// Files/Updates") waited on the parent's turn in the rotation. This lists just
+// this prefix and splices it in, so it is searchable straight away.
+async function viReindexHere() {
+  const status = document.getElementById('viStatus')
+  const btn = document.getElementById('viReindexHereBtn')
+  const p = viCurrentPath || '/'
+  if (p.split('/').filter(Boolean).length < 2) {
+    status.textContent = 'Open a folder first — this indexes the folder you are in.'
+    return
+  }
+  btn.disabled = true
+  status.textContent = 'Indexing this folder…'
+  // The background refresh runs every 15 minutes and takes several, so a manual
+  // index often lands on one. Wait it out rather than making the user re-click.
+  const deadline = Date.now() + 10 * 60 * 1000
+  try {
+    for (;;) {
+      const r = await fetch(`/api/vision/reindex-path?path=${encodeURIComponent(p)}`, {
+        method: 'POST', headers: { Authorization: `Bearer ${adminToken}` },
+      })
+      const j = await r.json()
+      if (r.ok) { status.innerHTML = `<span style="color:var(--gold)">✔ ${gfEsc(j.note)}</span>`; return }
+      if (!(j.retryable && Date.now() < deadline)) throw new Error(j.error || `HTTP ${r.status}`)
+      status.textContent = 'Waiting for the running refresh to finish…'
+      await new Promise(r2 => setTimeout(r2, 15000))
+    }
+  } catch (e) {
+    status.innerHTML = `<span style="color:var(--red)">Index failed: ${gfEsc(e.message)}</span>`
+  } finally {
+    btn.disabled = false
   }
 }
 
