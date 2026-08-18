@@ -3798,6 +3798,41 @@ async function runDdexImport() {
   }
 }
 
+// ── Excel tab: collapsible sections ─────────────────────────────────────────
+// Every .import-section on the Excel tab collapses/expands from its header.
+// State is remembered per section in localStorage; first visit shows the
+// Cache Viewer open and the rest collapsed. Sections whose h3 lives inside
+// their own toggle header (Add Single Track) are left to their own devices.
+// Children are moved into a wrapper div ONCE so inline display styles on
+// button rows survive the round trip.
+function xtInitCollapsibles() {
+  document.querySelectorAll('#tab-excel > .import-section').forEach((sec, idx) => {
+    if (sec.dataset.collapsible) return
+    const h3 = sec.querySelector(':scope > h3')
+    if (!h3) return
+    sec.dataset.collapsible = '1'
+    const body = document.createElement('div')
+    const rest = [...sec.children].filter(el => el !== h3)
+    for (const el of rest) body.appendChild(el)
+    sec.appendChild(body)
+    const chev = document.createElement('span')
+    chev.style.cssText = 'float:right;color:var(--muted);font-size:0.9rem;transition:transform 0.15s'
+    h3.appendChild(chev)
+    h3.style.cursor = 'pointer'
+    h3.style.userSelect = 'none'
+    const key = 'xtCollapse:' + h3.textContent.trim()
+    const setState = collapsed => {
+      body.style.display = collapsed ? 'none' : ''
+      chev.textContent   = collapsed ? '▶' : '▼'
+      localStorage.setItem(key, collapsed ? '1' : '0')
+    }
+    const saved = localStorage.getItem(key)
+    setState(saved != null ? saved === '1' : idx !== 0)   // first section (Cache Viewer) open by default
+    h3.onclick = () => setState(body.style.display === 'none' ? false : true)
+  })
+}
+xtInitCollapsibles()
+
 // ── Cache Viewer ─────────────────────────────────────────────────────────────
 // Spreadsheet-style browser for the embedded metadata extract (the same cache
 // the lookups use). Click a header to sort, per-column filters, global search;
