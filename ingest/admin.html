@@ -279,10 +279,8 @@
     <!-- Tabs -->
     <nav class="admin-tabs">
       <button class="tab-btn active" data-tab="catalog" onclick="showTab('catalog')">Catalogue</button>
-      <button class="tab-btn" data-tab="generate" onclick="showTab('generate')">Generate DDEX</button>
       <button class="tab-btn" data-tab="ddex" onclick="showTab('ddex')">DDEX</button>
       <button class="tab-btn" data-tab="excel" onclick="showTab('excel')">Excel</button>
-      <button class="tab-btn" data-tab="fmupdate" onclick="showTab('fmupdate')">CCA Import</button>
       <button class="tab-btn" data-tab="dbsync" onclick="showTab('dbsync')">DB Sync</button>
       <button class="tab-btn" data-tab="podcasts" onclick="showTab('podcasts')">Podcasts</button>
       <button class="tab-btn" data-tab="biography" onclick="showTab('biography')">Biography</button>
@@ -315,10 +313,11 @@
 
     <!-- ── FM Submit tab ────────────────────────────────────── -->
 
-    <!-- ── Generate DDEX tab ────────────────────────────────── -->
-    <div id="tab-generate" class="tab-panel">
-      <div class="import-section">
-        <h3>Build Ingrooves Folder</h3>
+    <!-- ── DDEX tab ────────────────────────────────────────── -->
+    <div id="tab-ddex" class="tab-panel">
+
+            <div class="import-section" id="secBuildIngrooves" style="margin-bottom:24px">
+        <h3>⬆ Build Ingrooves Folder — outbound delivery</h3>
         <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">Pulls FM data, fetches the WAVs + artwork from S3, validates everything, and writes <code>&lt;Artist&gt; - &lt;Album&gt;/resources/</code> + a sibling <code>xml/&lt;Artist&gt; - &lt;Album&gt;.xml</code> into the output folder below. No ZIP.</p>
 
         <div style="display:grid;grid-template-columns:1fr;gap:12px;margin-bottom:14px">
@@ -390,14 +389,61 @@
         </div>
         <div id="ddexBuildStatus" style="font-size:0.82rem;margin-top:10px;white-space:pre-wrap;font-family:ui-monospace,Menlo,monospace"></div>
       </div>
-    </div>
+    
 
-    <!-- ── DDEX tab ────────────────────────────────────────── -->
-    <div id="tab-ddex" class="tab-panel">
+            <div class="import-section" style="margin-bottom:24px">
+        <h3>⬇ CCA Import — Vision DDEX delivery &rarr; Gallo Catalogue</h3>
+        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
+          Reads a CCA delivery straight off Vision: the ERN in each barcode folder is the source of
+          truth for metadata, and <code>resources/</code> supplies the audio. Creates one
+          <strong>Tape Files Master</strong> plus a song record per track, with
+          <code>Audio_URL</code> pointing at the delivered master. Releases already in Gallo are
+          <strong>skipped, not overwritten</strong>.
+        </p>
+
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+          <select id="ccaBatch" class="btn-browse" style="min-width:280px"><option value="">Loading batches…</option></select>
+          <button class="btn btn-ghost" onclick="ccaScan()" id="ccaScanBtn">Scan batch</button>
+          <span id="ccaScanStatus" style="font-size:0.8rem;color:var(--muted)"></span>
+        </div>
+
+        <div id="ccaSummary" style="display:none;font-size:0.82rem;margin-bottom:10px"></div>
+
+        <div id="ccaTableWrap" style="display:none">
+          <div style="overflow-x:auto;max-height:460px;border:1px solid var(--border);border-radius:6px">
+            <table style="width:100%;border-collapse:collapse;font-size:0.8rem">
+              <thead><tr style="background:var(--surface);position:sticky;top:0">
+                <th style="padding:7px 10px;width:28px"><input type="checkbox" id="ccaAll" onchange="ccaToggleAll(this.checked)"></th>
+                <th style="padding:7px 10px;text-align:left;color:var(--muted)">Barcode</th>
+                <th style="padding:7px 10px;text-align:left;color:var(--muted)">Catalogue</th>
+                <th style="padding:7px 10px;text-align:left;color:var(--muted)">Album</th>
+                <th style="padding:7px 10px;text-align:left;color:var(--muted)">Artist</th>
+                <th style="padding:7px 10px;text-align:center;color:var(--muted)">Audio</th>
+                <th style="padding:7px 10px;text-align:center;color:var(--muted)">Art</th>
+                <th style="padding:7px 10px;text-align:left;color:var(--muted)">Status</th>
+                <th style="padding:7px 10px"></th>
+              </tr></thead>
+              <tbody id="ccaBody"></tbody>
+            </table>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap">
+            <button class="btn btn-blue" id="ccaImportBtn" onclick="ccaImport()">Import selected</button>
+            <label style="font-size:0.78rem;color:var(--muted);display:flex;align-items:center;gap:5px">
+              <input type="checkbox" id="ccaDryRun" checked> Dry run (plan only, writes nothing)
+            </label>
+            <span id="ccaImportStatus" style="font-size:0.8rem;color:var(--muted)"></span>
+          </div>
+        </div>
+
+        <div id="ccaDetail" style="display:none;margin-top:16px"></div>
+        <div id="ccaResults" style="display:none;margin-top:16px"></div>
+      </div>
+
+    
 
       <!-- XML preview section -->
       <div class="import-section" style="margin-bottom:24px">
-        <h3>DDEX XML Preview</h3>
+        <h3>⬇ DDEX XML Preview</h3>
         <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">Drop a DDEX NewReleaseMessage XML file here to see exactly what metadata it contains before doing anything with it.</p>
 
         <div id="ddexXmlDropZone" onclick="$('ddexXmlInput').click()"
@@ -422,7 +468,7 @@
 
       <!-- ZIP import section -->
       <div class="import-section">
-        <h3>DDEX Package Import</h3>
+        <h3>⬇ DDEX Package Import — single ZIP</h3>
         <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">Upload a DDEX ZIP containing the NewReleaseMessage XML and audio files. Preview tracks before importing.</p>
 
         <div id="ddexDropZone" onclick="$('ddexFileInput').click()"
@@ -638,60 +684,6 @@
 
 
     </div>
-
-    <!-- ── FM Update tab ─────────────────────────────────────── -->
-    <div id="tab-fmupdate" class="tab-panel">
-
-      <div class="import-section">
-        <h3>CCA Import — DDEX delivery &rarr; Gallo Catalogue</h3>
-        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
-          Reads a CCA delivery straight off Vision: the ERN in each barcode folder is the source of
-          truth for metadata, and <code>resources/</code> supplies the audio. Creates one
-          <strong>Tape Files Master</strong> plus a song record per track, with
-          <code>Audio_URL</code> pointing at the delivered master. Releases already in Gallo are
-          <strong>skipped, not overwritten</strong>.
-        </p>
-
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
-          <select id="ccaBatch" class="btn-browse" style="min-width:280px"><option value="">Loading batches…</option></select>
-          <button class="btn btn-ghost" onclick="ccaScan()" id="ccaScanBtn">Scan batch</button>
-          <span id="ccaScanStatus" style="font-size:0.8rem;color:var(--muted)"></span>
-        </div>
-
-        <div id="ccaSummary" style="display:none;font-size:0.82rem;margin-bottom:10px"></div>
-
-        <div id="ccaTableWrap" style="display:none">
-          <div style="overflow-x:auto;max-height:460px;border:1px solid var(--border);border-radius:6px">
-            <table style="width:100%;border-collapse:collapse;font-size:0.8rem">
-              <thead><tr style="background:var(--surface);position:sticky;top:0">
-                <th style="padding:7px 10px;width:28px"><input type="checkbox" id="ccaAll" onchange="ccaToggleAll(this.checked)"></th>
-                <th style="padding:7px 10px;text-align:left;color:var(--muted)">Barcode</th>
-                <th style="padding:7px 10px;text-align:left;color:var(--muted)">Catalogue</th>
-                <th style="padding:7px 10px;text-align:left;color:var(--muted)">Album</th>
-                <th style="padding:7px 10px;text-align:left;color:var(--muted)">Artist</th>
-                <th style="padding:7px 10px;text-align:center;color:var(--muted)">Audio</th>
-                <th style="padding:7px 10px;text-align:center;color:var(--muted)">Art</th>
-                <th style="padding:7px 10px;text-align:left;color:var(--muted)">Status</th>
-                <th style="padding:7px 10px"></th>
-              </tr></thead>
-              <tbody id="ccaBody"></tbody>
-            </table>
-          </div>
-          <div style="display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap">
-            <button class="btn btn-blue" id="ccaImportBtn" onclick="ccaImport()">Import selected</button>
-            <label style="font-size:0.78rem;color:var(--muted);display:flex;align-items:center;gap:5px">
-              <input type="checkbox" id="ccaDryRun" checked> Dry run (plan only, writes nothing)
-            </label>
-            <span id="ccaImportStatus" style="font-size:0.8rem;color:var(--muted)"></span>
-          </div>
-        </div>
-
-        <div id="ccaDetail" style="display:none;margin-top:16px"></div>
-        <div id="ccaResults" style="display:none;margin-top:16px"></div>
-      </div>
-
-    </div>
-
 
     <!-- ── DB Sync tab ─────────────────────────────────────── -->
     <div id="tab-dbsync" class="tab-panel">
@@ -1999,7 +1991,7 @@ function showTab(name) {
   if (name === 'playlists') playlistsInit()
   if (name === 'playlistart') playlistArtInit()
   if (name === 'youtube') youtubeInit()
-  if (name === 'fmupdate') ccaInit()
+  if (name === 'ddex') ccaInit()   // CCA Import lives on the DDEX tab now
 }
 
 // YouTube rendering and the "Generate DDEX" build are both LOCAL-ONLY batch jobs
@@ -2020,7 +2012,9 @@ function _removeTab(name) {
     const res  = await fetch('/health')
     const data = await res.json().catch(() => ({}))
     if (data && data.youtubeEnabled === false) _removeTab('youtube')
-    if (data && data.ddexEnabled   === false) _removeTab('generate')
+    // Build Ingrooves Folder writes to a local output folder — meaningless on
+    // hosted. It's a section on the DDEX tab now, so hide the section, not a tab.
+    if (data && data.ddexEnabled   === false) document.getElementById('secBuildIngrooves')?.remove()
     if (data && data.visionUploadEnabled === false) _removeTab('visionupload')
     // Delete is off on hosted by default. Hide the buttons rather than let
     // someone type a folder name into a confirm prompt only to be refused.
@@ -3448,7 +3442,7 @@ function renderDdexRecents() {
 // Highlight whichever quick-pick chip matches the current input value.
 function highlightDdexQuickPick() {
   const current = ($('ddexBuildOutDir')?.value || '').trim()
-  document.querySelectorAll('#tab-generate .chip-btn').forEach(btn => {
+  document.querySelectorAll('#secBuildIngrooves .chip-btn').forEach(btn => {
     btn.classList.remove('is-active')
     if (btn.getAttribute('onclick')?.includes(`'${current}'`)) btn.classList.add('is-active')
   })
@@ -3806,7 +3800,10 @@ async function runDdexImport() {
 // Children are moved into a wrapper div ONCE so inline display styles on
 // button rows survive the round trip.
 function xtInitCollapsibles() {
-  document.querySelectorAll('#tab-excel > .import-section').forEach((sec, idx) => {
+  for (const tab of ['#tab-excel', '#tab-ddex']) xtInitCollapsiblesIn(tab)
+}
+function xtInitCollapsiblesIn(tabSelector) {
+  document.querySelectorAll(`${tabSelector} > .import-section`).forEach((sec, idx) => {
     if (sec.dataset.collapsible) return
     const h3 = sec.querySelector(':scope > h3')
     if (!h3) return
