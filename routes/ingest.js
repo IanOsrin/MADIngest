@@ -52,6 +52,7 @@ import { buildDdexPackage, planDdex, validateDdexMeta, validateDdexAudio, render
 import AdmZip from 'adm-zip'
 import { loadMetadata, lookupByIsrc, lookupByCatalogue, lookupAlbumTracks, lookupByFilename, lookupByBarcodeAndSeq, lookupCataloguesByBarcode, searchMetadata, getStatus, getAllRows, appendRow as appendMetadataRow, mergeFromBuffer as mergeMetadataFromBuffer, extractHeaders as extractMetadataHeaders, mergeWithMapping as mergeMetadataWithMapping, updateRow as updateMetadataRow, deleteRow as deleteMetadataRow, replaceFromBuffer as replaceMetadataFromBuffer, CACHE_COLUMNS, ALBUM_FIELD_KEYS } from '../lib/metadata-cache.js'
 import { previewDbSync, applyDbSync } from '../lib/cache-db-sync.js'
+import { parseIngroovesBuffers, diffAgainstCache } from '../lib/ingrooves-sync.js'
 
 // Load metadata on startup (non-blocking — portal works even if file is missing)
 loadMetadata()
@@ -1541,6 +1542,69 @@ router.post('/metadata/db-sync/preview', adminAuth, express.json({ limit: '2mb' 
     console.error('[db-sync preview]', err)
     res.status(err.status || 502).json({ error: err.message })
   }
+})
+
+// ── Ingrooves export sync (client edits made in the portal → cache) ──────────
+// preview: upload one or MORE portal exports (the portal caps each at 10k
+// rows, so a big catalogue arrives chunked); rows are parsed, deduped by
+// ISRC across files, matched to the cache (ISRC → UPC+track#) and diffed.
+// Writes NOTHING. Multipart field: sheets (up to 12 files).
+const uploadIngrooves = multer({
+  storage,
+  limits: { fileSize: 100 * 1024 * 1024, files: 12 },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase()
+    if (['.xlsx', '.xls', '.csv'].includes(ext)) cb(null, true)
+    else cb(new Error(`Expected spreadsheet, got: ${file.originalname}`))
+  }
+})
+
+router.post('/metadata/ingrooves-sync/preview', adminAuth, uploadIngrooves.array('sheets', 12), async (req, res) => {
+  if (!req.files?.length) return res.status(400).json({ error: 'at least one export file required (field: sheets)' })
+  try {
+    if (!getStatus().loaded) await loadMetadata()
+    const buffers = []
+    for (const f of req.files) {
+      buffers.push({ buffer: await readFile(f.path), name: f.originalname })
+      await unlink(f.path).catch(() => {})
+    }
+    const parsed = parseIngroovesBuffers(buffers)
+    const diff   = diffAgainstCache(parsed.rows)
+    console.log(`[Ingrooves sync] preview: ${parsed.rows.length} export rows (${parsed.files.length} file(s)) → ${diff.edits.length} changed, ${diff.unchanged} unchanged, ${diff.unmatched.length} unmatched`)
+    res.json({ ok: true, files: parsed.files, skippedDuplicates: parsed.skippedDuplicates,
+               skippedDeleted: parsed.skippedDeleted, exportRows: parsed.rows.length, ...diff })
+  } catch (err) {
+    for (const f of req.files || []) await unlink(f.path).catch(() => {})
+    console.error('[Ingrooves sync preview]', err)
+    res.status(400).json({ error: err.message })
+  }
+})
+
+// apply: write the ticked edits into the cache. Album-level keys fan out to
+// the whole album via updateRow's albumWide option. Returns the applied
+// edits so the admin UI can queue them on the push-to-databases button.
+// Body: { edits: [{ index, isrc, changes }] }
+router.post('/metadata/ingrooves-sync/apply', adminAuth, express.json({ limit: '10mb' }), async (req, res) => {
+  const { edits } = req.body || {}
+  if (!Array.isArray(edits) || !edits.length) return res.status(400).json({ error: 'edits required' })
+  const applied = [], failed = []
+  for (const e of edits) {
+    if (!Number.isInteger(e?.index) || !e.changes || !Object.keys(e.changes).length) {
+      failed.push({ index: e?.index ?? null, error: 'malformed edit' }); continue
+    }
+    const patch = {}
+    for (const [k, c] of Object.entries(e.changes)) patch[k] = c?.to ?? null
+    try {
+      // expect (cache snapshot from the diff) guards against index drift
+      // between preview and apply.
+      const result = await updateMetadataRow(e.index, patch, e.expect || {}, { albumWide: true })
+      applied.push({ index: e.index, changes: e.changes, albumRows: result.albumRows || 0 })
+    } catch (err) {
+      failed.push({ index: e.index, title: e.title || null, error: err.message })
+    }
+  }
+  console.log(`[Ingrooves sync] apply: ${applied.length} row(s) updated, ${failed.length} failed`)
+  res.json({ ok: true, applied, failed })
 })
 
 // apply: execute the confirmed targets (preview's objects, minus unticked).

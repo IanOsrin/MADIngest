@@ -496,6 +496,27 @@
         </div>
       </div>
 
+      <!-- Sync from Ingrooves portal export -->
+      <div class="import-section" style="margin-bottom:16px">
+        <h3>Sync from Ingrooves Export</h3>
+        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:12px">
+          The client edits metadata in the Ingrooves/Virgin portal; download the catalogue export
+          (one row per track) and upload it here — <strong>multiple files at once</strong> is fine,
+          the portal caps each export at 10,000 rows. Rows are matched to the cache by ISRC (then
+          UPC&nbsp;+&nbsp;track #) and only cells that actually differ are proposed. Applying
+          writes the ticked rows to the cache and queues them on
+          <strong>⇪ Push changes to databases</strong>.
+        </p>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+          <label class="btn btn-ghost" style="cursor:pointer">
+            Choose export file(s)…
+            <input type="file" id="igFiles" accept=".xlsx,.xls,.csv" multiple style="display:none" onchange="igPreview(this.files)">
+          </label>
+          <span id="igStatus" style="font-size:0.82rem;color:var(--muted)"></span>
+        </div>
+        <div id="igResult" style="display:none"></div>
+      </div>
+
       <!-- Metadata cache status -->
       <div class="import-section" style="margin-bottom:16px">
         <h3>Catalogue Metadata Cache</h3>
@@ -4179,6 +4200,99 @@ async function xvPushApply() {
     showToast(err.message, 'error')
     go.disabled = false
     go.textContent = 'Push selected'
+  }
+}
+
+// ── Sync from Ingrooves export ──────────────────────────────────────────────
+// Upload portal export file(s) → server diffs them against the cache →
+// tick rows → Apply writes the cache and queues the changes on the
+// push-to-databases button. Only cells that differ are ever proposed.
+let _igEdits = []
+
+async function igPreview(fileList) {
+  const files = [...(fileList || [])]
+  $('igFiles').value = ''
+  if (!files.length) return
+  const status = $('igStatus')
+  const box    = $('igResult')
+  status.textContent = `⟳ Diffing ${files.length} file(s) against the cache…`
+  box.style.display = 'none'
+  try {
+    const fd = new FormData()
+    for (const f of files) fd.append('sheets', f)
+    const res  = await fetch('/api/ingest/metadata/ingrooves-sync/preview', {
+      method: 'POST', headers: { Authorization: `Bearer ${adminToken}` }, body: fd
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    _igEdits = data.edits || []
+    status.textContent = `${data.exportRows.toLocaleString()} export row(s) · ${_igEdits.length} with changes · ${data.unchanged} unchanged · ${data.unmatched.length} not in cache${data.skippedDuplicates ? ` · ${data.skippedDuplicates} duplicate(s) across files` : ''}${data.skippedDeleted ? ` · ${data.skippedDeleted.toLocaleString()} Deleted-product row(s) ignored` : ''}`
+    let html = ''
+    if (_igEdits.length) {
+      html += `<div style="display:flex;gap:10px;align-items:center;margin-bottom:8px">
+        <button class="btn" style="color:var(--gold);border-color:rgba(212,175,55,0.5)" onclick="igApply()">Apply ticked to cache</button>
+        <label style="font-size:0.78rem;color:var(--muted);cursor:pointer"><input type="checkbox" checked onchange="document.querySelectorAll('.ig-cb').forEach(c => c.checked = this.checked)"> tick all</label>
+      </div>`
+      html += _igEdits.map((e, i) => {
+        const label = `${e.catalogue ? `[${e.catalogue}] ` : ''}${e.seq != null ? `#${e.seq} ` : ''}${e.title || '(no title)'}${e.artist ? ' — ' + e.artist : ''}`
+        const diffs = Object.entries(e.changes).map(([k, c]) =>
+          `<div style="margin-left:2px">${esc(XV_KEY_LABEL[k] || k)}: ${c.from == null || c.from === '' ? '<span style="color:var(--muted)">—</span>' : esc(String(c.from))} <span style="color:var(--muted)">→</span> ${esc(String(c.to ?? ''))}</div>`).join('')
+        return `<label style="display:flex;gap:10px;align-items:flex-start;padding:7px 10px;border:1px solid ${e.rehome ? 'rgba(240,168,50,0.5)' : 'var(--border)'};border-radius:6px;margin-bottom:6px;cursor:pointer">
+          <input type="checkbox" class="ig-cb" data-i="${i}" ${e.rehome ? '' : 'checked'} style="margin-top:3px">
+          <div style="min-width:0">
+            <div>${esc(label)}
+              <span style="color:var(--muted);font-size:0.76rem"> · matched by ${esc(e.matchedBy)}${e.lastModified ? ` · portal-modified ${esc(e.lastModified)}` : ''}</span>
+              ${e.rehome ? '<span style="color:var(--amber);font-size:0.76rem"> · ⚠ same ISRC, different product (catalogue AND barcode differ) — unticked by default, tick only if this row should be re-homed</span>' : ''}</div>
+            <div style="font-size:0.8rem;margin-top:2px">${diffs}</div>
+          </div>
+        </label>`
+      }).join('')
+    } else {
+      html += '<div style="color:var(--muted);padding:6px 0">No differences — the cache already matches these export rows.</div>'
+    }
+    if (data.unmatched.length) {
+      html += `<details style="margin-top:10px"><summary style="cursor:pointer;color:var(--muted);font-size:0.8rem">${data.unmatched.length} export row(s) not found in the cache</summary>
+        <div style="font-size:0.78rem;color:var(--muted);margin-top:6px">` +
+        data.unmatched.slice(0, 50).map(u =>
+          `<div>${esc(`${u.catalogue || '?'} #${u.seq ?? '?'} ${u.title || '(no title)'}${u.artist ? ' — ' + u.artist : ''} · ISRC ${u.isrc || '—'} · UPC ${u.barcode || '—'}`)}</div>`).join('') +
+        (data.unmatched.length > 50 ? `<div>… and ${data.unmatched.length - 50} more</div>` : '') +
+        `</div></details>`
+    }
+    box.innerHTML = html
+    box.style.display = 'block'
+  } catch (err) {
+    status.textContent = `✗ ${err.message}`
+    showToast(err.message, 'error')
+  }
+}
+
+async function igApply() {
+  const picked = [...document.querySelectorAll('.ig-cb:checked')].map(cb => _igEdits[Number(cb.dataset.i)]).filter(Boolean)
+  if (!picked.length) { showToast('Nothing ticked', 'error'); return }
+  const status = $('igStatus')
+  status.textContent = `⟳ Applying ${picked.length} row(s) to the cache…`
+  try {
+    const res  = await api('/api/ingest/metadata/ingrooves-sync/apply', 'POST', { edits: picked })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    // Queue every applied change on the push-to-databases button and mirror
+    // it into the open grid, if the viewer is loaded.
+    for (const a of data.applied) {
+      for (const [k, c] of Object.entries(a.changes)) {
+        xvQueueChange(a.index, k, c.from, c.to, XV_ALBUM_KEYS.includes(k))
+      }
+      if (_xvRaw[a.index]) {
+        for (const [k, c] of Object.entries(a.changes)) _xvRaw[a.index][k] = c.to
+      }
+    }
+    if (_xvRaw.length) { xvRebuildSheet(); xvRenderBody() }
+    const failNote = data.failed.length ? ` · ${data.failed.length} failed (${esc(data.failed[0].error)})` : ''
+    status.textContent = `✓ ${data.applied.length} row(s) written to the cache${failNote} — now review ⇪ Push changes to databases`
+    $('igResult').style.display = 'none'
+    showToast(`${data.applied.length} cache row(s) updated — queued for DB push`, data.failed.length ? 'error' : 'success')
+  } catch (err) {
+    status.textContent = `✗ ${err.message}`
+    showToast(err.message, 'error')
   }
 }
 
