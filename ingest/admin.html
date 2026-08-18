@@ -456,6 +456,46 @@
     <!-- ── Excel tab ────────────────────────────────────────── -->
     <div id="tab-excel" class="tab-panel">
 
+      <div class="import-section">
+        <h3>Cache Viewer &amp; Editor</h3>
+        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
+          Browse the metadata extract like a spreadsheet — click a column header to sort, filter
+          per column, or search across everything. <strong>Double-click a cell to edit it</strong>
+          (Enter saves, Esc cancels), ✕ deletes a row. Album-level fields (album title/artist,
+          label, ℗/© lines, dates, catalogue, barcode, language) save to every track of the
+          album. Saves land in the cache immediately and queue up on the
+          <strong>⇪ Push changes to databases</strong> button — click it when you're done editing
+          to review old → new per matched record and push to Gallo Catalogue, CMS 2024 and
+          MadStreamer in one go. For bulk corrections:
+          <strong>⬇ Download xlsx → edit in Excel → ⬆ Replace from xlsx</strong> (a timestamped
+          S3 backup is written before every replace). Edits persist to the shared S3 copy, so
+          they survive deploys and both local and hosted GalloIngest see the same catalogue.
+        </p>
+
+        <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+          <button class="btn btn-ghost" id="xvLoadBtn" onclick="xvLoadCache()">Open Cache Viewer</button>
+          <button class="btn btn-ghost" id="xvDownloadBtn" onclick="xvDownloadXlsx()" style="display:none">⬇ Download xlsx</button>
+          <label class="btn btn-ghost" id="xvReplaceBtn" style="display:none;cursor:pointer;color:var(--amber);border-color:rgba(240,168,50,0.35)">
+            ⬆ Replace from xlsx…
+            <input type="file" id="xvReplaceFile" accept=".xlsx,.csv" style="display:none" onchange="xvReplaceChosen(this.files[0])">
+          </label>
+          <button class="btn" id="xvPushBtn" style="display:none;color:var(--gold);border-color:rgba(212,175,55,0.5)" onclick="xvPushOpen()">⇪ Push changes to databases</button>
+          <span id="xvFileLabel" style="font-size:0.82rem;color:var(--muted)"></span>
+        </div>
+
+        <div id="xvToolbar" style="display:none;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+          <input id="xvGlobal" type="text" placeholder="Search all columns…" oninput="xvGlobalChanged(this.value)"
+            style="flex:1;min-width:200px;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:6px 11px;color:var(--text);font-family:inherit;font-size:0.84rem;outline:none">
+          <button class="btn btn-ghost" style="font-size:0.78rem" onclick="xvClearFilters()">✕ Clear filters</button>
+          <span id="xvCount" style="font-size:0.78rem;color:var(--muted)"></span>
+        </div>
+
+        <div id="xvWrap" style="display:none;max-height:600px;overflow:auto;border:1px solid var(--border);border-radius:var(--radius)"></div>
+        <div id="xvMoreBar" style="display:none;margin-top:10px">
+          <button class="btn btn-ghost" style="font-size:0.78rem" onclick="xvShowMore()">Show 500 more</button>
+        </div>
+      </div>
+
       <!-- Metadata cache status -->
       <div class="import-section" style="margin-bottom:16px">
         <h3>Catalogue Metadata Cache</h3>
@@ -575,39 +615,6 @@
         </div>
       </div>
 
-      <div class="import-section">
-        <h3>Cache Viewer &amp; Editor</h3>
-        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
-          Browse the metadata extract like a spreadsheet — click a column header to sort, filter
-          per column, or search across everything. <strong>Double-click a cell to edit it</strong>
-          (Enter saves, Esc cancels), ✕ deletes a row. For bulk corrections:
-          <strong>⬇ Download xlsx → edit in Excel → ⬆ Replace from xlsx</strong> (a timestamped
-          S3 backup is written before every replace). Edits persist to the shared S3 copy, so
-          they survive deploys and both local and hosted GalloIngest see the same catalogue.
-        </p>
-
-        <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
-          <button class="btn btn-ghost" id="xvLoadBtn" onclick="xvLoadCache()">Open Cache Viewer</button>
-          <button class="btn btn-ghost" id="xvDownloadBtn" onclick="xvDownloadXlsx()" style="display:none">⬇ Download xlsx</button>
-          <label class="btn btn-ghost" id="xvReplaceBtn" style="display:none;cursor:pointer;color:var(--amber);border-color:rgba(240,168,50,0.35)">
-            ⬆ Replace from xlsx…
-            <input type="file" id="xvReplaceFile" accept=".xlsx,.csv" style="display:none" onchange="xvReplaceChosen(this.files[0])">
-          </label>
-          <span id="xvFileLabel" style="font-size:0.82rem;color:var(--muted)"></span>
-        </div>
-
-        <div id="xvToolbar" style="display:none;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
-          <input id="xvGlobal" type="text" placeholder="Search all columns…" oninput="xvGlobalChanged(this.value)"
-            style="flex:1;min-width:200px;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:6px 11px;color:var(--text);font-family:inherit;font-size:0.84rem;outline:none">
-          <button class="btn btn-ghost" style="font-size:0.78rem" onclick="xvClearFilters()">✕ Clear filters</button>
-          <span id="xvCount" style="font-size:0.78rem;color:var(--muted)"></span>
-        </div>
-
-        <div id="xvWrap" style="display:none;max-height:600px;overflow:auto;border:1px solid var(--border);border-radius:var(--radius)"></div>
-        <div id="xvMoreBar" style="display:none;margin-top:10px">
-          <button class="btn btn-ghost" style="font-size:0.78rem" onclick="xvShowMore()">Show 500 more</button>
-        </div>
-      </div>
 
     </div>
 
@@ -3772,8 +3779,11 @@ async function runDdexImport() {
 
 // ── Cache Viewer ─────────────────────────────────────────────────────────────
 // Spreadsheet-style browser for the embedded metadata extract (the same cache
-// the lookups use). View-only: click a header to sort, per-column filters,
-// global search. Rendering is capped at XV_PAGE rows per click of "Show more"
+// the lookups use). Click a header to sort, per-column filters, global search;
+// double-click a cell to edit (album-level fields save album-wide; saves queue
+// on the "Push changes to databases" button for a batched push to Gallo /
+// CMS 2024 / MadStreamer).
+// Rendering is capped at XV_PAGE rows per click of "Show more"
 // so ~60k rows don't lock the DOM — but sorting/filtering always cover ALL
 // rows (data-model, not DOM; the generic click-to-sort skips this table
 // because its headers have their own onclick).
@@ -3810,8 +3820,19 @@ async function xvLoadCache() {
   const btn = $('xvLoadBtn')
   btn.disabled = true; btn.textContent = '⟳ Loading cache…'
   try {
-    const res  = await api('/api/ingest/metadata/rows')
-    const data = await res.json()
+    // A cold server has to pull the ~70k-row catalogue down from S3 first
+    // (~2–3 min). The rows endpoint answers 202 while that runs — poll the
+    // status endpoint and keep the label honest instead of looking hung.
+    let res  = await api('/api/ingest/metadata/rows')
+    let data = await res.json()
+    const t0 = Date.now()
+    while (res.status === 202) {
+      const mins = Math.floor((Date.now() - t0) / 60000), secs = Math.floor(((Date.now() - t0) % 60000) / 1000)
+      $('xvFileLabel').textContent = `⟳ Catalogue loading from ${data.s3Key ? 'S3' : 'file'} — usually 2–3 min on a fresh server (waiting ${mins}:${String(secs).padStart(2, '0')})`
+      await new Promise(r => setTimeout(r, 3000))
+      res  = await api('/api/ingest/metadata/rows')
+      data = await res.json()
+    }
     if (!res.ok) throw new Error(data.error || 'Cache load failed')
     _xvRaw  = data.rows || []
     _xvCols = data.columns || null
@@ -3904,6 +3925,14 @@ function xvExpect(i) {
   return { isrc: r.isrc ?? '', track_name: r.track_name ?? '', catalogue: r.catalogue ?? '' }
 }
 
+// Album-level cache fields — keep in sync with ALBUM_FIELD_KEYS in
+// lib/metadata-cache.js. Editing one of these saves album-wide (every row of
+// the same catalogue) and the push panel fans it out the same way.
+const XV_ALBUM_KEYS = ['album_title', 'album_artist', 'release_date', 'original_release_date',
+                       'catalogue', 'barcode', 'language', 'label', 'p_line', 'c_line']
+const XV_KEY_LABEL  = Object.fromEntries(XV_COLS.map(([k, l]) => [k, l]))
+const _xvNormCat    = s => String(s || '').trim().toLowerCase().replace(/[\s\-_]+/g, '')
+
 function xvEditCell(td) {
   if (td.querySelector('input')) return
   const i    = Number(td.dataset.i)
@@ -3923,17 +3952,34 @@ function xvEditCell(td) {
     const val = input.value.trim()
     if (val === orig.trim()) { restore(); return }
     input.disabled = true
+    const albumWide = XV_ALBUM_KEYS.includes(key) && !!_xvRaw[i]?.catalogue
     try {
       const res  = await api('/api/ingest/metadata/row', 'PATCH',
-        { index: i, expect: xvExpect(i), patch: { [key]: val } })
+        { index: i, expect: xvExpect(i), patch: { [key]: val }, albumWide })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+      // Mirror the server-side album fan-out in the local grid. Match on the
+      // PRE-edit catalogue — the patch may be changing the catalogue itself.
+      if (albumWide && data.albumRows) {
+        const catKey = _xvNormCat(key === 'catalogue' ? orig : _xvRaw[i].catalogue)
+        for (const r of _xvRaw) {
+          if (r !== _xvRaw[i] && r.catalogue && _xvNormCat(r.catalogue) === catKey) {
+            r[key] = val === '' ? null : val
+          }
+        }
+      }
       _xvRaw[i][key] = val === '' ? null : val
-      const row = _xvSheet.rows.find(r => r.i === i)
-      if (row) row.c[col] = val
-      td.textContent = val
-      td.title = val
-      showToast('Saved')
+      if (albumWide && data.albumRows) {
+        xvRebuildSheet()
+        xvRenderBody()
+      } else {
+        const row = _xvSheet.rows.find(r => r.i === i)
+        if (row) row.c[col] = val
+        td.textContent = val
+        td.title = val
+      }
+      showToast(albumWide && data.albumRows ? `Saved to album (${data.albumRows + 1} rows)` : 'Saved')
+      xvQueueChange(i, key, orig === '' ? null : orig, val === '' ? null : val, albumWide)
     } catch (err) {
       showToast(err.message, 'error')
       restore()
@@ -3954,12 +4000,185 @@ async function xvDeleteRow(i) {
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
     _xvRaw.splice(i, 1)
+    // Server indexes shifted — remap the pending-push queue the same way.
+    const remapped = new Map()
+    for (const [idx, entry] of _xvPending) {
+      if (idx === i) continue
+      remapped.set(idx > i ? idx - 1 : idx, entry)
+    }
+    _xvPending = remapped
+    xvPushBtnUpdate()
     xvRebuildSheet()      // server indexes shifted — rebuild the grid's mapping
     xvRenderBody()
     $('xvFileLabel').textContent = `${data.count.toLocaleString()} rows · S3 store · edited just now`
     showToast('Row deleted')
   } catch (err) {
     showToast(err.message, 'error')
+  }
+}
+
+// ── Push edits to the databases ─────────────────────────────────────────────
+// Cell saves land in the cache immediately and are QUEUED here. The "Push
+// changes to databases" toolbar button previews the whole batch against
+// Gallo Catalogue / CMS 2024 / MadStreamer (old → new per matched record;
+// CREATE where a track is missing) and pushes the ticked targets. Nothing
+// touches the FM databases until the user clicks Push.
+let _xvPushTargets = []
+let _xvPending     = new Map()   // cache row index → { changes: { key: {from,to} }, albumWide }
+
+function xvQueueChange(i, key, from, to, albumWide) {
+  const entry = _xvPending.get(i) || { changes: {}, albumWide: false }
+  // Re-edits of the same cell keep the ORIGINAL from-value (identity matching
+  // needs what the DBs still hold); editing back to the original un-queues it.
+  const origFrom = entry.changes[key] ? entry.changes[key].from : from
+  if (String(origFrom ?? '') === String(to ?? '')) delete entry.changes[key]
+  else entry.changes[key] = { from: origFrom, to }
+  entry.albumWide = entry.albumWide || albumWide
+  if (Object.keys(entry.changes).length) _xvPending.set(i, entry)
+  else _xvPending.delete(i)
+  xvPushBtnUpdate()
+}
+
+function xvPushBtnUpdate() {
+  const btn = $('xvPushBtn')
+  if (!btn) return
+  const n = [..._xvPending.values()].reduce((a, e) => a + Object.keys(e.changes).length, 0)
+  btn.style.display = n ? '' : 'none'
+  btn.textContent   = `⇪ Push ${n} change${n === 1 ? '' : 's'} to databases`
+}
+
+function xvPushClose() { document.getElementById('xvPushOverlay')?.remove() }
+
+async function xvPushOpen() {
+  if (!_xvPending.size) { showToast('No pending changes to push', 'error'); return }
+  const edits = [..._xvPending.entries()].map(([index, e]) =>
+    ({ index, changes: e.changes, albumWide: e.albumWide }))
+  const nChanges = edits.reduce((a, e) => a + Object.keys(e.changes).length, 0)
+  xvPushClose()
+  const ov = document.createElement('div')
+  ov.id = 'xvPushOverlay'
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:400;display:flex;align-items:center;justify-content:center;padding:24px'
+  ov.onclick = e => { if (e.target === ov) xvPushClose() }
+  ov.innerHTML = `<div style="background:var(--bg-lift);border:1px solid var(--border);border-radius:10px;max-width:860px;width:100%;max-height:86vh;display:flex;flex-direction:column">
+    <div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px">
+      <strong>Push to databases</strong>
+      <span style="color:var(--muted);font-size:0.82rem">${nChanges} change${nChanges === 1 ? '' : 's'} on ${edits.length} row${edits.length === 1 ? '' : 's'}</span>
+      <button class="btn btn-ghost" style="margin-left:auto;padding:2px 10px" onclick="xvPushClose()">✕</button>
+    </div>
+    <div id="xvPushBody" style="padding:16px 18px;overflow:auto;font-size:0.84rem">
+      <span style="color:var(--muted)">⟳ Matching the edits against Gallo Catalogue, CMS 2024 and MadStreamer…</span>
+    </div>
+    <div id="xvPushFoot" style="padding:12px 18px;border-top:1px solid var(--border);display:flex;gap:10px;justify-content:flex-end">
+      <button class="btn btn-ghost" onclick="xvPushClose()">Not yet</button>
+      <button class="btn" id="xvPushGo" disabled onclick="xvPushApply()">Push selected</button>
+    </div>
+  </div>`
+  document.body.appendChild(ov)
+  try {
+    const res  = await api('/api/ingest/metadata/db-sync/preview', 'POST', { edits })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    xvPushRender(data)
+  } catch (err) {
+    const body = document.getElementById('xvPushBody')
+    if (body) body.innerHTML = `<span style="color:var(--red)">✗ ${esc(err.message)}</span>
+      <div style="color:var(--muted);margin-top:8px">The cache edits are saved and still queued. Fix the issue and click Push again.</div>`
+  }
+}
+
+function xvPushRender(preview) {
+  const body = document.getElementById('xvPushBody')
+  if (!body) return
+  _xvPushTargets = preview.targets || []
+  const dbNames = { gallo: 'Gallo Catalogue', cms2024: 'CMS 2024', streamer: 'MadStreamer' }
+  const fmtVal = v => (v == null || v === '') ? '<span style="color:var(--muted)">—</span>' : esc(String(v))
+
+  let html = ''
+  const errs = Object.entries(preview.dbErrors || {})
+  if (errs.length) {
+    html += errs.map(([db, msg]) =>
+      `<div style="color:var(--red);margin-bottom:8px">⚠ ${esc(dbNames[db] || db)} unreachable — skipped: ${esc(msg)}</div>`).join('')
+  }
+  if (!_xvPushTargets.length) {
+    body.innerHTML = html + '<div style="color:var(--muted)">Nothing to push — no reachable database holds this catalogue.</div>'
+    return
+  }
+
+  for (const w of preview.warnings || []) {
+    html += `<div style="color:var(--amber);margin-bottom:8px">⚠ ${esc(w)}</div>`
+  }
+  const multiCat = (preview.catalogues || []).length > 1
+  for (const db of ['gallo', 'cms2024', 'streamer']) {
+    const targets = _xvPushTargets.map((t, idx) => ({ t, idx })).filter(x => x.t.db === db)
+    if (!targets.length) continue
+    const creates = targets.filter(x => x.t.action === 'create').length
+    html += `<div style="margin-bottom:14px">
+      <div style="font-weight:600;margin-bottom:6px">${esc(dbNames[db])}
+        <span style="color:var(--muted);font-weight:400;font-size:0.8rem">· ${targets.length - creates} update(s)${creates ? `, ${creates} create(s)` : ''}</span>
+      </div>` +
+      targets.map(({ t, idx }) => {
+        const label = `${multiCat && t.catalogue ? `[${t.catalogue}] ` : ''}${t.seq != null ? `#${t.seq} ` : ''}${t.title || '(no title)'}${t.artist ? ' — ' + t.artist : ''}`
+        const isCreate = t.action === 'create'
+        const diffs = isCreate
+          ? `<span style="color:var(--muted)">not found → will <b style="color:var(--gold)">CREATE</b> a new record from the cache row</span>`
+          : t.fields.map(f =>
+              `<div style="margin-left:2px">${esc(XV_KEY_LABEL[f.key] || f.key)}: ${fmtVal(f.old)} <span style="color:var(--muted)">→</span> ${fmtVal(f.new)}</div>`
+            ).join('')
+        return `<label style="display:flex;gap:10px;align-items:flex-start;padding:7px 10px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px;cursor:pointer">
+          <input type="checkbox" class="xv-push-cb" data-idx="${idx}" checked style="margin-top:3px">
+          <div style="min-width:0">
+            <div>${isCreate ? '<b style="color:var(--gold)">CREATE</b>' : '<b>UPDATE</b>'} ${esc(label)}
+              ${t.matchedBy ? `<span style="color:var(--muted);font-size:0.76rem"> · matched by ${esc(t.matchedBy)}</span>` : ''}</div>
+            <div style="font-size:0.8rem;margin-top:2px">${diffs}</div>
+          </div>
+        </label>`
+      }).join('') + '</div>'
+  }
+  if (preview.albumTrackCount > 1) {
+    html = `<div style="color:var(--muted);margin-bottom:10px">Covering ${preview.albumTrackCount} cache row(s) across catalogue${(preview.catalogues || []).length === 1 ? '' : 's'} ${esc((preview.catalogues || []).join(', '))} (album-level fields fan out to every track of the album).</div>` + html
+  }
+  body.innerHTML = html
+  const go = document.getElementById('xvPushGo')
+  if (go) go.disabled = false
+}
+
+async function xvPushApply() {
+  const go = document.getElementById('xvPushGo')
+  const picked = [...document.querySelectorAll('.xv-push-cb:checked')].map(cb => _xvPushTargets[Number(cb.dataset.idx)]).filter(Boolean)
+  if (!picked.length) { showToast('Nothing ticked', 'error'); return }
+  go.disabled = true
+  go.textContent = `⟳ Pushing ${picked.length}…`
+  try {
+    const res  = await api('/api/ingest/metadata/db-sync/apply', 'POST', { targets: picked })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    const dbNames = { gallo: 'Gallo', cms2024: 'CMS 2024', streamer: 'Streamer' }
+    const body = document.getElementById('xvPushBody')
+    body.innerHTML = `<div style="font-weight:600;margin-bottom:8px">${data.failed ? `⚠ ${data.succeeded} succeeded, ${data.failed} failed` : `✓ All ${data.succeeded} pushed`}</div>` +
+      data.results.map(r => {
+        const label = `${r.seq != null ? `#${r.seq} ` : ''}${r.title || ''}`
+        return `<div style="padding:3px 0;${r.ok ? '' : 'color:var(--red)'}">
+          ${r.ok ? '✓' : '✗'} ${esc(dbNames[r.db] || r.db)} · ${esc(r.action)} ${esc(label)}
+          ${r.recordId ? `<span style="color:var(--muted)"> rec ${esc(r.recordId)}</span>` : ''}
+          ${r.note ? `<span style="color:var(--muted)"> — ${esc(r.note)}</span>` : ''}
+          ${r.error ? ` — ${esc(r.error)}` : ''}
+        </div>`
+      }).join('') +
+      Object.entries(data.tape || {}).map(([db, t]) =>
+        `<div style="padding:3px 0;${t?.error ? 'color:var(--red)' : ''}">${t?.error ? '✗' : '✓'} ${esc(dbNames[db] || db)} · album record ${t?.error ? `failed — ${esc(t.error)}` : 'created'}</div>`).join('')
+    const foot = document.getElementById('xvPushFoot')
+    foot.innerHTML = '<button class="btn" onclick="xvPushClose()">Close</button>'
+    if (!data.failed) {
+      // Queue is spent. On partial failure it stays queued — a re-push
+      // re-previews, so records created this round match as updates.
+      _xvPending.clear()
+      xvPushBtnUpdate()
+    }
+    showToast(data.failed ? `${data.failed} push(es) failed — changes stay queued for a re-push` : 'Pushed to databases', data.failed ? 'error' : 'success')
+  } catch (err) {
+    showToast(err.message, 'error')
+    go.disabled = false
+    go.textContent = 'Push selected'
   }
 }
 

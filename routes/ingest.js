@@ -50,7 +50,8 @@ import { languageNameToCode } from '../lib/language-codes.js'
 import { generateDDEX382 } from '../lib/ddex-generate.js'
 import { buildDdexPackage, planDdex, validateDdexMeta, validateDdexAudio, renderDdexPackageXml } from '../lib/ddex-build.js'
 import AdmZip from 'adm-zip'
-import { loadMetadata, lookupByIsrc, lookupByCatalogue, lookupAlbumTracks, lookupByFilename, lookupByBarcodeAndSeq, lookupCataloguesByBarcode, searchMetadata, getStatus, getAllRows, appendRow as appendMetadataRow, mergeFromBuffer as mergeMetadataFromBuffer, extractHeaders as extractMetadataHeaders, mergeWithMapping as mergeMetadataWithMapping, updateRow as updateMetadataRow, deleteRow as deleteMetadataRow, replaceFromBuffer as replaceMetadataFromBuffer, CACHE_COLUMNS } from '../lib/metadata-cache.js'
+import { loadMetadata, lookupByIsrc, lookupByCatalogue, lookupAlbumTracks, lookupByFilename, lookupByBarcodeAndSeq, lookupCataloguesByBarcode, searchMetadata, getStatus, getAllRows, appendRow as appendMetadataRow, mergeFromBuffer as mergeMetadataFromBuffer, extractHeaders as extractMetadataHeaders, mergeWithMapping as mergeMetadataWithMapping, updateRow as updateMetadataRow, deleteRow as deleteMetadataRow, replaceFromBuffer as replaceMetadataFromBuffer, CACHE_COLUMNS, ALBUM_FIELD_KEYS } from '../lib/metadata-cache.js'
+import { previewDbSync, applyDbSync } from '../lib/cache-db-sync.js'
 
 // Load metadata on startup (non-blocking — portal works even if file is missing)
 loadMetadata()
@@ -1449,8 +1450,11 @@ router.get('/metadata/status', adminAuth, async (req, res) => {
 router.get('/metadata/rows', adminAuth, async (req, res) => {
   let status = getStatus()
   if (!status.loaded) {
-    await loadMetadata()
-    status = getStatus()
+    // Kick (or join) the load but DON'T sit on it — the S3 catalogue is
+    // 70k+ rows and takes minutes on a cold boot. A silent multi-minute
+    // request looks exactly like a hang, so tell the viewer to poll instead.
+    loadMetadata()
+    return res.status(202).json({ ok: false, loading: true, ...getStatus() })
   }
   const rows = getAllRows().map(r => {
     const slim = {}
@@ -1492,15 +1496,65 @@ router.post('/metadata/replace', adminAuth, uploadBigSheet.single('sheet'), asyn
 // grid saw them — the cache refuses the write if the row changed underneath.
 // Persists to the durable store (S3 when configured).
 router.patch('/metadata/row', adminAuth, express.json(), async (req, res) => {
-  const { index, patch, expect } = req.body || {}
+  const { index, patch, expect, albumWide } = req.body || {}
   if (!Number.isInteger(index) || index < 0) return res.status(400).json({ error: 'index required' })
   if (!patch || !Object.keys(patch).length)  return res.status(400).json({ error: 'patch required' })
   try {
-    const result = await updateMetadataRow(index, patch, expect)
-    console.log(`[Metadata] Row ${index} edited: ${Object.keys(patch).join(', ')}`)
+    const result = await updateMetadataRow(index, patch, expect, { albumWide: !!albumWide })
+    console.log(`[Metadata] Row ${index} edited: ${Object.keys(patch).join(', ')}${result.albumRows ? ` (+${result.albumRows} album rows)` : ''}`)
     res.json(result)
   } catch (err) {
     res.status(409).json({ error: err.message })
+  }
+})
+
+// Which cache fields are album-level (the viewer saves those album-wide and
+// the push panel fans them out to every track of the catalogue).
+router.get('/metadata/album-fields', adminAuth, (req, res) => {
+  res.json({ ok: true, albumFields: ALBUM_FIELD_KEYS })
+})
+
+// ── Cache → databases push (Cache Viewer edit propagation) ───────────────────
+// preview: match a BATCH of edited rows against Gallo Catalogue / CMS 2024 /
+// MadStreamer and return update/create targets with old → new diffs. Writes
+// NOTHING. Body: { edits: [{ index, changes: { key: { from, to } }, albumWide }] }
+// (a legacy single { index, changes, albumWide } body is also accepted).
+router.post('/metadata/db-sync/preview', adminAuth, express.json({ limit: '2mb' }), async (req, res) => {
+  const body = req.body || {}
+  const rawEdits = Array.isArray(body.edits)
+    ? body.edits
+    : [{ index: body.index, changes: body.changes, albumWide: body.albumWide }]
+  if (!rawEdits.length) return res.status(400).json({ error: 'edits required' })
+  const rows = getAllRows()
+  const edits = []
+  for (const e of rawEdits) {
+    if (!Number.isInteger(e?.index) || e.index < 0)   return res.status(400).json({ error: 'each edit needs an index' })
+    if (!e.changes || !Object.keys(e.changes).length) return res.status(400).json({ error: `edit for index ${e.index} has no changes` })
+    const row = rows[e.index]
+    if (!row) return res.status(404).json({ error: `No cache row at index ${e.index} — reload the Cache Viewer and re-queue the edits` })
+    edits.push({ row, changes: e.changes, albumWide: e.albumWide !== false })
+  }
+  try {
+    const preview = await previewDbSync({ edits })
+    res.json({ ok: true, ...preview })
+  } catch (err) {
+    console.error('[db-sync preview]', err)
+    res.status(err.status || 502).json({ error: err.message })
+  }
+})
+
+// apply: execute the confirmed targets (preview's objects, minus unticked).
+// Body: { targets: [...] }
+router.post('/metadata/db-sync/apply', adminAuth, express.json({ limit: '5mb' }), async (req, res) => {
+  const { targets } = req.body || {}
+  if (!Array.isArray(targets) || !targets.length) return res.status(400).json({ error: 'targets required' })
+  try {
+    const result = await applyDbSync(targets)
+    console.log(`[db-sync apply] ${result.succeeded} succeeded, ${result.failed} failed across ${targets.length} target(s)`)
+    res.json(result)
+  } catch (err) {
+    console.error('[db-sync apply]', err)
+    res.status(502).json({ error: err.message })
   }
 })
 
