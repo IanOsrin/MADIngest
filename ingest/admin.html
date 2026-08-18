@@ -3844,17 +3844,28 @@ async function xvLoadCache() {
     // A cold server has to pull the ~70k-row catalogue down from S3 first
     // (~2–3 min). The rows endpoint answers 202 while that runs — poll the
     // status endpoint and keep the label honest instead of looking hung.
-    let res  = await api('/api/ingest/metadata/rows')
+    const PAGE = 10000
+    let res  = await api(`/api/ingest/metadata/rows?offset=0&limit=${PAGE}`)
     let data = await res.json()
     const t0 = Date.now()
     while (res.status === 202) {
       const mins = Math.floor((Date.now() - t0) / 60000), secs = Math.floor(((Date.now() - t0) % 60000) / 1000)
       $('xvFileLabel').textContent = `⟳ Catalogue loading from ${data.s3Key ? 'S3' : 'file'} — usually 2–3 min on a fresh server (waiting ${mins}:${String(secs).padStart(2, '0')})`
       await new Promise(r => setTimeout(r, 3000))
-      res  = await api('/api/ingest/metadata/rows')
+      res  = await api(`/api/ingest/metadata/rows?offset=0&limit=${PAGE}`)
       data = await res.json()
     }
     if (!res.ok) throw new Error(data.error || 'Cache load failed')
+    // Rows arrive in pages (the one-shot 43MB dump OOM-killed the hosted
+    // instance). Accumulate sequentially — offset order IS row identity.
+    while (data.rows.length < data.count) {
+      $('xvFileLabel').textContent = `⟳ Loading rows ${data.rows.length.toLocaleString()} / ${data.count.toLocaleString()}…`
+      const pr  = await api(`/api/ingest/metadata/rows?offset=${data.rows.length}&limit=${PAGE}`)
+      const pd  = await pr.json()
+      if (!pr.ok) throw new Error(pd.error || `HTTP ${pr.status} while paging rows`)
+      if (!pd.rows?.length) break
+      data.rows.push(...pd.rows)
+    }
     _xvRaw  = data.rows || []
     _xvCols = data.columns || null
     xvRebuildSheet()

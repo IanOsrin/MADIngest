@@ -1449,7 +1449,7 @@ router.get('/metadata/status', adminAuth, async (req, res) => {
 // Full cache dump for the admin viewer. Null fields are stripped per row to
 // roughly halve the payload — the viewer treats missing keys as ''.
 router.get('/metadata/rows', adminAuth, async (req, res) => {
-  let status = getStatus()
+  const status = getStatus()
   if (!status.loaded) {
     // Kick (or join) the load but DON'T sit on it — the S3 catalogue is
     // 70k+ rows and takes minutes on a cold boot. A silent multi-minute
@@ -1457,12 +1457,20 @@ router.get('/metadata/rows', adminAuth, async (req, res) => {
     loadMetadata()
     return res.status(202).json({ ok: false, loading: true, ...getStatus() })
   }
-  const rows = getAllRows().map(r => {
+  // PAGED: the full dump (70k rows slim-copied + a 43MB JSON string) peaked
+  // past the small hosted instance's memory and OOM-killed the whole app —
+  // the Cache Viewer saw Render's HTML 502 page as "not valid JSON". The
+  // viewer now accumulates pages; offset order preserves the array-index
+  // row identity the edit endpoints rely on.
+  const all    = getAllRows()
+  const limit  = Math.min(parseInt(req.query.limit, 10) || 10000, 20000)
+  const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0)
+  const rows = all.slice(offset, offset + limit).map(r => {
     const slim = {}
     for (const [k, v] of Object.entries(r)) if (v != null && v !== '') slim[k] = v
     return slim
   })
-  res.json({ ok: true, count: rows.length, loadedAt: status.loadedAt, source: status.source, rows, columns: CACHE_COLUMNS })
+  res.json({ ok: true, count: all.length, offset, limit, loadedAt: status.loadedAt, source: status.source, rows, columns: CACHE_COLUMNS })
 })
 
 // Replace the WHOLE cache from an uploaded spreadsheet (bulk-corrections
@@ -1561,6 +1569,16 @@ const uploadIngrooves = multer({
 
 router.post('/metadata/ingrooves-sync/preview', adminAuth, uploadIngrooves.array('sheets', 12), async (req, res) => {
   if (!req.files?.length) return res.status(400).json({ error: 'at least one export file required (field: sheets)' })
+  // SheetJS parsing balloons to several times the file size in RSS — a 170MB
+  // batch OOM-killed the hosted instance. Cap the combined size on hosted
+  // (override via INGROOVES_SYNC_MAX_MB); local stays effectively unlimited.
+  const maxMb   = parseInt(process.env.INGROOVES_SYNC_MAX_MB, 10)
+               || (process.env.NODE_ENV === 'production' ? 30 : 2000)
+  const totalMb = req.files.reduce((a, f) => a + (f.size || 0), 0) / 1048576
+  if (totalMb > maxMb) {
+    for (const f of req.files) await unlink(f.path).catch(() => {})
+    return res.status(413).json({ error: `Combined upload is ${totalMb.toFixed(0)}MB — over this instance's ${maxMb}MB limit. Run large reconciliations on local GalloIngest (same shared cache), or upload fewer files per batch.` })
+  }
   try {
     if (!getStatus().loaded) await loadMetadata()
     const buffers = []
