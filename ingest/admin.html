@@ -3986,6 +3986,8 @@ function abAudioCellHtml(t, ti) {
 
 // Replace-by-reference: search the Vision index and point this track's
 // Audio_URL at an existing file. Nothing moves; nothing is uploaded.
+let _abVfHits = []   // last audio-picker hits (paths referenced by index)
+let _abVcHits = []   // last cover-picker hits
 async function abPickVisionFile(ti) {
   const t = _abAlbum.tracks[ti]
   const panel = $('abLinkPanel')
@@ -4016,9 +4018,12 @@ async function abVfSearch(ti) {
     const res  = await api(`/api/ingest/album/vision-files?q=${encodeURIComponent(q)}`)
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
-    box.innerHTML = data.hits.map(h => `
+    // Paths go via an index into _abVfHits — inlining them into onclick broke
+    // on any path containing an apostrophe (Artist's Album/…).
+    _abVfHits = data.hits
+    box.innerHTML = data.hits.map((h, hi) => `
       <div style="display:flex;gap:8px;align-items:center;padding:3px 0">
-        <button class="btn btn-ghost" style="padding:0 8px;font-size:0.74rem" onclick='abVfLink(${ti}, ${JSON.stringify(h.path)})'>Use</button>
+        <button class="btn btn-ghost" style="padding:0 8px;font-size:0.74rem" onclick="abVfLink(${ti}, _abVfHits[${hi}].path)">Use</button>
         <span title="${esc(h.path)}">${esc(h.path)}</span>
         ${h.size ? `<span style="color:var(--muted);font-size:0.72rem">${(h.size / 1048576).toFixed(1)}MB</span>` : ''}
       </div>`).join('') || '<span style="color:var(--muted)">No Vision files match.</span>'
@@ -4169,17 +4174,18 @@ async function abVcSearch() {
       box.innerHTML = `<span style="color:var(--muted);font-size:0.8rem">No images match "${esc(q)}" anywhere on Vision (${data.searched.toLocaleString()} non-audio files searched). Try fewer/other words, or Replace cover… to upload one.</span>`
       return
     }
+    _abVcHits = data.images
     box.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px">
-      ${data.images.map(im => `
+      ${data.images.map((im, hi) => `
         <div style="border:1px solid var(--border);border-radius:6px;padding:8px;text-align:center">
-          <div class="ab-vthumb" data-path="${esc(im.path)}" style="width:100%;aspect-ratio:1;background:var(--bg-lift);border-radius:4px;margin-bottom:6px;display:flex;align-items:center;justify-content:center;color:var(--muted);overflow:hidden">🖼</div>
+          <div class="ab-vthumb" data-hi="${hi}" style="width:100%;aspect-ratio:1;background:var(--bg-lift);border-radius:4px;margin-bottom:6px;display:flex;align-items:center;justify-content:center;color:var(--muted);overflow:hidden">🖼</div>
           <div style="font-size:0.72rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(im.path)}">${esc(im.name)}</div>
-          <button class="btn btn-ghost" style="margin-top:4px;font-size:0.74rem" onclick='abUseVisionCover(${JSON.stringify(im.path)})'>Use as cover</button>
+          <button class="btn btn-ghost" style="margin-top:4px;font-size:0.74rem" onclick="abUseVisionCover(_abVcHits[${hi}].path)">Use as cover</button>
         </div>`).join('')}
     </div>`
     box.querySelectorAll('.ab-vthumb').forEach(async el => {
       try {
-        const r = await api(`/api/ingest/album/vision-image?path=${encodeURIComponent(el.dataset.path)}`)
+        const r = await api(`/api/ingest/album/vision-image?path=${encodeURIComponent(_abVcHits[Number(el.dataset.hi)].path)}`)
         if (!r.ok) return
         const blob = await r.blob()
         el.innerHTML = `<img src="${URL.createObjectURL(blob)}" style="width:100%;height:100%;object-fit:cover">`
