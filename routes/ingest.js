@@ -3858,8 +3858,34 @@ router.get('/catalogue/:catNo/status', adminAuth, async (req, res) => {
   // Also pull rows for this catalogue out of the preloaded
   // Gallo_Metadata_Extract.xlsx cache. Used to backfill missing ISRCs and
   // surface tracks that exist in the spreadsheet but in none of the FM DBs.
-  const metaTracks = lookupAlbumTracks(catalogueNo) || []
-  const metadata = { ok: true, count: metaTracks.length, tracks: metaTracks }
+  // A cold server (fresh boot) has an empty cache for ~2½ min while the S3
+  // catalogue downloads — reading it then would show ✗ metadata for every
+  // track. Say so instead of lying; the chip shows the message.
+  if (!getStatus().loaded) {
+    loadMetadata()
+    var metadataLoading = true
+  }
+  let metaTracks = metadataLoading ? [] : (lookupAlbumTracks(catalogueNo) || [])
+  let metaVia = metaTracks.length ? 'catalogue' : null
+  // Barcode fallback: re-issues rename the catalogue (CDPS 004 is the CD of
+  // TGE 105) but keep the barcode. When the catalogue lookup finds nothing,
+  // reach the cache album through the FM tracks' barcodes instead — otherwise
+  // every renamed re-issue shows ✗ metadata despite being in the cache.
+  if (!metaTracks.length && !metadataLoading) {
+    const barcodes = new Set(
+      [...gallo.tracks, ...cms2024.tracks, ...streamer.tracks]
+        .map(t => String(t.barcode || '').trim()).filter(Boolean))
+    const cats = new Set()
+    for (const bc of barcodes) for (const c of lookupCataloguesByBarcode(bc)) cats.add(c)
+    const seenRows = new Set()
+    for (const c of cats) for (const row of lookupAlbumTracks(c)) {
+      if (!seenRows.has(row)) { seenRows.add(row); metaTracks.push(row) }
+    }
+    if (metaTracks.length) metaVia = `barcode (cache catalogue: ${[...cats].join(', ')})`
+  }
+  const metadata = metadataLoading
+    ? { ok: false, error: 'cache still loading (~2½ min after a restart) — re-check shortly', count: 0, tracks: [] }
+    : { ok: true, count: metaTracks.length, tracks: metaTracks, via: metaVia }
 
   // Build the per-track matrix. Key on ISRC where possible; fall back to
   // sequence number + filename. The three DBs use slightly different track

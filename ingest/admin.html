@@ -5764,6 +5764,9 @@ function renderDbSyncStatus(data) {
     chip('CMS 2024',  c.cms2024  || 0, data.cms2024?.error),
     chip('Streamer',  c.streamer || 0, data.streamer?.error),
     chip('Metadata',  c.metadata || 0, data.metadata?.error),
+    // Re-issue rename: cache album found through the barcode, not this catalogue
+    (data.metadata?.via && data.metadata.via.startsWith('barcode'))
+      ? `<span style="padding:5px 10px;font-size:0.74rem;color:var(--amber)">metadata matched via ${esc(data.metadata.via)}</span>` : '',
   ].join(' ')
   countsEl.style.display = 'flex'
 
