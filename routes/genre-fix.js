@@ -16,6 +16,7 @@ router.get('/list', adminAuth, async (req, res) => {
   try {
     const genre = String(req.query.genre || '').trim()
     if (!genre) return res.status(400).json({ error: 'genre is required' })
+    // "(blank)" reviews the repair queue: every track with an EMPTY Local Genre.
     const songs = await findSongsByLocalGenre(genre)
     const byArtist = new Map()
     for (const s of songs) {

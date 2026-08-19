@@ -1167,7 +1167,7 @@
           tracks in the loaded genre</strong> (their tracks in other genres are untouched).
         </p>
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
-          <input id="gfGenre" list="gfGenreList" placeholder="Local Genre to review…" style="min-width:220px">
+          <input id="gfGenre" list="gfGenreList" placeholder="Local Genre to review… (or “(blank)” for tracks with none)" style="min-width:260px">
           <datalist id="gfGenreList"></datalist>
           <button class="btn" onclick="gfLoad()">Load</button>
           <span id="gfStatus" class="muted"></span>
@@ -6239,7 +6239,8 @@ async function gfInitGenres() {
   try {
     const r = await fetch('/api/genres'); const j = await r.json()
     const dl = document.getElementById('gfGenreList')
-    dl.innerHTML = (j.genres || []).map(g => `<option value="${g.replace(/"/g,'&quot;')}">`).join('')
+    // "(blank)" reviews the repair queue — every track with an EMPTY Local Genre
+    dl.innerHTML = ['(blank)', ...(j.genres || [])].map(g => `<option value="${g.replace(/"/g,'&quot;')}">`).join('')
   } catch (e) { /* datalist stays empty; free text still works */ }
 }
 gfInitGenres()
