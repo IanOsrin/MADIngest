@@ -279,6 +279,7 @@
     <!-- Tabs -->
     <nav class="admin-tabs">
       <button class="tab-btn active" data-tab="catalog" onclick="showTab('catalog')">Catalogue</button>
+      <button class="tab-btn" data-tab="album" onclick="showTab('album')">Album</button>
       <button class="tab-btn" data-tab="ddex" onclick="showTab('ddex')">DDEX</button>
       <button class="tab-btn" data-tab="excel" onclick="showTab('excel')">Excel</button>
       <button class="tab-btn" data-tab="dbsync" onclick="showTab('dbsync')">DB Sync</button>
@@ -312,6 +313,29 @@
     </div>
 
     <!-- ── FM Submit tab ────────────────────────────────────── -->
+
+    <!-- ── Album tab — mini FileMaker page over Gallo Catalogue ── -->
+    <div id="tab-album" class="tab-panel">
+      <div class="import-section">
+        <h3>Album — Gallo Catalogue</h3>
+        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:12px">
+          Search by album title, artist, catalogue number, track or ISRC — pick an album to open
+          its page: cover, album details and every song, all editable in place. Edits save
+          <strong>straight to Gallo Catalogue</strong> (album-level fields update every song of
+          the album). You can add tracks to an album, start a brand-new album, and replace the cover.
+        </p>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+          <input id="abSearch" type="text" placeholder="Search albums…  (title, artist, catalogue, ISRC)"
+            onkeydown="if(event.key==='Enter')abDoSearch()"
+            style="flex:1;min-width:260px;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:8px 12px;color:var(--text);font-family:inherit;font-size:0.9rem;outline:none">
+          <button class="btn btn-ghost" onclick="abDoSearch()">Search</button>
+          <button class="btn btn-ghost" onclick="abNewAlbumForm()">＋ New album</button>
+          <span id="abStatus" style="font-size:0.8rem;color:var(--muted)"></span>
+        </div>
+        <div id="abResults" style="display:none;display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px"></div>
+        <div id="abPage" style="display:none"></div>
+      </div>
+    </div>
 
     <!-- ── DDEX tab ────────────────────────────────────────── -->
     <div id="tab-ddex" class="tab-panel">
@@ -505,11 +529,18 @@
       <div class="import-section">
         <h3>Cache Viewer &amp; Editor</h3>
         <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
-          Browse the metadata extract like a spreadsheet — click a column header to sort, filter
-          per column, or search across everything. <strong>Double-click a cell to edit it</strong>
-          (Enter saves, Esc cancels), ✕ deletes a row. Album-level fields (album title/artist,
-          label, ℗/© lines, dates, catalogue, barcode, language) save to every track of the
-          album. Saves land in the cache immediately and queue up on the
+          Browse the metadata extract like a spreadsheet — click a column header to sort (drag its
+          edge to resize), filter per column, or search across everything.
+          It works like Excel: <strong>click a cell and just type</strong> to replace its value
+          (double-click or F2 edits in place), <strong>arrow keys move</strong>, Enter saves and
+          moves down, Tab saves and moves right, Esc cancels; ✕ deletes a row.
+          <strong>Shift+↓/↑ (or shift-click)</strong> selects a column range — then
+          <strong>⌘/Ctrl-D</strong> fills the top value down, <strong>Enter</strong> types one
+          value into every selected row, and <strong>⌘/Ctrl-V</strong> pastes a block copied from
+          Excel (rows × columns, anchored at the selection). Album-level fields (album title/artist,
+          label, ℗/© lines, dates,
+          catalogue, barcode, language) save to every track of the album — bulk edits touching
+          several albums ask first. Saves land in the cache immediately and queue up on the
           <strong>⇪ Push changes to databases</strong> button — click it when you're done editing
           to review old → new per matched record and push to Gallo Catalogue, CMS 2024 and
           MadStreamer in one go. For bulk corrections:
@@ -3792,6 +3823,598 @@ async function runDdexImport() {
   }
 }
 
+// ── Album tab — mini FileMaker page over Gallo Catalogue ────────────────────
+// Search → album cards → album page (cover + header + songs), all editable in
+// place. Every save goes straight to Gallo via cheap single-record writes.
+let _abAlbum = null   // { catalogue, tracks, header }
+
+// Album-level fields shown in the page header; saving one updates EVERY song
+// record of the catalogue (Gallo keeps album fields on each song row).
+const AB_HEADER_FIELDS = [
+  ['album_title', 'Album Title'], ['album_artist', 'Album Artist'], ['label', 'Label'],
+  ['barcode', 'Barcode'], ['release_date', 'Release Date'], ['original_release_date', 'Orig. Release'],
+  ['p_line', '℗ line'], ['c_line', '© line'], ['language', 'Language'],
+]
+const AB_TRACK_COLS = [
+  ['seq', '#',            t => t.sequence_no ?? ''],
+  ['track_name', 'Track', t => t.title || ''],
+  ['track_artist', 'Artist', t => t.artist_name || ''],
+  ['isrc', 'ISRC',        t => t.isrc || ''],
+  ['genre', 'Genre',      t => t.genre || ''],
+  ['duration', 'Duration', t => t.duration_sec != null ? `${Math.floor(t.duration_sec/60)}:${String(t.duration_sec%60).padStart(2,'0')}` : ''],
+  ['composer', 'Composers', t => (t.composers || []).join('; ')],
+  ['producer', 'Producers', t => (t.producers || []).join('; ')],
+  ['publisher', 'Publishers', t => t.publishers || ''],
+  ['parental', 'Parental', t => t.explicit ? 'Explicit' : ''],
+]
+
+async function abDoSearch() {
+  const q = $('abSearch').value.trim()
+  if (q.length < 2) { showToast('Type at least 2 characters', 'error'); return }
+  $('abStatus').textContent = '⟳ Searching Gallo…'
+  $('abPage').style.display = 'none'
+  try {
+    const res  = await api(`/api/ingest/album/search?q=${encodeURIComponent(q)}`)
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    $('abStatus').textContent = `${data.albums.length} album(s)`
+    const box = $('abResults')
+    box.style.display = 'grid'
+    box.innerHTML = data.albums.map(a => `
+      <div onclick="abOpenAlbum('${esc(a.catalogue).replace(/'/g, "\\'")}')"
+        style="border:1px solid var(--border);border-radius:8px;padding:10px;cursor:pointer;background:var(--bg)">
+        <div class="ab-cover" data-cat="${esc(a.catalogue)}"
+          style="width:100%;aspect-ratio:1;background:var(--bg-lift);border-radius:6px;margin-bottom:8px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:1.6rem;overflow:hidden">♪</div>
+        <div style="font-weight:600;font-size:0.86rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.album_title || '(no title)')}</div>
+        <div style="font-size:0.78rem;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.album_artist || '')}</div>
+        <div style="font-size:0.74rem;color:var(--muted)">${esc(a.catalogue)} · ${a.hits} match(es)</div>
+      </div>`).join('') || '<div style="color:var(--muted)">No albums found.</div>'
+    box.querySelectorAll('.ab-cover').forEach(el => abLoadCover(el, el.dataset.cat))
+  } catch (err) {
+    $('abStatus').textContent = `✗ ${err.message}`
+    showToast(err.message, 'error')
+  }
+}
+
+// <img> can't carry the Bearer header — fetch the cover and objectURL it in.
+async function abLoadCover(el, cat) {
+  try {
+    const res = await api(`/api/ingest/album/cover?catalogue=${encodeURIComponent(cat)}`)
+    if (!res.ok) return
+    const blob = await res.blob()
+    if (!blob.type.startsWith('image')) return
+    el.innerHTML = `<img src="${URL.createObjectURL(blob)}" style="width:100%;height:100%;object-fit:cover">`
+  } catch { /* no cover — leave the ♪ */ }
+}
+
+async function abOpenAlbum(catalogue) {
+  $('abStatus').textContent = `⟳ Loading ${catalogue}…`
+  try {
+    const res  = await api(`/api/ingest/album/detail?catalogue=${encodeURIComponent(catalogue)}`)
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    const first = data.tracks[0] || {}
+    _abAlbum = {
+      catalogue,
+      tracks: data.tracks,
+      header: {
+        album_title:  first.album_title || '', album_artist: first.album_artist || first.artist_name || '',
+        label: first.label || '', barcode: first.barcode || '',
+        release_date: first.release_date || '', original_release_date: first.original_release_date || '',
+        p_line: first.pline_text || '', c_line: first.cline_text || '', language: first.language || '',
+      },
+    }
+    $('abStatus').textContent = ''
+    abRenderPage()
+  } catch (err) {
+    $('abStatus').textContent = `✗ ${err.message}`
+    showToast(err.message, 'error')
+  }
+}
+
+function abRenderPage() {
+  const a = _abAlbum
+  $('abResults').style.display = 'none'
+  const page = $('abPage')
+  page.style.display = 'block'
+  page.innerHTML = `
+    <div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:16px">
+      <div style="width:190px;flex-shrink:0">
+        <div id="abPageCover" style="width:190px;height:190px;background:var(--bg-lift);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:2.2rem;overflow:hidden">♪</div>
+        <label class="btn btn-ghost" style="margin-top:8px;width:100%;text-align:center;cursor:pointer;display:block">
+          Replace cover…
+          <input type="file" accept="image/*" style="display:none" onchange="abUploadCover(this.files[0])">
+        </label>
+        <button class="btn btn-ghost" style="margin-top:6px;width:100%" onclick="abPickVisionCover()"
+          title="Pick a cover image already sitting in this album's Vision folder">🔍 Cover from Vision</button>
+      </div>
+      <div style="flex:1;min-width:280px">
+        <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:10px">
+          <strong style="font-size:1.05rem">${esc(a.header.album_title || '(no title)')}</strong>
+          <span style="color:var(--muted)">${esc(a.catalogue)}</span>
+          <button class="btn btn-ghost" style="margin-left:auto;font-size:0.78rem" onclick="$('abPage').style.display='none';$('abResults').style.display='grid'">← Back to results</button>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px">
+          ${AB_HEADER_FIELDS.map(([k, label]) => `
+            <div>
+              <label style="font-size:0.72rem;color:var(--muted);display:block">${esc(label)}</label>
+              <input data-abh="${k}" value="${esc(a.header[k] || '')}"
+                onkeydown="if(event.key==='Enter')abSaveHeaderField(this)"
+                style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:5px 8px;color:var(--text);font-family:inherit;font-size:0.82rem;outline:none">
+            </div>`).join('')}
+        </div>
+        <div style="font-size:0.72rem;color:var(--muted);margin-top:6px">Enter saves a field to ALL ${a.tracks.length} song record(s) of this album.</div>
+      </div>
+    </div>
+    <div style="overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius)">
+      <table style="font-size:0.8rem;min-width:980px"><thead><tr>
+        ${AB_TRACK_COLS.map(([, label]) => `<th>${esc(label)}</th>`).join('')}<th>Audio</th>
+      </tr></thead><tbody id="abTrackBody">
+        ${a.tracks.map((t, ti) => `<tr>${AB_TRACK_COLS.map(([key, , get]) =>
+          `<td data-ti="${ti}" data-key="${key}" ondblclick="abEditCell(this)"
+             style="white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis;cursor:cell">${esc(String(get(t)))}</td>`).join('')}
+          <td style="white-space:nowrap" id="abAudioCell${ti}">${abAudioCellHtml(t, ti)}</td></tr>`).join('')
+        || `<tr><td colspan="${AB_TRACK_COLS.length + 1}" style="padding:14px;color:var(--muted);text-align:center">No songs yet — add the first one below.</td></tr>`}
+      </tbody></table>
+    </div>
+    <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap">
+      <button class="btn btn-ghost" onclick="abAddTrackForm()">＋ Add track</button>
+      <button class="btn btn-ghost" onclick="abLinkAudio()">🔗 Link audio from Vision</button>
+      <button class="btn btn-ghost" onclick="abMakeMp3s()">♫ Make streamer MP3s</button>
+      <button class="btn btn-ghost" onclick="abPushCoverMad()">⇪ Push cover to MAD</button>
+      <span id="abActionStatus" style="font-size:0.8rem;color:var(--muted);align-self:center"></span>
+    </div>
+    <div id="abLinkPanel" style="display:none;margin-top:10px"></div>
+    <div id="abAddTrack" style="display:none;margin-top:10px"></div>
+    <audio id="abPlayer" style="display:none"></audio>`
+  abLoadCover($('abPageCover'), a.catalogue)
+}
+
+// Audio column: state badge + play + upload/replace. Audio_URL (Vision ref)
+// is canonical; container/legacy-URL audio still plays via the resolver.
+function abAudioCellHtml(t, ti) {
+  const state = t.audio_url_ref ? '<span style="color:var(--green,#4a4)">✓ Vision</span>'
+              : (t.audio_container_url || t.s3_url) ? '<span style="color:var(--amber)">legacy</span>'
+              : '<span style="color:var(--muted)">—</span>'
+  return `${state}
+    <button class="btn btn-ghost" style="padding:0 7px;font-size:0.74rem" title="Play" onclick="abPlay(${ti}, this)">▶</button>
+    <label class="btn btn-ghost" style="padding:0 7px;font-size:0.74rem;cursor:pointer" title="Upload / replace the master (goes to Vision; Audio_URL is repointed — the old master stays archived)">
+      ⬆<input type="file" accept=".wav,.flac,.aif,.aiff" style="display:none" onchange="abUploadAudio(${ti}, this.files[0])">
+    </label>
+    <button class="btn btn-ghost" style="padding:0 7px;font-size:0.74rem" title="Pick a file already ON Vision (link by reference — no upload)" onclick="abPickVisionFile(${ti})">🔍</button>`
+}
+
+// Replace-by-reference: search the Vision index and point this track's
+// Audio_URL at an existing file. Nothing moves; nothing is uploaded.
+async function abPickVisionFile(ti) {
+  const t = _abAlbum.tracks[ti]
+  const panel = $('abLinkPanel')
+  panel.style.display = 'block'
+  panel.innerHTML = `<div style="border:1px solid var(--border);border-radius:8px;padding:12px">
+    <div style="font-weight:600;margin-bottom:6px">Pick Vision audio for #${t.sequence_no ?? '?'} ${esc(t.title || '')}</div>
+    <div style="display:flex;gap:8px;margin-bottom:8px">
+      <input id="abVfQ" type="text" placeholder="Search Vision files… (name, folder, catalogue)"
+        value="${esc((t.title || _abAlbum.catalogue || '').toLowerCase())}"
+        onkeydown="if(event.key==='Enter')abVfSearch(${ti})"
+        style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px 10px;color:var(--text);font-family:inherit;font-size:0.82rem;outline:none">
+      <button class="btn btn-ghost" onclick="abVfSearch(${ti})">Search</button>
+      <button class="btn btn-ghost" onclick="$('abLinkPanel').style.display='none'">Close</button>
+    </div>
+    <div id="abVfHits" style="font-size:0.8rem;max-height:300px;overflow:auto"></div>
+  </div>`
+  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  $('abVfQ').focus()
+  abVfSearch(ti)
+}
+
+async function abVfSearch(ti) {
+  const q = $('abVfQ').value.trim()
+  const box = $('abVfHits')
+  if (q.length < 2) { box.innerHTML = '<span style="color:var(--muted)">Type at least 2 characters.</span>'; return }
+  box.innerHTML = '<span style="color:var(--muted)">⟳ Searching the Vision index…</span>'
+  try {
+    const res  = await api(`/api/ingest/album/vision-files?q=${encodeURIComponent(q)}`)
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    box.innerHTML = data.hits.map(h => `
+      <div style="display:flex;gap:8px;align-items:center;padding:3px 0">
+        <button class="btn btn-ghost" style="padding:0 8px;font-size:0.74rem" onclick='abVfLink(${ti}, ${JSON.stringify(h.path)})'>Use</button>
+        <span title="${esc(h.path)}">${esc(h.path)}</span>
+        ${h.size ? `<span style="color:var(--muted);font-size:0.72rem">${(h.size / 1048576).toFixed(1)}MB</span>` : ''}
+      </div>`).join('') || '<span style="color:var(--muted)">No Vision files match.</span>'
+  } catch (err) {
+    box.innerHTML = `<span style="color:var(--red)">✗ ${esc(err.message)}</span>`
+  }
+}
+
+async function abVfLink(ti, path) {
+  const t = _abAlbum.tracks[ti]
+  if (t.audio_url_ref && !confirm(`Replace this track's current audio link?\n\nnow: ${t.audio_url_ref}\nnew: ${path}\n\n(The old master stays on Vision — only the pointer changes.)`)) return
+  try {
+    const res  = await api('/api/ingest/album/link-audio/apply', 'POST', { assignments: [{ recordId: t.fm_record_id, path }] })
+    const data = await res.json()
+    if (!res.ok || data.failed) throw new Error(data.results?.[0]?.error || data.error || `HTTP ${res.status}`)
+    t.audio_url_ref = path
+    $(`abAudioCell${ti}`).innerHTML = abAudioCellHtml(t, ti)
+    $('abLinkPanel').style.display = 'none'
+    showToast(`Linked to ${path.split('/').pop()}`)
+  } catch (err) {
+    showToast(err.message, 'error')
+  }
+}
+
+function abPlay(ti, btn) {
+  const t = _abAlbum.tracks[ti]
+  const player = $('abPlayer')
+  const src = `/api/gallo/audio/${t.fm_record_id}`
+  if (!player.paused && player.dataset.rec === String(t.fm_record_id)) { player.pause(); btn.textContent = '▶'; return }
+  document.querySelectorAll('#abTrackBody button').forEach(b => { if (b.textContent === '⏸') b.textContent = '▶' })
+  player.src = src
+  player.dataset.rec = String(t.fm_record_id)
+  player.play().then(() => { btn.textContent = '⏸' })
+    .catch(err => showToast(`Playback failed: ${err.message}`, 'error'))
+  player.onended = () => { btn.textContent = '▶' }
+}
+
+async function abUploadAudio(ti, file) {
+  if (!file) return
+  const t = _abAlbum.tracks[ti]
+  const status = $('abActionStatus')
+  status.textContent = `⟳ Uploading ${file.name} to Vision…`
+  const fd = new FormData()
+  fd.append('catalogue', _abAlbum.catalogue)
+  fd.append('recordId', t.fm_record_id)
+  fd.append('audio', file)
+  try {
+    const res  = await fetch('/api/ingest/album/audio-upload', { method: 'POST', headers: { Authorization: `Bearer ${adminToken}` }, body: fd })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    t.audio_url_ref = data.path
+    $(`abAudioCell${ti}`).innerHTML = abAudioCellHtml(t, ti)
+    status.textContent = ''
+    showToast(`Audio linked: ${data.path.split('/').pop()}${data.detailsField ? ' (+Audio details)' : ''}`)
+  } catch (err) {
+    status.textContent = ''
+    showToast(err.message, 'error')
+  }
+}
+
+async function abLinkAudio() {
+  const status = $('abActionStatus')
+  status.textContent = '⟳ Matching tracks to Vision files…'
+  try {
+    const res  = await api('/api/ingest/album/link-audio/preview', 'POST', { catalogue: _abAlbum.catalogue })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    status.textContent = ''
+    const panel = $('abLinkPanel')
+    panel.style.display = 'block'
+    panel.innerHTML = `<div style="border:1px solid var(--border);border-radius:8px;padding:12px">
+      <div style="font-weight:600;margin-bottom:6px">Vision audio for ${esc(_abAlbum.catalogue)}
+        <span style="color:var(--muted);font-weight:400;font-size:0.78rem">· ${data.matched.length} matched · ${data.tracksNoAudio.length} track(s) without a file · ${data.filesNoTrack.length} file(s) without a track</span></div>
+      ${data.folders.length ? `<div style="font-size:0.76rem;color:var(--muted);margin-bottom:8px">Folder(s): ${esc(data.folders.join(' | '))}</div>` : ''}
+      ${data.matched.map((m, i) => `
+        <label style="display:flex;gap:8px;align-items:center;padding:4px 0;font-size:0.8rem;cursor:pointer">
+          <input type="checkbox" class="ab-link-cb" data-i="${i}" checked>
+          <span>#${m.seq ?? '?'} ${esc(m.title || '')}</span>
+          <span style="color:var(--muted)">→ ${esc(m.path.split('/').pop())}</span>
+          ${m.current ? `<span style="color:var(--amber);font-size:0.72rem">replaces current link</span>` : ''}
+        </label>`).join('') || '<div style="color:var(--muted);font-size:0.8rem">No filename matches found.</div>'}
+      ${data.tracksNoAudio.length ? `<div style="font-size:0.76rem;color:var(--amber);margin-top:6px">No file matched: ${esc(data.tracksNoAudio.map(t => `#${t.seq ?? '?'} ${t.title || ''}`).join(', '))}</div>` : ''}
+      <div style="margin-top:10px;display:flex;gap:8px">
+        <button class="btn" onclick="abLinkApply()">Link ticked</button>
+        <button class="btn btn-ghost" onclick="$('abLinkPanel').style.display='none'">Cancel</button>
+      </div>
+    </div>`
+    panel.dataset.matched = JSON.stringify(data.matched)
+  } catch (err) {
+    status.textContent = ''
+    showToast(err.message, 'error')
+  }
+}
+
+async function abLinkApply() {
+  const matched = JSON.parse($('abLinkPanel').dataset.matched || '[]')
+  const picked  = [...document.querySelectorAll('.ab-link-cb:checked')].map(cb => matched[Number(cb.dataset.i)]).filter(Boolean)
+  if (!picked.length) { showToast('Nothing ticked', 'error'); return }
+  const status = $('abActionStatus')
+  status.textContent = `⟳ Writing Audio_URL on ${picked.length} record(s)…`
+  try {
+    const res  = await api('/api/ingest/album/link-audio/apply', 'POST',
+      { assignments: picked.map(m => ({ recordId: m.recordId, path: m.path })) })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    status.textContent = ''
+    $('abLinkPanel').style.display = 'none'
+    showToast(data.failed ? `${data.linked} linked, ${data.failed} failed` : `${data.linked} track(s) linked to Vision audio`, data.failed ? 'error' : 'success')
+    abOpenAlbum(_abAlbum.catalogue)
+  } catch (err) {
+    status.textContent = ''
+    showToast(err.message, 'error')
+  }
+}
+
+// Cover picker: search the WHOLE Vision drive for images (the index's
+// non-audio list), pre-seeded with the catalogue number. Thumbnails inline.
+function abPickVisionCover() {
+  const panel = $('abLinkPanel')
+  panel.style.display = 'block'
+  panel.innerHTML = `<div style="border:1px solid var(--border);border-radius:8px;padding:12px">
+    <div style="font-weight:600;margin-bottom:8px">Cover images on Vision — whole drive
+      <button class="btn btn-ghost" style="float:right;padding:2px 10px" onclick="$('abLinkPanel').style.display='none'">✕</button></div>
+    <div style="display:flex;gap:8px;margin-bottom:10px">
+      <input id="abVcQ" type="text" placeholder="Search all Vision images… (catalogue, album, artist, filename)"
+        value="${esc(_abAlbum.catalogue || '')}"
+        onkeydown="if(event.key==='Enter')abVcSearch()"
+        style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px 10px;color:var(--text);font-family:inherit;font-size:0.82rem;outline:none">
+      <button class="btn btn-ghost" onclick="abVcSearch()">Search</button>
+    </div>
+    <div id="abVcHits"></div>
+  </div>`
+  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  $('abVcQ').focus()
+  abVcSearch()
+}
+
+async function abVcSearch() {
+  const q = $('abVcQ').value.trim()
+  const box = $('abVcHits')
+  if (q.length < 2) { box.innerHTML = '<span style="color:var(--muted);font-size:0.8rem">Type at least 2 characters.</span>'; return }
+  box.innerHTML = '<span style="color:var(--muted);font-size:0.8rem">⟳ Searching every image on the drive…</span>'
+  try {
+    const res  = await api(`/api/ingest/album/vision-images?q=${encodeURIComponent(q)}`)
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    if (!data.images.length) {
+      box.innerHTML = `<span style="color:var(--muted);font-size:0.8rem">No images match "${esc(q)}" anywhere on Vision (${data.searched.toLocaleString()} non-audio files searched). Try fewer/other words, or Replace cover… to upload one.</span>`
+      return
+    }
+    box.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px">
+      ${data.images.map(im => `
+        <div style="border:1px solid var(--border);border-radius:6px;padding:8px;text-align:center">
+          <div class="ab-vthumb" data-path="${esc(im.path)}" style="width:100%;aspect-ratio:1;background:var(--bg-lift);border-radius:4px;margin-bottom:6px;display:flex;align-items:center;justify-content:center;color:var(--muted);overflow:hidden">🖼</div>
+          <div style="font-size:0.72rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(im.path)}">${esc(im.name)}</div>
+          <button class="btn btn-ghost" style="margin-top:4px;font-size:0.74rem" onclick='abUseVisionCover(${JSON.stringify(im.path)})'>Use as cover</button>
+        </div>`).join('')}
+    </div>`
+    box.querySelectorAll('.ab-vthumb').forEach(async el => {
+      try {
+        const r = await api(`/api/ingest/album/vision-image?path=${encodeURIComponent(el.dataset.path)}`)
+        if (!r.ok) return
+        const blob = await r.blob()
+        el.innerHTML = `<img src="${URL.createObjectURL(blob)}" style="width:100%;height:100%;object-fit:cover">`
+      } catch { /* leave placeholder */ }
+    })
+  } catch (err) {
+    box.innerHTML = `<span style="color:var(--red);font-size:0.8rem">✗ ${esc(err.message)}</span>`
+  }
+}
+
+async function abUseVisionCover(path) {
+  if (!confirm(`Use this Vision image as the Gallo cover for ${_abAlbum.catalogue}?\n\n${path}`)) return
+  const status = $('abActionStatus')
+  status.textContent = '⟳ Writing cover into the Gallo Artwork container…'
+  try {
+    const res  = await api('/api/ingest/album/cover-from-vision', 'POST', { catalogue: _abAlbum.catalogue, path })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    status.textContent = ''
+    $('abLinkPanel').style.display = 'none'
+    showToast(`Cover ${data.action} from ${path.split('/').pop()}`)
+    abLoadCover($('abPageCover'), _abAlbum.catalogue)
+  } catch (err) {
+    status.textContent = ''
+    showToast(err.message, 'error')
+  }
+}
+
+// Chain the existing MAD artwork endpoints: ensure the GMVi record exists,
+// then push the current Gallo cover to the S3 home the streamer reads.
+async function abPushCoverMad() {
+  const status = $('abActionStatus')
+  status.textContent = '⟳ Reading Gallo cover…'
+  try {
+    const coverRes = await api(`/api/ingest/album/cover?catalogue=${encodeURIComponent(_abAlbum.catalogue)}`)
+    if (!coverRes.ok) throw new Error('This album has no Gallo cover yet — upload one first')
+    const blob = await coverRes.blob()
+    status.textContent = '⟳ Ensuring MAD artwork record…'
+    const ensRes  = await api('/api/ingest/madstreamer/artwork/ensure', 'POST', { catalogue_no: _abAlbum.catalogue, create: true })
+    const ens     = await ensRes.json()
+    if (!ensRes.ok) throw new Error(ens.error || `HTTP ${ensRes.status}`)
+    const gmvi = ens.record?.gmvi
+    if (!gmvi) throw new Error('MAD artwork record has no GMVi number')
+    status.textContent = `⟳ Uploading cover to MAD (GMVi ${gmvi})…`
+    const fd = new FormData()
+    fd.append('gmvi', gmvi)
+    fd.append('image', new File([blob], 'cover.jpg', { type: blob.type || 'image/jpeg' }))
+    const upRes = await fetch('/api/ingest/madstreamer/artwork/upload', { method: 'POST', headers: { Authorization: `Bearer ${adminToken}` }, body: fd })
+    const up    = await upRes.json()
+    if (!upRes.ok) throw new Error(up.error || `HTTP ${upRes.status}`)
+    status.textContent = ''
+    showToast(`Cover ${up.replaced ? 'replaced' : 'uploaded'} on MAD (GMVi ${gmvi}). Note: the site serves the resized derivative — the nightly resizer picks this up.`)
+  } catch (err) {
+    status.textContent = ''
+    showToast(err.message, 'error')
+  }
+}
+
+// Convert every track's master to the streamer MP3 (existing per-record
+// endpoint; writes File URL on the FM record). Sequential, with progress.
+async function abMakeMp3s() {
+  const tracks = _abAlbum.tracks.filter(t => t.audio_url_ref || t.audio_container_url || t.s3_url)
+  if (!tracks.length) { showToast('No tracks with audio to convert', 'error'); return }
+  if (!confirm(`Convert ${tracks.length} track(s) to MP3 for the streamer? Each conversion writes the File URL field on the Gallo record.`)) return
+  const status = $('abActionStatus')
+  let ok = 0, failed = 0
+  for (const [i, t] of tracks.entries()) {
+    status.textContent = `⟳ MP3 ${i + 1}/${tracks.length}: ${t.title || t.fm_record_id}…`
+    try {
+      const res  = await fetch(`/api/gallo/audio/${t.fm_record_id}/convert-mp3`)
+      const data = await res.json()
+      if (data.ok) ok++
+      else { failed++; console.warn('[album mp3]', t.title, data) }
+    } catch { failed++ }
+  }
+  status.textContent = ''
+  showToast(failed ? `${ok} MP3(s) made, ${failed} failed (see console)` : `${ok} MP3(s) made and linked`, failed ? 'error' : 'success')
+}
+
+async function abSaveHeaderField(input) {
+  const key = input.dataset.abh
+  const val = input.value.trim()
+  if (String(_abAlbum.header[key] || '') === val) return
+  input.disabled = true
+  try {
+    const res  = await api('/api/ingest/album/album-patch', 'POST', { catalogue: _abAlbum.catalogue, fields: { [key]: val } })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    _abAlbum.header[key] = val
+    showToast(`${data.updated} song record(s) updated${data.failed ? `, ${data.failed} failed` : ''}`, data.failed ? 'error' : 'success')
+  } catch (err) {
+    showToast(err.message, 'error')
+    input.value = _abAlbum.header[key] || ''
+  } finally {
+    input.disabled = false
+  }
+}
+
+function abEditCell(td) {
+  if (td.querySelector('input')) return
+  const ti  = Number(td.dataset.ti)
+  const key = td.dataset.key
+  const track = _abAlbum.tracks[ti]
+  const col = AB_TRACK_COLS.find(([k]) => k === key)
+  const orig = String(col[2](track))
+  td.textContent = ''
+  const input = document.createElement('input')
+  input.value = orig
+  input.style.cssText = 'width:100%;min-width:90px;background:var(--bg);border:1px solid var(--gold);border-radius:3px;padding:2px 6px;font:inherit;color:var(--text);outline:none'
+  const restore = () => { td.textContent = orig }
+  input.onkeydown = async e => {
+    if (e.key === 'Escape') { restore(); return }
+    if (e.key !== 'Enter') return
+    e.preventDefault()
+    const val = input.value.trim()
+    if (val === orig.trim()) { restore(); return }
+    input.disabled = true
+    try {
+      const res  = await api(`/api/ingest/album/track/${track.fm_record_id}`, 'PATCH', { fields: { [key]: val } })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+      td.textContent = val
+      // keep the local model roughly in step for re-renders
+      if (key === 'track_name') track.title = val
+      else if (key === 'track_artist') track.artist_name = val
+      else if (key === 'seq') track.sequence_no = parseInt(val, 10) || null
+      else if (key === 'composer') track.composers = val.split(';').map(s => s.trim()).filter(Boolean)
+      else if (key === 'producer') track.producers = val.split(';').map(s => s.trim()).filter(Boolean)
+      else if (key === 'publisher') track.publishers = val
+      else if (key === 'genre') track.genre = val
+      else if (key === 'isrc') track.isrc = val
+      showToast('Saved to Gallo')
+    } catch (err) {
+      showToast(err.message, 'error')
+      restore()
+    }
+  }
+  input.onblur = () => { if (!input.disabled) restore() }
+  td.appendChild(input)
+  input.focus(); input.select()
+}
+
+function abAddTrackForm() {
+  const a = _abAlbum
+  const nextSeq = Math.max(0, ...a.tracks.map(t => t.sequence_no || 0)) + 1
+  const box = $('abAddTrack')
+  box.style.display = 'block'
+  const fields = [['seq', '#', nextSeq], ['track_name', 'Track name *', ''], ['track_artist', 'Track artist', a.header.album_artist],
+                  ['isrc', 'ISRC', ''], ['genre', 'Genre', ''], ['duration', 'Duration (M:SS)', ''],
+                  ['composer', 'Composers', ''], ['producer', 'Producers', ''], ['publisher', 'Publishers', '']]
+  box.innerHTML = `<div style="border:1px solid var(--border);border-radius:8px;padding:12px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;margin-bottom:10px">
+      ${fields.map(([k, label, v]) => `
+        <div><label style="font-size:0.72rem;color:var(--muted);display:block">${esc(label)}</label>
+        <input data-abnew="${k}" value="${esc(String(v))}"
+          style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:5px 8px;color:var(--text);font-family:inherit;font-size:0.82rem;outline:none"></div>`).join('')}
+    </div>
+    <button class="btn" onclick="abCreateTrack()">Create song record</button>
+    <button class="btn btn-ghost" onclick="$('abAddTrack').style.display='none'">Cancel</button>
+  </div>`
+}
+
+async function abCreateTrack() {
+  const a = _abAlbum
+  const f = {}
+  document.querySelectorAll('[data-abnew]').forEach(inp => { if (inp.value.trim()) f[inp.dataset.abnew] = inp.value.trim() })
+  if (!f.track_name) { showToast('Track name is required', 'error'); return }
+  const fields = {
+    ...f,
+    catalogue: a.catalogue,
+    album_title: a.header.album_title, album_artist: a.header.album_artist,
+    barcode: a.header.barcode, label: a.header.label,
+    release_date: a.header.release_date, original_release_date: a.header.original_release_date,
+    p_line: a.header.p_line, c_line: a.header.c_line, language: a.header.language,
+  }
+  try {
+    const res  = await api('/api/ingest/album/track', 'POST', { fields })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    showToast(`Song record created (rec ${data.recordId})`)
+    abOpenAlbum(a.catalogue)
+  } catch (err) {
+    showToast(err.message, 'error')
+  }
+}
+
+function abNewAlbumForm() {
+  _abAlbum = { catalogue: '', tracks: [], header: {} }
+  $('abResults').style.display = 'none'
+  const page = $('abPage')
+  page.style.display = 'block'
+  page.innerHTML = `<div style="border:1px solid var(--border);border-radius:8px;padding:14px;max-width:720px">
+    <strong>New album — Gallo Catalogue</strong>
+    <p style="font-size:0.78rem;color:var(--muted);margin:6px 0 12px">Creates the album's Tape Files Master record. Add songs afterwards on the album page.</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;margin-bottom:12px">
+      ${[['catalogue', 'Catalogue number *'], ...AB_HEADER_FIELDS].map(([k, label]) => `
+        <div><label style="font-size:0.72rem;color:var(--muted);display:block">${esc(label)}</label>
+        <input data-abna="${k}" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:5px 8px;color:var(--text);font-family:inherit;font-size:0.82rem;outline:none"></div>`).join('')}
+    </div>
+    <button class="btn" onclick="abCreateAlbum()">Create album</button>
+    <button class="btn btn-ghost" onclick="$('abPage').style.display='none'">Cancel</button>
+  </div>`
+}
+
+async function abCreateAlbum() {
+  const fields = {}
+  document.querySelectorAll('[data-abna]').forEach(inp => { if (inp.value.trim()) fields[inp.dataset.abna] = inp.value.trim() })
+  if (!fields.catalogue) { showToast('Catalogue number is required', 'error'); return }
+  try {
+    const res  = await api('/api/ingest/album/new', 'POST', { fields })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    showToast('Album created')
+    abOpenAlbum(fields.catalogue)
+  } catch (err) {
+    showToast(err.message, 'error')
+  }
+}
+
+async function abUploadCover(file) {
+  if (!file || !_abAlbum) return
+  const fd = new FormData()
+  fd.append('catalogue', _abAlbum.catalogue)
+  fd.append('image', file)
+  try {
+    const res  = await fetch('/api/ingest/album/cover', { method: 'POST', headers: { Authorization: `Bearer ${adminToken}` }, body: fd })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    showToast(`Cover ${data.action} (${(data.bytes / 1024).toFixed(0)}KB)`)
+    abLoadCover($('abPageCover'), _abAlbum.catalogue)
+  } catch (err) {
+    showToast(err.message, 'error')
+  }
+}
+
 // ── Excel tab: collapsible sections ─────────────────────────────────────────
 // Every .import-section on the Excel tab collapses/expands from its header.
 // State is remembered per section in localStorage; first visit shows the
@@ -3920,17 +4543,60 @@ async function xvLoadCache() {
   }
 }
 
+// Per-column widths (px), Excel-style drag on the header's right edge.
+// Persisted so the layout survives reloads.
+let _xvColW = {}
+try { _xvColW = JSON.parse(localStorage.getItem('xvColWidths') || '{}') } catch { _xvColW = {} }
+
+function xvApplyColWidths() {
+  let css = '#xvWrap td{max-width:340px;position:relative}\n' +
+            '#xvWrap td.xv-sel{background:rgba(212,175,55,0.10)}\n' +
+            '#xvWrap td.xv-anchor{outline:2px solid var(--gold);outline-offset:-2px;background:rgba(212,175,55,0.10)}\n' +
+            '#xvWrap td.xv-fillprev{outline:1px dashed var(--gold);outline-offset:-1px}\n' +
+            '#xvFillHandle{position:absolute;right:-1px;bottom:-1px;width:8px;height:8px;background:var(--gold);border:1px solid var(--bg);cursor:crosshair;z-index:3}\n'
+  for (const [col, w] of Object.entries(_xvColW)) {
+    const n = Number(col) + 2   // +1 delete column, +1 1-based nth-child
+    css += `#xvWrap th:nth-child(${n}), #xvWrap td:nth-child(${n}) { width:${w}px; min-width:${w}px; max-width:${w}px }\n`
+  }
+  let st = document.getElementById('xvColStyle')
+  if (!st) { st = document.createElement('style'); st.id = 'xvColStyle'; document.head.appendChild(st) }
+  st.textContent = css
+}
+
+// Delegated drag-to-resize on the header grips.
+document.addEventListener('mousedown', e => {
+  const grip = e.target.closest('.xv-grip')
+  if (!grip) return
+  e.preventDefault(); e.stopPropagation()
+  const col = Number(grip.dataset.col)
+  const th  = grip.closest('th')
+  const startX = e.clientX
+  const startW = th.offsetWidth
+  const move = ev => {
+    _xvColW[col] = Math.max(60, startW + (ev.clientX - startX))
+    xvApplyColWidths()
+  }
+  const up = () => {
+    document.removeEventListener('mousemove', move)
+    document.removeEventListener('mouseup', up)
+    try { localStorage.setItem('xvColWidths', JSON.stringify(_xvColW)) } catch {}
+  }
+  document.addEventListener('mousemove', move)
+  document.addEventListener('mouseup', up)
+})
+
 function xvBuildTable() {
   const sheet = _xvSheet
   $('xvWrap').innerHTML = `<table style="font-size:0.78rem"><thead>
     <tr><th style="position:sticky;top:0;z-index:2;width:26px"></th>${sheet.headers.map((h, i) =>
-      `<th id="xvTh${i}" style="position:sticky;top:0;z-index:2" onclick="xvSortBy(${i})">${esc(h)}</th>`).join('')}</tr>
+      `<th id="xvTh${i}" style="position:sticky;top:0;z-index:2" onclick="xvSortBy(${i})">${esc(h)}<span class="xv-grip" data-col="${i}" onclick="event.stopPropagation()" style="position:absolute;top:0;right:0;width:7px;height:100%;cursor:col-resize"></span></th>`).join('')}</tr>
     <tr><th class="xv-filter-th" style="position:sticky;z-index:2;background:var(--bg-lift);padding:4px 8px"></th>${sheet.headers.map((_, i) =>
       `<th class="xv-filter-th" style="position:sticky;z-index:2;background:var(--bg-lift);padding:4px 8px">
         <input type="text" class="xv-filter" data-col="${i}" placeholder="filter…" oninput="xvFilterChanged(${i}, this.value)"
           style="width:100%;min-width:70px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:3px 7px;font-size:0.74rem;color:var(--text);font-family:inherit;outline:none">
       </th>`).join('')}</tr>
   </thead><tbody id="xvBody"></tbody></table>`
+  xvApplyColWidths()
   $('xvWrap').style.display = 'block'
   // Pin the filter row just below the header row (its real rendered height)
   const headerH = $('xvTh0')?.offsetHeight || 34
@@ -3965,6 +4631,120 @@ function xvFilteredRows() {
   return rows
 }
 
+// ── Excel-style selection ────────────────────────────────────────────────────
+// Click selects a cell; shift-click extends the selection vertically within
+// one column (Excel's column-range gesture). The range drives fill-down
+// (Cmd/Ctrl+D), type-over (Enter/F2 on the range) and paste. Selection is
+// stored as visible-row indices, so it means "what you can see".
+let _xvSel = null   // { col, a, b } — a/b are indices into the rendered slice
+
+function xvSelectedRowIds() {
+  if (!_xvSel) return []
+  const vis = xvFilteredRows().slice(0, _xvShown)
+  const lo = Math.min(_xvSel.a, _xvSel.b), hi = Math.max(_xvSel.a, _xvSel.b)
+  return vis.slice(lo, hi + 1).map(r => r.i)
+}
+
+function xvCellClick(td, ev) {
+  const col = Number(td.dataset.col)
+  const vi  = td.parentElement.sectionRowIndex
+  if (ev.shiftKey && _xvSel && _xvSel.col === col) _xvSel.b = vi
+  else _xvSel = { col, a: vi, b: vi }
+  xvPaintSelection()
+}
+
+// ── Excel mouse behaviour ────────────────────────────────────────────────────
+// Press-and-drag selects a vertical range; the small gold square at the
+// bottom of the selection is the FILL HANDLE — drag it down and the selected
+// values repeat into the rows you sweep (Excel's signature gesture).
+let _xvDragSel  = false
+let _xvFillDrag = null   // { hi, to }
+
+document.addEventListener('mousedown', e => {
+  if (e.target.closest?.('#xvFillHandle')) {
+    e.preventDefault()
+    _xvFillDrag = { hi: Math.max(_xvSel.a, _xvSel.b), to: null }
+    return
+  }
+  const td = e.target.closest?.('#xvBody td[data-col]')
+  if (!td || td.querySelector('input')) return
+  e.preventDefault()   // stop native text-selection while dragging
+  xvCellClick(td, e)
+  if (!e.shiftKey) _xvDragSel = true
+})
+document.addEventListener('mousemove', e => {
+  if (!_xvDragSel && !_xvFillDrag) return
+  const td = e.target.closest?.('#xvBody td')
+  if (!td || td.parentElement.sectionRowIndex == null) return
+  const vi = td.parentElement.sectionRowIndex
+  if (_xvFillDrag) {
+    const to = Math.max(vi, _xvFillDrag.hi)
+    if (to !== _xvFillDrag.to) { _xvFillDrag.to = to; xvPaintFillPreview() }
+  } else if (vi !== _xvSel.b) {
+    _xvSel.b = vi
+    xvPaintSelection()
+  }
+})
+document.addEventListener('mouseup', () => {
+  _xvDragSel = false
+  if (_xvFillDrag) {
+    const { hi, to } = _xvFillDrag
+    _xvFillDrag = null
+    document.querySelectorAll('#xvBody td.xv-fillprev').forEach(td => td.classList.remove('xv-fillprev'))
+    if (to != null && to > hi) xvFillHandleTo(to)
+  }
+})
+
+function xvPaintFillPreview() {
+  document.querySelectorAll('#xvBody td.xv-fillprev').forEach(td => td.classList.remove('xv-fillprev'))
+  if (!_xvFillDrag || _xvFillDrag.to == null) return
+  const rows = $('xvBody').rows
+  for (let v = _xvFillDrag.hi + 1; v <= _xvFillDrag.to && v < rows.length; v++) {
+    rows[v].cells[_xvSel.col + 1]?.classList.add('xv-fillprev')
+  }
+}
+
+// Fill-handle drop: repeat the selection's values cyclically into the swept
+// rows (one value fills plainly; a two-row selection alternates, as in Excel).
+function xvFillHandleTo(to) {
+  const vis = xvFilteredRows().slice(0, _xvShown)
+  const key = XV_COLS[_xvSel.col][0]
+  const lo = Math.min(_xvSel.a, _xvSel.b), hi = Math.max(_xvSel.a, _xvSel.b)
+  const pattern = []
+  for (let v = lo; v <= hi && v < vis.length; v++) {
+    const val = _xvRaw[vis[v].i]?.[key]
+    pattern.push(val == null ? '' : String(val))
+  }
+  if (!pattern.length) return
+  const cellEdits = []
+  for (let v = hi + 1; v <= to && v < vis.length; v++) {
+    cellEdits.push({ i: vis[v].i, key, val: pattern[(v - hi - 1) % pattern.length] })
+  }
+  _xvSel.b = Math.min(to, vis.length - 1)
+  xvBulkApply(cellEdits)
+}
+
+function xvPaintSelection(scrollToAnchor = false) {
+  document.querySelectorAll('#xvBody td.xv-sel, #xvBody td.xv-anchor')
+    .forEach(td => td.classList.remove('xv-sel', 'xv-anchor'))
+  document.getElementById('xvFillHandle')?.remove()
+  if (!_xvSel) return
+  const lo = Math.min(_xvSel.a, _xvSel.b), hi = Math.max(_xvSel.a, _xvSel.b)
+  const rows = $('xvBody').rows
+  for (let v = lo; v <= hi && v < rows.length; v++) {
+    rows[v].cells[_xvSel.col + 1]?.classList.add(v === _xvSel.a ? 'xv-anchor' : 'xv-sel')
+  }
+  // Excel's fill handle on the last selected cell
+  const lastTd = rows[Math.min(hi, rows.length - 1)]?.cells[_xvSel.col + 1]
+  if (lastTd && lastTd.dataset.col != null) {
+    const h = document.createElement('div')
+    h.id = 'xvFillHandle'
+    h.title = 'Drag down to fill'
+    lastTd.appendChild(h)
+  }
+  if (scrollToAnchor) rows[_xvSel.a]?.cells[_xvSel.col + 1]?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+}
+
 function xvRenderBody() {
   const sheet = _xvSheet
   const rows  = xvFilteredRows()
@@ -3973,13 +4753,14 @@ function xvRenderBody() {
     `<tr><td style="padding:4px 6px"><button class="btn btn-ghost" title="Delete this row"
         style="padding:0 6px;font-size:0.72rem;color:var(--red);border-color:rgba(217,83,79,0.3)"
         onclick="xvDeleteRow(${r.i})">✕</button></td>${r.c.map((c, col) =>
-      `<td style="white-space:nowrap;max-width:340px;overflow:hidden;text-overflow:ellipsis;cursor:cell"
+      `<td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:cell"
          data-i="${r.i}" data-col="${col}" ondblclick="xvEditCell(this)" title="${esc(c)}">${esc(c)}</td>`
     ).join('')}</tr>`
   ).join('') || `<tr><td colspan="${sheet.headers.length + 1}" style="padding:16px;color:var(--muted);text-align:center">No rows match the filters.</td></tr>`
   const filtered = rows.length !== sheet.rows.length ? ` (filtered from ${sheet.rows.length})` : ''
   $('xvCount').textContent = `showing ${slice.length} of ${rows.length} row(s)${filtered}`
   $('xvMoreBar').style.display = rows.length > _xvShown ? 'block' : 'none'
+  xvPaintSelection()
 }
 
 // Expect-snapshot: a few identity fields as this grid last saw them — the
@@ -3997,53 +4778,211 @@ const XV_ALBUM_KEYS = ['album_title', 'album_artist', 'release_date', 'original_
 const XV_KEY_LABEL  = Object.fromEntries(XV_COLS.map(([k, l]) => [k, l]))
 const _xvNormCat    = s => String(s || '').trim().toLowerCase().replace(/[\s\-_]+/g, '')
 
-function xvEditCell(td) {
+// ── Bulk cell writes (fill-down / type-over / paste) ─────────────────────────
+// cellEdits: [{ i, key, val }] — applied via ONE server round trip, mirrored
+// into the grid, and queued on the push button like any manual edit. Album-
+// level keys spanning several albums get an explicit confirm first.
+async function xvBulkApply(cellEdits) {
+  cellEdits = cellEdits.filter(e => {
+    const cur = _xvRaw[e.i]?.[e.key]
+    return String(cur ?? '') !== String(e.val ?? '')
+  })
+  if (!cellEdits.length) { showToast('Nothing to change'); return }
+
+  const albumEdits = cellEdits.filter(e => XV_ALBUM_KEYS.includes(e.key))
+  if (albumEdits.length) {
+    const albums = new Set(albumEdits.map(e => _xvNormCat(_xvRaw[e.i]?.catalogue)).filter(Boolean))
+    if (albums.size >= 1) {
+      const fieldNames = [...new Set(albumEdits.map(e => XV_KEY_LABEL[e.key] || e.key))].join(', ')
+      if (!confirm(`This changes album-level field(s) (${fieldNames}) touching ${albums.size} album(s) — the value applies to EVERY track of each album. Continue?`)) return
+    }
+  }
+
+  // one patch per row (a paste block can hit several columns of one row)
+  const perRow = new Map()
+  for (const e of cellEdits) {
+    if (!perRow.has(e.i)) perRow.set(e.i, {})
+    perRow.get(e.i)[e.key] = e.val
+  }
+  const olds = new Map()   // "i|key" → old value, for the push queue
+  for (const e of cellEdits) olds.set(`${e.i}|${e.key}`, _xvRaw[e.i]?.[e.key] ?? null)
+  const edits = [...perRow.entries()].map(([i, patch]) => ({ index: i, patch, expect: xvExpect(i) }))
+
+  const res  = await api('/api/ingest/metadata/rows-bulk', 'PATCH', { edits, albumWide: true })
+  const data = await res.json()
+  if (!res.ok) { showToast(data.error || `HTTP ${res.status}`, 'error'); return }
+
+  let okRows = 0, failed = 0
+  for (const r of data.results) {
+    if (!r.ok) { failed++; continue }
+    okRows++
+    const patch = perRow.get(r.index)
+    for (const [key, val] of Object.entries(patch)) {
+      const old = olds.get(`${r.index}|${key}`)
+      const v = val === '' ? null : val
+      // album fan-out mirror (match on PRE-edit catalogue)
+      if (XV_ALBUM_KEYS.includes(key) && r.albumRows) {
+        const catKey = _xvNormCat(key === 'catalogue' ? old : _xvRaw[r.index]?.catalogue)
+        for (const row of _xvRaw) {
+          if (row !== _xvRaw[r.index] && row.catalogue && _xvNormCat(row.catalogue) === catKey) row[key] = v
+        }
+      }
+      _xvRaw[r.index][key] = v
+      xvQueueChange(r.index, key, old, v, XV_ALBUM_KEYS.includes(key))
+    }
+  }
+  xvRebuildSheet()
+  xvRenderBody()
+  showToast(failed ? `Saved ${okRows} row(s), ${failed} failed` : `Saved ${okRows} row(s)`, failed ? 'error' : 'success')
+}
+
+// Fill down (Cmd/Ctrl+D): top cell of the selection → every row below it.
+function xvFillDown() {
+  const ids = xvSelectedRowIds()
+  if (!_xvSel || ids.length < 2) { showToast('Select a column range first (click, then shift-click lower down)', 'error'); return }
+  const key = XV_COLS[_xvSel.col][0]
+  const topId = ids[0]
+  const val = _xvRaw[topId]?.[key] == null ? '' : String(_xvRaw[topId][key])
+  xvBulkApply(ids.slice(1).map(i => ({ i, key, val })))
+}
+
+// Paste a block copied from Excel: lines = rows, tabs = columns, anchored at
+// the top of the selection. Only visible rows receive values.
+function xvPasteBlock(text) {
+  if (!_xvSel) return false
+  const lines = String(text).replace(/\r/g, '').split('\n').filter((l, idx, arr) => l !== '' || idx < arr.length - 1)
+  if (!lines.length) return false
+  const vis = xvFilteredRows().slice(0, _xvShown)
+  const startV = Math.min(_xvSel.a, _xvSel.b)
+  const cellEdits = []
+  let truncatedRows = 0, truncatedCols = 0
+  lines.forEach((line, li) => {
+    const v = startV + li
+    if (v >= vis.length) { truncatedRows++; return }
+    line.split('\t').forEach((cell, ci) => {
+      const col = _xvSel.col + ci
+      if (col >= XV_COLS.length) { truncatedCols++; return }
+      cellEdits.push({ i: vis[v].i, key: XV_COLS[col][0], val: cell.trim() })
+    })
+  })
+  if (!cellEdits.length) return false
+  if (cellEdits.length > 50 &&
+      !confirm(`Paste ${cellEdits.length} values across ${Math.min(lines.length, vis.length - startV)} row(s)?`)) return true
+  if (truncatedRows || truncatedCols) showToast(`Paste clipped (${truncatedRows} row(s) / ${truncatedCols} value(s) beyond the visible grid)`, 'error')
+  xvBulkApply(cellEdits)
+  return true
+}
+
+// Keyboard — the Excel feel: arrows move the selection, Shift+↑/↓ extend it
+// vertically, typing starts an edit in place, Enter/F2 edit, Cmd/Ctrl+D
+// fills down, Esc clears.
+document.addEventListener('keydown', e => {
+  if (!_xvSheet || !_xvSel) return
+  if ($('xvWrap')?.style.display === 'none') return
+  if (e.target instanceof Element && e.target.closest('input,textarea,select')) return
+  const rows  = $('xvBody').rows
+  const maxV  = rows.length - 1
+  const maxC  = XV_COLS.length - 1
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
+  const editTopCell = seed => {
+    const lo = Math.min(_xvSel.a, _xvSel.b)
+    const td = rows[lo]?.cells[_xvSel.col + 1]
+    if (td) xvEditCell(td, seed)
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'd') { e.preventDefault(); xvFillDown(); return }
+  const dir = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1], Tab: [0, e.shiftKey ? -1 : 1] }[e.key]
+  if (dir) {
+    e.preventDefault()
+    if (e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+      _xvSel.b = clamp(_xvSel.b + dir[0], 0, maxV)          // extend the range
+    } else {
+      const a = clamp(_xvSel.a + dir[0], 0, maxV)
+      _xvSel = { col: clamp(_xvSel.col + dir[1], 0, maxC), a, b: a }
+    }
+    xvPaintSelection(true)
+    return
+  }
+  if (e.key === 'Enter' || e.key === 'F2') { e.preventDefault(); editTopCell(); return }
+  if (e.key === 'Escape') { _xvSel = null; xvPaintSelection(); return }
+  if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    e.preventDefault()
+    editTopCell(e.key)   // Excel: just start typing — replaces the content
+  }
+})
+document.addEventListener('paste', e => {
+  if (!_xvSheet || !_xvSel) return
+  if ($('xvWrap')?.style.display === 'none') return
+  if (e.target instanceof Element && e.target.closest('input,textarea,select')) return
+  if (xvPasteBlock(e.clipboardData?.getData('text/plain') || '')) e.preventDefault()
+})
+
+function xvEditCell(td, seedChar = null) {
   if (td.querySelector('input')) return
   const i    = Number(td.dataset.i)
   const col  = Number(td.dataset.col)
   const key  = XV_COLS[col][0]
+  const vi   = td.parentElement.sectionRowIndex
   const orig = _xvRaw[i]?.[key] == null ? '' : String(_xvRaw[i][key])
+  // A multi-row selection in this column, with this cell at its top, means
+  // the commit types over the WHOLE selection (Excel range-entry).
+  const selIds = (_xvSel && _xvSel.col === col && Math.min(_xvSel.a, _xvSel.b) === vi) ? xvSelectedRowIds() : []
+  const multi  = selIds.length > 1
   td.textContent = ''
   const input = document.createElement('input')
   input.type  = 'text'
-  input.value = orig
+  input.value = seedChar != null ? seedChar : orig   // typing replaces, Excel-style
   input.style.cssText = 'width:100%;min-width:90px;background:var(--bg);border:1px solid var(--gold);border-radius:3px;padding:2px 6px;font:inherit;color:var(--text);outline:none'
+  if (multi) input.title = `Enter applies to all ${selIds.length} selected rows`
   const restore = () => { td.textContent = orig; td.title = orig }
+
+  const commitSingle = async (val) => {
+    const albumWide = XV_ALBUM_KEYS.includes(key) && !!_xvRaw[i]?.catalogue
+    const res  = await api('/api/ingest/metadata/row', 'PATCH',
+      { index: i, expect: xvExpect(i), patch: { [key]: val }, albumWide })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    if (albumWide && data.albumRows) {
+      const catKey = _xvNormCat(key === 'catalogue' ? orig : _xvRaw[i].catalogue)
+      for (const r of _xvRaw) {
+        if (r !== _xvRaw[i] && r.catalogue && _xvNormCat(r.catalogue) === catKey) r[key] = val === '' ? null : val
+      }
+    }
+    _xvRaw[i][key] = val === '' ? null : val
+    xvRebuildSheet()
+    xvRenderBody()
+    showToast(albumWide && data.albumRows ? `Saved to album (${data.albumRows + 1} rows)` : 'Saved')
+    xvQueueChange(i, key, orig === '' ? null : orig, val === '' ? null : val, albumWide)
+  }
+
+  // After a commit the body re-renders — move the SELECTION to the neighbour
+  // cell (Excel: Enter walks down, Tab walks right; typing edits the new cell).
+  const moveTo = (dvi, dcol) => {
+    const rows = $('xvBody').rows
+    const a = Math.max(0, Math.min(rows.length - 1, vi + dvi))
+    _xvSel = { col: Math.max(0, Math.min(XV_COLS.length - 1, col + dcol)), a, b: a }
+    xvPaintSelection(true)
+  }
+
   input.onkeydown = async (e) => {
     if (e.key === 'Escape') { restore(); return }
-    if (e.key !== 'Enter') return
+    if (e.key !== 'Enter' && e.key !== 'Tab') return
     e.preventDefault()
+    const isTab = e.key === 'Tab'
     const val = input.value.trim()
-    if (val === orig.trim()) { restore(); return }
+    if (val === orig.trim() && !multi) {
+      restore()
+      if (isTab) moveTo(0, 1); else moveTo(1, 0)
+      return
+    }
     input.disabled = true
-    const albumWide = XV_ALBUM_KEYS.includes(key) && !!_xvRaw[i]?.catalogue
     try {
-      const res  = await api('/api/ingest/metadata/row', 'PATCH',
-        { index: i, expect: xvExpect(i), patch: { [key]: val }, albumWide })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
-      // Mirror the server-side album fan-out in the local grid. Match on the
-      // PRE-edit catalogue — the patch may be changing the catalogue itself.
-      if (albumWide && data.albumRows) {
-        const catKey = _xvNormCat(key === 'catalogue' ? orig : _xvRaw[i].catalogue)
-        for (const r of _xvRaw) {
-          if (r !== _xvRaw[i] && r.catalogue && _xvNormCat(r.catalogue) === catKey) {
-            r[key] = val === '' ? null : val
-          }
-        }
-      }
-      _xvRaw[i][key] = val === '' ? null : val
-      if (albumWide && data.albumRows) {
-        xvRebuildSheet()
-        xvRenderBody()
+      if (multi) {
+        restore()
+        await xvBulkApply(selIds.map(id => ({ i: id, key, val })))
       } else {
-        const row = _xvSheet.rows.find(r => r.i === i)
-        if (row) row.c[col] = val
-        td.textContent = val
-        td.title = val
+        await commitSingle(val)
+        if (isTab) moveTo(0, 1); else moveTo(1, 0)
       }
-      showToast(albumWide && data.albumRows ? `Saved to album (${data.albumRows + 1} rows)` : 'Saved')
-      xvQueueChange(i, key, orig === '' ? null : orig, val === '' ? null : val, albumWide)
     } catch (err) {
       showToast(err.message, 'error')
       restore()
@@ -4052,7 +4991,7 @@ function xvEditCell(td) {
   input.onblur = () => { if (!input.disabled) restore() }
   td.appendChild(input)
   input.focus()
-  input.select()
+  if (seedChar == null) input.select()   // seeded typing keeps the cursor at the end
 }
 
 async function xvDeleteRow(i) {
@@ -4418,14 +5357,16 @@ function xvSortBy(i) {
   document.querySelectorAll('#xvWrap thead .sort-arrow').forEach(a => a.remove())
   $(`xvTh${i}`).insertAdjacentHTML('beforeend', `<span class="sort-arrow"> ${_xvSortDir === 1 ? '↑' : '↓'}</span>`)
   _xvShown = XV_PAGE
+  _xvSel = null   // visible order changed — a kept selection would silently point at different rows
   xvRenderBody()
 }
 
-function xvGlobalChanged(v) { _xvGlobal = v.trim(); _xvShown = XV_PAGE; xvRenderBody() }
-function xvFilterChanged(i, v) { _xvFilters[i] = v.trim().toLowerCase(); _xvShown = XV_PAGE; xvRenderBody() }
+function xvGlobalChanged(v) { _xvGlobal = v.trim(); _xvShown = XV_PAGE; _xvSel = null; xvRenderBody() }
+function xvFilterChanged(i, v) { _xvFilters[i] = v.trim().toLowerCase(); _xvShown = XV_PAGE; _xvSel = null; xvRenderBody() }
 
 function xvClearFilters() {
   _xvGlobal = ''; _xvFilters = {}; _xvShown = XV_PAGE
+  _xvSel = null
   $('xvGlobal').value = ''
   document.querySelectorAll('#xvWrap .xv-filter').forEach(inp => inp.value = '')
   xvRenderBody()

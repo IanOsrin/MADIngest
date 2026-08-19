@@ -50,9 +50,13 @@ import { languageNameToCode } from '../lib/language-codes.js'
 import { generateDDEX382 } from '../lib/ddex-generate.js'
 import { buildDdexPackage, planDdex, validateDdexMeta, validateDdexAudio, renderDdexPackageXml } from '../lib/ddex-build.js'
 import AdmZip from 'adm-zip'
-import { loadMetadata, lookupByIsrc, lookupByCatalogue, lookupAlbumTracks, lookupByFilename, lookupByBarcodeAndSeq, lookupCataloguesByBarcode, searchMetadata, getStatus, getAllRows, appendRow as appendMetadataRow, mergeFromBuffer as mergeMetadataFromBuffer, extractHeaders as extractMetadataHeaders, mergeWithMapping as mergeMetadataWithMapping, updateRow as updateMetadataRow, deleteRow as deleteMetadataRow, replaceFromBuffer as replaceMetadataFromBuffer, CACHE_COLUMNS, ALBUM_FIELD_KEYS } from '../lib/metadata-cache.js'
-import { previewDbSync, applyDbSync } from '../lib/cache-db-sync.js'
+import { loadMetadata, lookupByIsrc, lookupByCatalogue, lookupAlbumTracks, lookupByFilename, lookupByBarcodeAndSeq, lookupCataloguesByBarcode, searchMetadata, getStatus, getAllRows, appendRow as appendMetadataRow, mergeFromBuffer as mergeMetadataFromBuffer, extractHeaders as extractMetadataHeaders, mergeWithMapping as mergeMetadataWithMapping, updateRow as updateMetadataRow, updateRowsBulk as updateMetadataRowsBulk, deleteRow as deleteMetadataRow, replaceFromBuffer as replaceMetadataFromBuffer, CACHE_COLUMNS, ALBUM_FIELD_KEYS } from '../lib/metadata-cache.js'
+import { previewDbSync, applyDbSync, buildFieldData as buildDbSyncFieldData, galloMetadataFromRow } from '../lib/cache-db-sync.js'
 import { parseIngroovesBuffers, diffAgainstCache } from '../lib/ingrooves-sync.js'
+import { findArtworkByCatalogue as findGalloArtworkByCatalogue, createArtworkRecord as createGalloArtworkRecord, uploadArtworkImage as uploadGalloArtworkImage } from '../lib/fm-gallo.js'
+import { loadVisionIndex, filesForCatalogue, matchTracksToFiles } from '../lib/gallo-vision-link.js'
+import { visionStat, visionUploadFile, visionList } from '../lib/vision-drive.js'
+import { readVisionWavInfo, buildSoundInfoBlock } from '../lib/wav-info.js'
 
 // Load metadata on startup (non-blocking — portal works even if file is missing)
 loadMetadata()
@@ -1517,10 +1521,434 @@ router.patch('/metadata/row', adminAuth, express.json(), async (req, res) => {
   }
 })
 
+// Bulk row patch — Excel-style fill-down / paste in the Cache Viewer.
+// Body: { edits: [{ index, patch, expect }], albumWide }. One persist for
+// the whole batch; per-row outcomes reported.
+router.patch('/metadata/rows-bulk', adminAuth, express.json({ limit: '5mb' }), async (req, res) => {
+  const { edits, albumWide } = req.body || {}
+  if (!Array.isArray(edits) || !edits.length) return res.status(400).json({ error: 'edits required' })
+  if (edits.length > 5000)                    return res.status(400).json({ error: 'too many edits in one batch (max 5000)' })
+  try {
+    const result = await updateMetadataRowsBulk(edits, { albumWide: !!albumWide })
+    console.log(`[Metadata] Bulk edit: ${result.applied}/${edits.length} rows applied`)
+    res.json(result)
+  } catch (err) {
+    res.status(409).json({ error: err.message })
+  }
+})
+
 // Which cache fields are album-level (the viewer saves those album-wide and
 // the push panel fans them out to every track of the catalogue).
 router.get('/metadata/album-fields', adminAuth, (req, res) => {
   res.json({ ok: true, albumFields: ALBUM_FIELD_KEYS })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Album tab — a mini FileMaker layout over GALLO CATALOGUE ONLY.
+// Search groups Gallo tracks into albums; the album page lists every song
+// with editable metadata + the cover. All operations are cheap: per-catalogue
+// finds and single-record writes — never bulk scans.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Search → albums. Groups searchGalloRecords hits by catalogue number.
+router.get('/album/search', adminAuth, async (req, res) => {
+  const { q } = req.query
+  if (!q || q.trim().length < 2) return res.json({ albums: [] })
+  try {
+    const { tracks } = await searchGalloRecords(q.trim(), 150, 0)
+    const byCat = new Map()
+    for (const t of tracks) {
+      const cat = (t.catalogue_no || '').trim()
+      if (!cat) continue
+      if (!byCat.has(cat)) byCat.set(cat, { catalogue: cat, album_title: null, album_artist: null, hits: 0 })
+      const a = byCat.get(cat)
+      a.hits++
+      a.album_title  ||= t.album_title
+      a.album_artist ||= t.album_artist || t.artist_name
+    }
+    res.json({ albums: [...byCat.values()].sort((a, b) => (a.album_title || '').localeCompare(b.album_title || '')) })
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
+
+// One album: every Gallo song record for the catalogue + artwork status.
+router.get('/album/detail', adminAuth, async (req, res) => {
+  const cat = (req.query.catalogue || '').trim()
+  if (!cat) return res.status(400).json({ error: 'catalogue required' })
+  try {
+    const [tracks, artwork] = await Promise.all([
+      findGalloRecordsByCatalogue(cat),
+      findGalloArtworkByCatalogue(cat).catch(() => []),
+    ])
+    tracks.sort((a, b) => (a.sequence_no ?? 999) - (b.sequence_no ?? 999))
+    const art = artwork[0] || null
+    res.json({
+      ok: true, catalogue: cat, tracks,
+      artwork: art ? { recordId: art.recordId, hasImage: !!(art.fieldData?.Picture) } : null,
+    })
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
+
+// Cover image — proxied out of the FM container (or S3 artwork URL).
+router.get('/album/cover', adminAuth, async (req, res) => {
+  const cat = (req.query.catalogue || '').trim()
+  if (!cat) return res.status(400).json({ error: 'catalogue required' })
+  try {
+    const artwork = await findGalloArtworkByCatalogue(cat)
+    const container = artwork[0]?.fieldData?.Picture
+    if (container) {
+      const buf = await fetchContainerData(container)
+      res.setHeader('Content-Type', 'image/jpeg')
+      res.setHeader('Cache-Control', 'private, max-age=300')
+      return res.end(buf)
+    }
+    // fall back to any artwork URL on the songs
+    const tracks = await findGalloRecordsByCatalogue(cat)
+    const url = tracks.find(t => t.artwork_url)?.artwork_url
+    if (url) return res.redirect(url)
+    res.status(404).json({ error: 'no artwork' })
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
+
+// Edit one song record. Body: { fields: { track_name, genre, … } } — the
+// same internal keys the Cache Viewer uses; the shared builder turns them
+// into Gallo field names and the layout filter keeps what exists.
+router.patch('/album/track/:recordId', adminAuth, express.json(), async (req, res) => {
+  const { fields } = req.body || {}
+  if (!fields || !Object.keys(fields).length) return res.status(400).json({ error: 'fields required' })
+  try {
+    const fieldData = buildDbSyncFieldData('gallo', fields, Object.keys(fields))
+    const known = await getGalloLayoutFieldSet().catch(() => null)
+    const payload = known
+      ? Object.fromEntries(Object.entries(fieldData).filter(([k]) => known.has(k)))
+      : fieldData
+    if (!Object.keys(payload).length) return res.status(400).json({ error: 'No writable Gallo fields in this edit' })
+    await updateGalloRecord(req.params.recordId, payload)
+    res.json({ ok: true, recordId: req.params.recordId, fields: Object.keys(payload) })
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
+
+// Album-level edit: apply the given fields to EVERY song record of the
+// catalogue (Gallo keeps album fields on each song row).
+router.post('/album/album-patch', adminAuth, express.json(), async (req, res) => {
+  const { catalogue, fields } = req.body || {}
+  if (!catalogue || !fields || !Object.keys(fields).length) return res.status(400).json({ error: 'catalogue and fields required' })
+  try {
+    const tracks = await findGalloRecordsByCatalogue(catalogue.trim())
+    if (!tracks.length) return res.status(404).json({ error: `No Gallo records for catalogue ${catalogue}` })
+    const fieldData = buildDbSyncFieldData('gallo', fields, Object.keys(fields))
+    const known = await getGalloLayoutFieldSet().catch(() => null)
+    const payload = known
+      ? Object.fromEntries(Object.entries(fieldData).filter(([k]) => known.has(k)))
+      : fieldData
+    if (!Object.keys(payload).length) return res.status(400).json({ error: 'No writable Gallo fields in this edit' })
+    const results = []
+    for (const t of tracks) {
+      try { await updateGalloRecord(t.fm_record_id, payload); results.push({ recordId: t.fm_record_id, ok: true }) }
+      catch (err) { results.push({ recordId: t.fm_record_id, ok: false, error: err.message }) }
+    }
+    const failed = results.filter(r => !r.ok).length
+    res.json({ ok: true, updated: results.length - failed, failed, results })
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
+
+// Add a song to an album (creates a Gallo record with the album context).
+router.post('/album/track', adminAuth, express.json(), async (req, res) => {
+  const { fields } = req.body || {}
+  if (!fields?.catalogue) return res.status(400).json({ error: 'fields.catalogue required' })
+  try {
+    const created = await createGalloRecord(galloMetadataFromRow(fields))
+    res.status(201).json({ ok: true, recordId: created.fmRecordId })
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
+
+// New album: a Tape Files Master record (the album shell). Songs are then
+// added via POST /album/track.
+router.post('/album/new', adminAuth, express.json(), async (req, res) => {
+  const { fields } = req.body || {}
+  const cat = (fields?.catalogue || '').trim()
+  if (!cat) return res.status(400).json({ error: 'fields.catalogue required' })
+  try {
+    const existing = await findGalloRecordsByCatalogue(cat)
+    if (existing.length) return res.status(409).json({ error: `Catalogue ${cat} already has ${existing.length} Gallo record(s)` })
+    const tape = await createTapeFileRecord({
+      album_artist: fields.album_artist, album: fields.album_title, catalogue_no: cat,
+      barcode: fields.barcode, release_date: fields.release_date,
+      original_release_date: fields.original_release_date, genre: fields.genre,
+      language: fields.language, label: fields.label, p_line: fields.p_line, c_line: fields.c_line,
+    })
+    res.status(201).json({ ok: true, tape })
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
+
+// ── Album tab: audio ─────────────────────────────────────────────────────────
+// Audio_URL ('/bucket/key', NFC) is the canonical audio reference. Linking
+// and uploading both end by pointing Audio_URL at a Vision object — REPLACE
+// is just repointing; masters on Vision are never overwritten (add-only).
+
+// Write Audio_URL (+ the Media_GetSoundInfo-style "Audio details" block,
+// best-effort) on one record.
+async function _writeAudioRef(recordId, visionPath) {
+  const nfc = String(visionPath).normalize('NFC')
+  const known = await getGalloLayoutFieldSet()
+  if (!known.has('Audio_URL')) throw new Error('Audio_URL field is not on the Gallo API layout')
+  const fieldData = { Audio_URL: nfc }
+  let details = null
+  try {
+    const read = await readVisionWavInfo(nfc)
+    if (read?.info) {
+      const block = buildSoundInfoBlock(read.info, { modified: read.modified })
+      const detailsField = ['Audio details', 'Audio Details', 'Audio_Details'].find(n => known.has(n))
+      if (detailsField) { fieldData[detailsField] = block; details = detailsField }
+    }
+  } catch { /* details are best-effort */ }
+  await updateGalloRecord(recordId, fieldData)
+  return { recordId, path: nfc, detailsField: details }
+}
+
+// Match the album's tracks to its Vision audio files. Preview only.
+router.post('/album/link-audio/preview', adminAuth, express.json(), async (req, res) => {
+  const cat = (req.body?.catalogue || '').trim()
+  if (!cat) return res.status(400).json({ error: 'catalogue required' })
+  try {
+    const [tracks, index] = await Promise.all([findGalloRecordsByCatalogue(cat), loadVisionIndex()])
+    if (!index) return res.status(503).json({ error: 'Vision index not built — run Reindex on the Vision tab first' })
+    const files = filesForCatalogue(index, cat)
+    const m = matchTracksToFiles(
+      tracks.map(t => ({ sequence_no: t.sequence_no, title: t.title, fm_record_id: t.fm_record_id, current: t.audio_url_ref || null })),
+      files
+    )
+    res.json({
+      ok: true, catalogue: cat, folders: m.folders,
+      matched: m.matched.map(x => ({ recordId: x.track.fm_record_id, seq: x.track.sequence_no,
+                                     title: x.track.title, current: x.track.current, path: x.audio_Url })),
+      tracksNoAudio: m.tracksNoAudio.map(t => ({ seq: t.sequence_no, title: t.title })),
+      filesNoTrack:  m.filesNoTrack.map(f => f.path),
+    })
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
+
+// Apply confirmed assignments: [{ recordId, path }]
+router.post('/album/link-audio/apply', adminAuth, express.json(), async (req, res) => {
+  const { assignments } = req.body || {}
+  if (!Array.isArray(assignments) || !assignments.length) return res.status(400).json({ error: 'assignments required' })
+  const results = []
+  for (const a of assignments) {
+    try { results.push({ ...(await _writeAudioRef(a.recordId, a.path)), ok: true }) }
+    catch (err) { results.push({ recordId: a.recordId, ok: false, error: err.message }) }
+  }
+  const failed = results.filter(r => !r.ok).length
+  res.json({ ok: true, linked: results.length - failed, failed, results })
+})
+
+// Search the Vision audio index by filename/path fragment — powers the
+// per-track "pick a file already on Vision" flow (replace-by-reference,
+// no upload). Reads the cached index only; never lists the drive live.
+router.get('/album/vision-files', adminAuth, async (req, res) => {
+  const q = String(req.query.q || '').trim().toLowerCase()
+  if (q.length < 2) return res.status(400).json({ error: 'q (2+ chars) required' })
+  try {
+    const index = await loadVisionIndex()
+    if (!index) return res.status(503).json({ error: 'Vision index not built — run Reindex on the Vision tab first' })
+    const terms = q.split(/\s+/).filter(Boolean)
+    const hits = []
+    for (const f of index.files) {
+      const p = f.path.toLowerCase()
+      if (terms.every(t => p.includes(t))) {
+        hits.push({ path: f.path, name: f.name, size: f.size ?? null })
+        if (hits.length >= 60) break
+      }
+    }
+    res.json({ ok: true, hits, indexFiles: index.files.length })
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
+
+// Upload a WAV to Vision for one track (add-only — an existing name gets a
+// " (2)" suffix) and repoint the record's Audio_URL at it. This is both
+// "add audio" and "replace audio".
+const VISION_UPLOAD_ON =
+  process.env.VISION_UPLOAD_ENABLED === 'true' ||
+  (process.env.VISION_UPLOAD_ENABLED !== 'false' && process.env.NODE_ENV !== 'production')
+const uploadTrackAudio = multer({
+  storage,
+  limits: { fileSize: 2 * 1024 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ok = /\.(wav|flac|aiff?)$/i.test(file.originalname)
+    cb(ok ? null : new Error(`Expected an audio master (wav/flac/aif), got: ${file.originalname}`), ok)
+  }
+})
+router.post('/album/audio-upload', adminAuth, uploadTrackAudio.single('audio'), async (req, res) => {
+  if (!VISION_UPLOAD_ON) return res.status(403).json({ error: 'Vision uploads are disabled on this instance (local-only feature)' })
+  const cat      = (req.body?.catalogue || '').trim()
+  const recordId = (req.body?.recordId || '').trim()
+  if (!cat || !recordId) return res.status(400).json({ error: 'catalogue and recordId required' })
+  if (!req.file)          return res.status(400).json({ error: 'audio file required' })
+  try {
+    // Destination folder: where this album's audio already lives — sibling
+    // Audio_URLs first, then the Vision index — else a new Rendered Files
+    // folder named by artist/album.
+    const tracks = await findGalloRecordsByCatalogue(cat)
+    let folder = tracks.map(t => t.audio_url_ref).filter(Boolean)
+      .map(p => p.replace(/\/[^/]+$/, ''))[0] || null
+    if (!folder) {
+      const index = await loadVisionIndex()
+      const files = index ? filesForCatalogue(index, cat) : []
+      folder = files[0]?.path.replace(/\/[^/]+$/, '') || null
+    }
+    if (!folder) {
+      const first = tracks[0] || {}
+      const safe = s => String(s || '').replace(/[\\/:*?"<>|]/g, '-').trim()
+      folder = `/gallo-music-files-wavs/Rendered Files/${safe(first.album_artist || first.artist_name || 'Unknown Artist')} - ${safe(first.album_title || cat)}`
+    }
+    // Add-only: never overwrite a master — suffix until the name is free.
+    const base = req.file.originalname.replace(/\.[^.]+$/, '')
+    const ext  = (req.file.originalname.match(/\.[^.]+$/) || ['.wav'])[0]
+    let rel = `${folder}/${base}${ext}`.normalize('NFC')
+    for (let n = 2; n < 50; n++) {
+      const st = await visionStat(rel).catch(() => null)
+      if (!st || st.exists === false) break
+      rel = `${folder}/${base} (${n})${ext}`.normalize('NFC')
+    }
+    await visionUploadFile(rel, req.file.path, req.file.mimetype || 'audio/wav')
+    await unlink(req.file.path).catch(() => {})
+    const wrote = await _writeAudioRef(recordId, rel)
+    console.log(`[Album] Audio uploaded + linked: rec ${recordId} → ${rel}`)
+    res.json({ ok: true, ...wrote })
+  } catch (err) {
+    await unlink(req.file?.path).catch(() => {})
+    res.status(502).json({ error: err.message })
+  }
+})
+
+// The album's Vision folder(s): where its audio already lives, per the
+// canonical Audio_URL refs first, then the index.
+async function _albumVisionFolders(cat) {
+  const tracks = await findGalloRecordsByCatalogue(cat)
+  const folders = new Set(tracks.map(t => t.audio_url_ref).filter(Boolean).map(p => p.replace(/\/[^/]+$/, '')))
+  if (!folders.size) {
+    const index = await loadVisionIndex()
+    if (index) for (const f of filesForCatalogue(index, cat)) folders.add(f.path.replace(/\/[^/]+$/, ''))
+  }
+  return [...folders].slice(0, 4)
+}
+
+const IMAGE_EXT = /\.(jpe?g|png|webp)$/i
+const IMAGE_TYPES = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp' }
+
+// Cover images across the WHOLE Vision drive. The index keeps every non-audio
+// file in its `others` list (kept apart from audio on purpose), so this is an
+// instant in-memory search — no folder walking. Terms match the full path,
+// space/hyphen-insensitively, so "CDEMM 215" finds ".../CDEMM215/cover.jpg".
+router.get('/album/vision-images', adminAuth, async (req, res) => {
+  const q = String(req.query.q || req.query.catalogue || '').trim()
+  if (q.length < 2) return res.status(400).json({ error: 'q (2+ chars) required' })
+  try {
+    const index = await loadVisionIndex()
+    if (!index) return res.status(503).json({ error: 'Vision index not built — run Reindex on the Vision tab first' })
+    const pool = index.others?.length ? index.others : []
+    const norm = s => String(s).toLowerCase().replace(/[\s\-_]+/g, '')
+    const terms = q.toLowerCase().split(/\s+/).filter(Boolean)
+    const normTerms = terms.map(norm)
+    const images = []
+    for (const f of pool) {
+      if (!IMAGE_EXT.test(f.name || f.path)) continue
+      const p = f.path.toLowerCase(), np = norm(f.path)
+      if (terms.every((t, i) => p.includes(t) || np.includes(normTerms[i]))) {
+        images.push({ path: f.path, name: f.name || f.path.split('/').pop(), size: f.size ?? null })
+        if (images.length >= 60) break
+      }
+    }
+    res.json({ ok: true, images, searched: pool.length })
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
+
+// Stream one Vision image (thumbnails in the cover picker).
+router.get('/album/vision-image', adminAuth, async (req, res) => {
+  const p = String(req.query.path || '').trim()
+  if (!p || !IMAGE_EXT.test(p)) return res.status(400).json({ error: 'image path required' })
+  try {
+    const obj = await visionOpen(p)
+    res.setHeader('Content-Type', IMAGE_TYPES[(p.match(IMAGE_EXT)?.[1] || 'jpg').toLowerCase()] || 'image/jpeg')
+    res.setHeader('Cache-Control', 'private, max-age=300')
+    ;(await import('node:stream')).Readable
+      .fromWeb(obj.Body.transformToWebStream ? obj.Body.transformToWebStream() : obj.Body).pipe(res)
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
+
+// Use a Vision image as the Gallo cover — read the bytes off the drive and
+// write them into the Artwork container (create the record if missing).
+router.post('/album/cover-from-vision', adminAuth, express.json(), async (req, res) => {
+  const { catalogue, path: visionPath } = req.body || {}
+  const cat = (catalogue || '').trim()
+  if (!cat || !visionPath) return res.status(400).json({ error: 'catalogue and path required' })
+  if (!IMAGE_EXT.test(visionPath)) return res.status(400).json({ error: 'path must be a jpg/png/webp image' })
+  try {
+    const obj = await visionOpen(visionPath)
+    const image = Buffer.from(await (obj.Body.transformToByteArray
+      ? obj.Body.transformToByteArray()
+      : new Response(obj.Body).arrayBuffer()))
+    const filename = visionPath.split('/').pop()
+    const contentType = IMAGE_TYPES[(visionPath.match(IMAGE_EXT)?.[1] || 'jpg').toLowerCase()] || 'image/jpeg'
+    const existing = await findGalloArtworkByCatalogue(cat)
+    let result
+    if (existing[0]) {
+      result = await uploadGalloArtworkImage(existing[0].recordId, image, filename, contentType)
+      result.action = 'replaced'
+    } else {
+      result = await createGalloArtworkRecord({ catalogue_no: cat, image, filename, contentType })
+      result.action = 'created'
+    }
+    console.log(`[Album] Cover ${result.action} from Vision: ${cat} ← ${visionPath}`)
+    res.json({ ok: true, ...result, source: visionPath })
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
+
+// Upload / replace the cover.
+const uploadCoverImage = multer({ storage, limits: { fileSize: 30 * 1024 * 1024 } })
+router.post('/album/cover', adminAuth, uploadCoverImage.single('image'), async (req, res) => {
+  const cat = (req.body?.catalogue || '').trim()
+  if (!cat)      return res.status(400).json({ error: 'catalogue required' })
+  if (!req.file) return res.status(400).json({ error: 'image file required' })
+  try {
+    const image = await readFile(req.file.path)
+    await unlink(req.file.path).catch(() => {})
+    const existing = await findGalloArtworkByCatalogue(cat)
+    let result
+    if (existing[0]) {
+      result = await uploadGalloArtworkImage(existing[0].recordId, image, req.file.originalname, req.file.mimetype)
+      result.action = 'replaced'
+    } else {
+      result = await createGalloArtworkRecord({ catalogue_no: cat, image, filename: req.file.originalname, contentType: req.file.mimetype })
+      result.action = 'created'
+    }
+    res.json({ ok: true, ...result })
+  } catch (err) {
+    await unlink(req.file?.path).catch(() => {})
+    res.status(502).json({ error: err.message })
+  }
 })
 
 // ── Cache → databases push (Cache Viewer edit propagation) ───────────────────
