@@ -594,6 +594,43 @@
         <div id="igResult" style="display:none"></div>
       </div>
 
+      <!-- Catalogue cross-reference across the three databases -->
+      <div class="import-section" style="margin-bottom:16px">
+        <h3>Catalogue Cross-Reference (3 Databases)</h3>
+        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:12px">
+          One row per album catalogue number, showing whether it exists in
+          <strong>CMS 2024</strong> (Tape Files), <strong>Gallo Catalogue</strong> (Tape Files) and
+          <strong>MadStreamer</strong> (Albums). Use the filter to see gaps — e.g. everything in CMS
+          that never made it into Gallo. The table is built from a saved snapshot;
+          <strong>↻ Rebuild</strong> re-scans the three album layouts live (takes a few minutes and
+          runs in the background).
+        </p>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+          <button class="btn btn-ghost" id="cxLoadBtn" onclick="cxLoad()">Open Cross-Reference</button>
+          <select id="cxFilter" style="display:none" onchange="cxApplyFilter()">
+            <option value="all">All catalogues</option>
+            <option value="all_three">In all three</option>
+            <option value="cms_not_gallo">In CMS, missing from Gallo</option>
+            <option value="cms_not_streamer">In CMS, missing from Streamer</option>
+            <option value="cms_only">CMS only (nowhere else)</option>
+            <option value="gallo_not_cms">In Gallo, missing from CMS</option>
+            <option value="gallo_not_streamer">In Gallo, missing from Streamer</option>
+            <option value="streamer_not_cms">In Streamer, missing from CMS</option>
+            <option value="streamer_not_gallo">In Streamer, missing from Gallo</option>
+          </select>
+          <input type="text" id="cxSearch" placeholder="Search catalogue / title / artist…"
+                 style="display:none;min-width:220px" oninput="cxSearchDebounced()">
+          <button class="btn btn-ghost" id="cxDownloadBtn" style="display:none" onclick="cxDownloadXlsx()">⬇ Download xlsx</button>
+          <button class="btn btn-ghost" id="cxRebuildBtn" style="display:none;color:var(--amber);border-color:rgba(240,168,50,0.35)" onclick="cxRebuild()">↻ Rebuild from databases</button>
+          <span id="cxStatus" style="font-size:0.82rem;color:var(--muted)"></span>
+        </div>
+        <div id="cxSummary" style="display:none;font-size:0.8rem;color:var(--muted);margin-bottom:10px"></div>
+        <div id="cxWrap" style="display:none;max-height:520px;overflow:auto;border:1px solid var(--border);border-radius:var(--radius)"></div>
+        <div id="cxMoreBar" style="display:none;margin-top:10px">
+          <button class="btn btn-ghost" style="font-size:0.78rem" onclick="cxShowMore()">Show 500 more</button>
+        </div>
+      </div>
+
       <!-- Metadata cache status -->
       <div class="import-section" style="margin-bottom:16px">
         <h3>Catalogue Metadata Cache</h3>
@@ -4419,6 +4456,145 @@ async function abUploadCover(file) {
   } catch (err) {
     showToast(err.message, 'error')
   }
+}
+
+// ── Catalogue cross-reference (CMS 2024 × Gallo × MadStreamer) ──────────────
+// Loads the server's cached xref snapshot; filter + search happen server-side
+// (the row payload is small). Rendering pages 500 rows at a time like the
+// Cache Viewer. Rebuild kicks a background live scan and polls until done.
+let _cxRows = [], _cxShown = 0, _cxTimer = null, _cxPoll = null
+const CX_PAGE = 500
+
+async function cxLoad() {
+  const btn = $('cxLoadBtn')
+  btn.disabled = true
+  $('cxStatus').textContent = '⟳ Loading…'
+  try {
+    const st = await (await api('/api/ingest/metadata/catalogue-xref/status')).json()
+    if (!st.summary) {
+      $('cxStatus').textContent = 'Never built yet — click ↻ Rebuild to create it.'
+      $('cxRebuildBtn').style.display = ''
+      btn.disabled = false
+      return
+    }
+    cxRenderSummary(st)
+    for (const id of ['cxFilter', 'cxSearch', 'cxDownloadBtn', 'cxRebuildBtn']) $(id).style.display = ''
+    btn.style.display = 'none'
+    await cxFetchRows()
+  } catch (err) {
+    $('cxStatus').textContent = err.message
+    btn.disabled = false
+  }
+}
+
+function cxRenderSummary(st) {
+  const s = st.summary
+  const built = st.builtAt ? new Date(st.builtAt).toLocaleString() : '?'
+  $('cxSummary').style.display = ''
+  $('cxSummary').innerHTML =
+    `<strong>${s.total.toLocaleString()}</strong> distinct catalogues · ` +
+    `CMS ${s.cms.toLocaleString()} · Gallo ${s.gallo.toLocaleString()} · Streamer ${s.streamer.toLocaleString()} · ` +
+    `all three ${s.all_three.toLocaleString()} · CMS-not-Gallo ${s.cms_not_gallo.toLocaleString()} · ` +
+    `Streamer-not-Gallo ${s.streamer_not_gallo.toLocaleString()}` +
+    `<span style="float:right">snapshot: ${built}</span>`
+}
+
+async function cxFetchRows() {
+  $('cxStatus').textContent = '⟳ Loading rows…'
+  const filter = $('cxFilter').value
+  const q = $('cxSearch').value.trim()
+  const res = await api(`/api/ingest/metadata/catalogue-xref/rows?filter=${encodeURIComponent(filter)}&q=${encodeURIComponent(q)}`)
+  if (!res.ok) { $('cxStatus').textContent = (await res.json().catch(() => ({}))).error || `HTTP ${res.status}`; return }
+  const data = await res.json()
+  _cxRows = data.rows
+  _cxShown = 0
+  $('cxWrap').innerHTML = ''
+  $('cxWrap').style.display = ''
+  $('cxStatus').textContent = `${data.count.toLocaleString()} catalogue${data.count === 1 ? '' : 's'}`
+  cxShowMore()
+}
+
+function cxShowMore() {
+  const tick = v => v ? '<span style="color:var(--green,#5dbb63)">✓</span>' : '<span style="color:var(--muted)">—</span>'
+  const esc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
+  let table = $('cxWrap').querySelector('table')
+  if (!table) {
+    $('cxWrap').innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:0.78rem">
+      <thead><tr style="position:sticky;top:0;background:var(--bg-card)">
+        <th style="text-align:left;padding:6px 10px">Catalogue</th>
+        <th style="padding:6px 8px">CMS 2024</th><th style="padding:6px 8px">Gallo</th><th style="padding:6px 8px">Streamer</th>
+        <th style="text-align:left;padding:6px 10px">Album Title</th>
+        <th style="text-align:left;padding:6px 10px">Album Artist</th>
+      </tr></thead><tbody></tbody></table>`
+    table = $('cxWrap').querySelector('table')
+  }
+  const tbody = table.querySelector('tbody')
+  const slice = _cxRows.slice(_cxShown, _cxShown + CX_PAGE)
+  tbody.insertAdjacentHTML('beforeend', slice.map(r =>
+    `<tr style="border-top:1px solid var(--border)">
+      <td style="padding:5px 10px;white-space:nowrap">${esc(r.cat)}</td>
+      <td style="text-align:center">${tick(r.cms)}</td>
+      <td style="text-align:center">${tick(r.gallo)}</td>
+      <td style="text-align:center">${tick(r.streamer)}</td>
+      <td style="padding:5px 10px">${esc(r.title)}</td>
+      <td style="padding:5px 10px">${esc(r.artist)}</td>
+    </tr>`).join(''))
+  _cxShown += slice.length
+  $('cxMoreBar').style.display = _cxShown < _cxRows.length ? '' : 'none'
+}
+
+function cxApplyFilter() { cxFetchRows() }
+function cxSearchDebounced() {
+  clearTimeout(_cxTimer)
+  _cxTimer = setTimeout(cxFetchRows, 350)
+}
+
+async function cxDownloadXlsx() {
+  if (!_cxRows.length) return
+  const btn = $('cxDownloadBtn')
+  btn.disabled = true; btn.textContent = '⟳ Building…'
+  try {
+    const wb = new ExcelJS.Workbook()
+    const ws = wb.addWorksheet('Catalogue XRef')
+    ws.addRow(['Catalogue', 'In CMS 2024', 'In Gallo', 'In Streamer', 'Album Title', 'Album Artist'])
+    for (const r of _cxRows) ws.addRow([r.cat, r.cms ? 'Yes' : '', r.gallo ? 'Yes' : '', r.streamer ? 'Yes' : '', r.title || '', r.artist || ''])
+    const buf = await wb.xlsx.writeBuffer()
+    const url = URL.createObjectURL(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `Catalogue_XRef_${$('cxFilter').value}.xlsx`
+    a.click()
+    URL.revokeObjectURL(url)
+  } finally {
+    btn.disabled = false; btn.textContent = '⬇ Download xlsx'
+  }
+}
+
+async function cxRebuild() {
+  if (!confirm('Rebuild re-scans the album layouts of CMS 2024, Gallo Catalogue and MadStreamer over the Data API (roughly 40,000 records — takes a few minutes). Run it now?')) return
+  const res = await api('/api/ingest/metadata/catalogue-xref/rebuild', 'POST')
+  if (res.status === 409) { $('cxStatus').textContent = 'A rebuild is already running.'; return }
+  if (!res.ok) { $('cxStatus').textContent = `HTTP ${res.status}`; return }
+  $('cxRebuildBtn').disabled = true
+  clearInterval(_cxPoll)
+  _cxPoll = setInterval(async () => {
+    try {
+      const st = await (await api('/api/ingest/metadata/catalogue-xref/status')).json()
+      const j = st.rebuild
+      if (j.running) {
+        $('cxStatus').textContent = `⟳ ${j.phase}… ${j.scanned ? j.scanned.toLocaleString() + ' records' : ''}`
+      } else {
+        clearInterval(_cxPoll)
+        $('cxRebuildBtn').disabled = false
+        if (j.error) { $('cxStatus').textContent = 'Rebuild failed: ' + j.error; showToast(j.error, 'error') }
+        else {
+          cxRenderSummary(st)
+          await cxFetchRows()
+          showToast('Cross-reference rebuilt', 'success')
+        }
+      }
+    } catch {}
+  }, 3000)
 }
 
 // ── Excel tab: collapsible sections ─────────────────────────────────────────

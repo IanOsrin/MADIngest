@@ -57,6 +57,7 @@ import { findArtworkByCatalogue as findGalloArtworkByCatalogue, createArtworkRec
 import { loadVisionIndex, filesForCatalogue, matchTracksToFiles } from '../lib/gallo-vision-link.js'
 import { visionStat, visionUploadFile, visionList } from '../lib/vision-drive.js'
 import { readVisionWavInfo, buildSoundInfoBlock } from '../lib/wav-info.js'
+import { getXrefStatus, getXrefRows, startXrefRebuild } from '../lib/catalogue-xref.js'
 
 // Load metadata on startup (non-blocking — portal works even if file is missing)
 loadMetadata()
@@ -4524,5 +4525,28 @@ async function _hydrateFromGallo(cmsTracks, catalogueNo) {
 function _stripExt(s) {
   return String(s || '').replace(/\.[^.]+$/, '')
 }
+
+// ── Catalogue cross-reference (CMS 2024 × Gallo × MadStreamer) ──────────────
+// Album-level catalogue presence across the three DBs. The table is cached in
+// S3 (metadata/Catalogue_XRef.json); /rebuild re-scans the three ALBUM layouts
+// (never song layouts) in the background with gentle paging.
+
+router.get('/metadata/catalogue-xref/status', adminAuth, async (req, res) => {
+  try { res.json(await getXrefStatus()) }
+  catch (err) { res.status(500).json({ error: err.message }) }
+})
+
+router.get('/metadata/catalogue-xref/rows', adminAuth, async (req, res) => {
+  try {
+    const result = await getXrefRows({ filter: req.query.filter, q: req.query.q })
+    if (!result) return res.status(404).json({ error: 'Cross-reference has never been built — click Rebuild to create it.' })
+    res.json(result)
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
+router.post('/metadata/catalogue-xref/rebuild', adminAuth, (req, res) => {
+  const r = startXrefRebuild()
+  res.status(r.started ? 202 : 409).json(r)
+})
 
 export default router
