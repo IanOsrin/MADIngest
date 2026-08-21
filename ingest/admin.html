@@ -278,8 +278,8 @@
 
     <!-- Tabs -->
     <nav class="admin-tabs">
-      <button class="tab-btn active" data-tab="catalog" onclick="showTab('catalog')">Catalogue</button>
-      <button class="tab-btn" data-tab="album" onclick="showTab('album')">Album</button>
+      <button class="tab-btn active" data-tab="album" onclick="showTab('album')">Gallo Catalogue</button>
+      <button class="tab-btn" data-tab="catalog" onclick="showTab('catalog')">Source</button>
       <button class="tab-btn" data-tab="ddex" onclick="showTab('ddex')">DDEX</button>
       <button class="tab-btn" data-tab="excel" onclick="showTab('excel')">Excel</button>
       <button class="tab-btn" data-tab="dbsync" onclick="showTab('dbsync')">DB Sync</button>
@@ -300,7 +300,7 @@
     </nav>
 
     <!-- ── Catalog tab ──────────────────────────────────────── -->
-    <div id="tab-catalog" class="tab-panel active">
+    <div id="tab-catalog" class="tab-panel">
       <div style="display:flex;gap:8px;margin-bottom:16px;align-items:center">
         <input id="catalogSearch" type="text" placeholder="Search artist, title, catalogue number, ISRC…"
           style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none"
@@ -315,9 +315,9 @@
     <!-- ── FM Submit tab ────────────────────────────────────── -->
 
     <!-- ── Album tab — mini FileMaker page over Gallo Catalogue ── -->
-    <div id="tab-album" class="tab-panel">
+    <div id="tab-album" class="tab-panel active">
       <div class="import-section">
-        <h3>Album — Gallo Catalogue</h3>
+        <h3>Gallo Catalogue — Albums</h3>
         <p style="font-size:0.82rem;color:var(--muted);margin-bottom:12px">
           Search by album title, artist, catalogue number, track or ISRC — pick an album to open
           its page: cover, album details and every song, all editable in place. Edits save
