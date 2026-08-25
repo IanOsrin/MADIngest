@@ -982,6 +982,26 @@
 
     <!-- Album Artwork -->
     <div id="tab-artwork" class="tab-panel">
+
+      <!-- Artwork across all three databases, drag & drop to copy -->
+      <div class="import-section">
+        <h3>Compare Across Databases</h3>
+        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
+          One catalogue, three databases side by side. <strong>Drag a picture onto another
+          panel to copy it there</strong> — each database gets its complete display set
+          (Gallo: container + the S3 copy its layouts render; CMS: the Picture container;
+          MadStreamer: the app-bucket file the site serves, thumbnails refresh on the next cron).
+        </p>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px">
+          <input id="acCat" type="text" placeholder="Catalogue number, e.g. ZB 8036"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();acLoad()}"
+            style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
+          <button class="btn btn-gold" id="acLoadBtn" onclick="acLoad()">Compare</button>
+          <span id="acStatus" style="font-size:0.82rem;color:var(--muted)"></span>
+        </div>
+        <div id="acPanels" style="display:none;gap:16px;flex-wrap:wrap"></div>
+      </div>
+
       <div class="import-section">
         <h3>Album Artwork</h3>
         <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
@@ -4457,6 +4477,91 @@ async function abUploadCover(file) {
     showToast(err.message, 'error')
   }
 }
+
+// ── Artwork compare: three databases side by side, drag & drop to copy ──────
+const AC_DBS = [
+  { key: 'gallo',    label: 'GALLO CATALOGUE' },
+  { key: 'cms',      label: 'CMS 2024' },
+  { key: 'streamer', label: 'MADSTREAMER' },
+]
+let _acCat = ''
+
+async function acLoad() {
+  const cat = $('acCat').value.trim()
+  if (!cat) return
+  _acCat = cat
+  $('acStatus').textContent = '⟳ Loading all three databases…'
+  $('acLoadBtn').disabled = true
+  try {
+    const res = await api(`/api/ingest/artwork-compare?catalogue=${encodeURIComponent(cat)}`)
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`)
+    const state = await res.json()
+    const panels = $('acPanels')
+    panels.style.display = 'flex'
+    panels.innerHTML = AC_DBS.map(db => {
+      const s = state[db.key] || {}
+      return `<div class="ac-panel" data-db="${db.key}" style="flex:1;min-width:240px;border:1px solid var(--border);border-radius:8px;padding:14px;background:var(--bg)">
+        <div style="font-size:0.78rem;font-weight:700;letter-spacing:1.5px;color:var(--gold);margin-bottom:10px">${db.label}</div>
+        <div class="ac-drop" data-db="${db.key}" style="width:100%;aspect-ratio:1;border:2px dashed var(--border);border-radius:8px;display:flex;align-items:center;justify-content:center;overflow:hidden;background:rgba(127,127,127,0.05)">
+          ${s.error ? `<span style="font-size:0.78rem;color:var(--red,#d66)">error: ${s.error}</span>`
+            : s.hasImage ? `<img class="ac-img" data-db="${db.key}" draggable="true" style="width:100%;height:100%;object-fit:cover;cursor:grab" alt="${db.label} artwork">`
+            : `<span style="font-size:0.8rem;color:var(--muted)">no picture</span>`}
+        </div>
+        <div style="font-size:0.76rem;color:var(--muted);margin-top:8px">${s.error ? '' : (s.exists ? (s.ref ? 'ref ' + s.ref + ' · ' : '') + s.note : 'no artwork record')}</div>
+        <div style="font-size:0.76rem;margin-top:4px;${s.albumSongs === 0 ? 'color:var(--amber,#f0a832);font-weight:600' : 'color:var(--muted)'}">${s.error ? '' : s.albumSongs === 0 ? '⚠ album NOT in this database' : s.albumSongs > 0 ? 'album: ' + s.albumSongs + ' song' + (s.albumSongs === 1 ? '' : 's') : 'album check failed'}</div>
+      </div>`
+    }).join('')
+    // fetch images as authed blobs
+    for (const db of AC_DBS) {
+      const img = panels.querySelector(`img.ac-img[data-db="${db.key}"]`)
+      if (!img) continue
+      api(`/api/ingest/artwork-compare/image?catalogue=${encodeURIComponent(cat)}&db=${db.key}`)
+        .then(r => r.ok ? r.blob() : null)
+        .then(b => { if (b) img.src = URL.createObjectURL(b); else img.closest('.ac-drop').innerHTML = '<span style="font-size:0.8rem;color:var(--muted)">no picture</span>' })
+    }
+    // drag & drop wiring
+    panels.querySelectorAll('img.ac-img').forEach(img => {
+      img.addEventListener('dragstart', ev => ev.dataTransfer.setData('text/ac-db', img.dataset.db))
+    })
+    panels.querySelectorAll('.ac-drop').forEach(zone => {
+      zone.addEventListener('dragover', ev => { ev.preventDefault(); zone.style.borderColor = 'var(--gold)' })
+      zone.addEventListener('dragleave', () => { zone.style.borderColor = 'var(--border)' })
+      zone.addEventListener('drop', async ev => {
+        ev.preventDefault()
+        zone.style.borderColor = 'var(--border)'
+        const from = ev.dataTransfer.getData('text/ac-db')
+        const to = zone.dataset.db
+        if (!from || from === to) return
+        const fromLabel = AC_DBS.find(d => d.key === from).label
+        const toLabel = AC_DBS.find(d => d.key === to).label
+        const tState = _acLastState(to) || {}
+        let force = false
+        if (tState.albumSongs === 0) {
+          if (!confirm(`⚠ The album ${_acCat} does NOT exist in ${toLabel}.\nCopying artwork there would leave it orphaned.\n\nCopy anyway?`)) return
+          force = true
+        } else if (!confirm(`Copy the ${fromLabel} picture for ${_acCat} into ${toLabel}?${tState.hasImage ? '\nThis replaces the existing ' + toLabel + ' picture.' : ''}`)) return
+        $('acStatus').textContent = `⟳ Copying ${fromLabel} → ${toLabel}…`
+        try {
+          const res = await api('/api/ingest/artwork-compare/copy', 'POST', { catalogue: _acCat, from, to, force })
+          const j = await res.json().catch(() => ({}))
+          if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`)
+          showToast(`Artwork copied to ${toLabel} (${(j.wrote || []).join(', ')})`, 'success')
+          acLoad()
+        } catch (e) {
+          $('acStatus').textContent = ''
+          showToast('Copy failed: ' + e.message, 'error')
+        }
+      })
+    })
+    window._acState = state
+    $('acStatus').textContent = ''
+  } catch (e) {
+    $('acStatus').textContent = e.message
+  } finally {
+    $('acLoadBtn').disabled = false
+  }
+}
+function _acLastState(db) { return (window._acState || {})[db] }
 
 // ── Catalogue cross-reference (CMS 2024 × Gallo × MadStreamer) ──────────────
 // Loads the server's cached xref snapshot; filter + search happen server-side

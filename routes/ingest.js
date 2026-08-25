@@ -58,6 +58,7 @@ import { loadVisionIndex, filesForCatalogue, matchTracksToFiles } from '../lib/g
 import { visionStat, visionUploadFile, visionList } from '../lib/vision-drive.js'
 import { readVisionWavInfo, buildSoundInfoBlock } from '../lib/wav-info.js'
 import { getXrefStatus, getXrefRows, startXrefRebuild } from '../lib/catalogue-xref.js'
+import { artworkState, artworkImage, copyArtwork } from '../lib/artwork-compare.js'
 
 // Load metadata on startup (non-blocking — portal works even if file is missing)
 loadMetadata()
@@ -4547,6 +4548,47 @@ router.get('/metadata/catalogue-xref/rows', adminAuth, async (req, res) => {
 router.post('/metadata/catalogue-xref/rebuild', adminAuth, (req, res) => {
   const r = startXrefRebuild()
   res.status(r.started ? 202 : 409).json(r)
+})
+
+// ── Artwork compare (Gallo × CMS 2024 × MadStreamer) ────────────────────────
+// Side-by-side artwork state for one catalogue, image streaming per DB, and
+// copy between databases (each target gets its full display set).
+
+router.get('/artwork-compare', adminAuth, async (req, res) => {
+  const cat = String(req.query.catalogue || '').trim()
+  if (!cat) return res.status(400).json({ error: 'catalogue required' })
+  try { res.json({ catalogue: cat, ...(await artworkState(cat)) }) }
+  catch (err) { res.status(502).json({ error: err.message }) }
+})
+
+router.get('/artwork-compare/image', adminAuth, async (req, res) => {
+  const cat = String(req.query.catalogue || '').trim()
+  const db = String(req.query.db || '').trim()
+  if (!cat || !['gallo', 'cms', 'streamer'].includes(db)) return res.status(400).json({ error: 'catalogue and db (gallo|cms|streamer) required' })
+  try {
+    const img = await artworkImage(db, cat)
+    if (!img) return res.status(404).json({ error: 'no image' })
+    res.setHeader('Content-Type', img.contentType)
+    res.setHeader('Cache-Control', 'private, max-age=120')
+    res.end(img.buffer)
+  } catch (err) { res.status(502).json({ error: err.message }) }
+})
+
+router.post('/artwork-compare/copy', adminAuth, express.json(), async (req, res) => {
+  const cat = String(req.body?.catalogue || '').trim()
+  const from = String(req.body?.from || '').trim()
+  const to = String(req.body?.to || '').trim()
+  if (!cat || !['gallo', 'cms', 'streamer'].includes(from) || !['gallo', 'cms', 'streamer'].includes(to)) {
+    return res.status(400).json({ error: 'catalogue, from and to (gallo|cms|streamer) required' })
+  }
+  try {
+    const result = await copyArtwork(from, to, cat, { force: !!req.body?.force })
+    console.log(`[ArtworkCompare] Copied ${cat}: ${from} → ${to} (${result.wrote.join(', ')})`)
+    res.json(result)
+  } catch (err) {
+    if (err.code === 'NO_ALBUM') return res.status(409).json({ error: err.message, code: 'NO_ALBUM' })
+    res.status(502).json({ error: err.message })
+  }
 })
 
 export default router
