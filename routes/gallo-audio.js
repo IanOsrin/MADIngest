@@ -216,6 +216,87 @@ router.get('/player/:recordId', async (req, res) => {
 </div></body></html>`)
 })
 
+// ── Serve any Vision object by PATH (the master-database web viewers) ───────
+// The :recordId routes above resolve through a Gallo Catalogue record, so they
+// can only serve tracks that HAVE one. The consolidated master database stores
+// the Vision path itself and covers 5,800+ CMS-recovered files no Catalogue
+// record points at — plus album artwork, which was never a Catalogue field.
+// These take the path directly. Same shared-key gate, same reason for
+// streaming through Ingest (Vision's self-signed cert), reads jailed to the
+// media buckets, and no write path exists here.
+const VISION_READ_BUCKETS = ['gallo-music-files-wavs', 'gallo-digital-cupboard']
+const IMAGE_TYPES = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', tif: 'image/tiff', tiff: 'image/tiff' }
+const mediaTypeFor = (name) => {
+  const ext = (String(name).match(/\.([a-z0-9]+)$/i)?.[1] || '').toLowerCase()
+  return CONTENT_TYPES[ext] || IMAGE_TYPES[ext] || 'application/octet-stream'
+}
+function visionPathOk(rel) {
+  let clean = String(rel || '').trim()
+  if (!clean) return null
+  if (!clean.startsWith('/')) clean = '/' + clean
+  if (clean.includes('..')) return null
+  const bucket = clean.split('/').filter(Boolean)[0]
+  return VISION_READ_BUCKETS.includes(bucket) ? clean : null
+}
+
+// GET /api/gallo/vision-media?path=/bucket/folder/file.wav[&k=KEY]
+// Streams audio OR artwork inline, Range-aware so <audio> can seek.
+router.get('/vision-media', async (req, res) => {
+  try {
+    if (!keyOk(req)) return res.status(403).json({ error: 'Forbidden' })
+    const rel = visionPathOk(req.query.path)
+    if (!rel) return res.status(400).json({ error: 'A path inside a Vision media bucket is required' })
+    const filename = rel.split('/').filter(Boolean).pop() || 'file'
+
+    const range = req.headers.range
+    const obj = await visionOpen(rel, range)
+    res.setHeader('Content-Type', mediaTypeFor(filename))
+    res.setHeader('Accept-Ranges', 'bytes')
+    res.setHeader('Cache-Control', 'private, max-age=3600')
+    res.setHeader('Content-Disposition', `inline; filename="${filename.replace(/[\\"\x00-\x1f]/g, ' ')}"`)
+    if (obj.ContentLength != null) res.setHeader('Content-Length', String(obj.ContentLength))
+    if (range && obj.ContentRange) { res.status(206); res.setHeader('Content-Range', obj.ContentRange) }
+
+    Readable.fromWeb(obj.Body.transformToWebStream ? obj.Body.transformToWebStream() : obj.Body).pipe(res)
+  } catch (e) {
+    console.error('[vision-media] failed:', e.message)
+    if (!res.headersSent) res.status(/not found|NoSuchKey/i.test(e.message) ? 404 : 500).json({ error: e.message })
+    else res.destroy()
+  }
+})
+
+// GET /api/gallo/vision-player?path=…[&title=…&artist=…&k=KEY]
+// A whole web-viewer page: audio gets transport controls, images render to fit.
+router.get('/vision-player', async (req, res) => {
+  if (!keyOk(req)) return res.status(403).send('Forbidden')
+  const rel = visionPathOk(req.query.path)
+  const esc = (s) => String(s || '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+  res.setHeader('Content-Type', 'text/html; charset=utf-8')
+  if (!rel) {
+    return res.send(`<!doctype html><meta charset="utf-8"><body style="margin:0;font:13px -apple-system,Segoe UI,sans-serif;color:#777;display:flex;align-items:center;justify-content:center;height:100vh">No media for this record</body>`)
+  }
+  const filename = rel.split('/').filter(Boolean).pop() || ''
+  const isImage = /\.(jpe?g|png|gif|webp|tiff?)$/i.test(filename)
+  const src = `/api/gallo/vision-media?path=${encodeURIComponent(rel)}${AUDIO_KEY ? `&k=${encodeURIComponent(String(req.query.k || ''))}` : ''}`
+  const title = esc(req.query.title) || esc(decodeURIComponent(filename.replace(/\.\w+$/, '')))
+  const artist = esc(req.query.artist)
+  res.send(`<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  html,body{margin:0;height:100%;font-family:-apple-system,Segoe UI,sans-serif;background:#f4f6fb;color:#1a1a2e}
+  .box{display:flex;flex-direction:column;justify-content:center;gap:8px;height:100%;padding:14px 18px;box-sizing:border-box}
+  .t{font-weight:600;font-size:15px;line-height:1.2}
+  .a{color:#666;font-size:13px}
+  audio{width:100%;margin-top:4px}
+  .img{margin:0;height:100%;display:flex;align-items:center;justify-content:center;background:#111}
+  .img img{max-width:100%;max-height:100%;object-fit:contain}
+</style></head><body>
+${isImage
+  ? `<div class="img"><img src="${src}" alt="${title}"></div>`
+  : `<div class="box"><div class="t">${title}</div>${artist ? `<div class="a">${artist}</div>` : ''}<audio controls preload="metadata" src="${src}"></audio></div>`}
+</body></html>`)
+})
+
 router.get('/audio/:recordId', async (req, res) => {
   try {
     if (!keyOk(req)) return res.status(403).json({ error: 'Forbidden' })
