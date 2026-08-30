@@ -507,7 +507,20 @@ const VISION_ART_DROP_ROOT = process.env.VISION_ART_DROP_ROOT
 // POST /api/gallo/artwork-upload
 //   replace an existing cover: { replaceUrl:"https://…/artwork/GMVi6153.jpg", image, … }
 //   add a first cover:        { code:"GMVin100002", image, artist, album, cat }
-router.post('/artwork-upload', express.json({ limit: '30mb' }), async (req, res) => {
+// server.js deliberately skips its 100kb app-wide parser for this path so this
+// one handles the body; keep the two in step if the route ever moves.
+const ART_UPLOAD_LIMIT = process.env.ART_UPLOAD_LIMIT || '40mb'
+const bigJson = express.json({ limit: ART_UPLOAD_LIMIT })
+
+router.post('/artwork-upload', (req, res, next) => bigJson(req, res, (err) => {
+  if (!err) return next()
+  if (err.type === 'entity.too.large') {
+    return res.status(413).json({
+      error: `image too large — the limit is ${ART_UPLOAD_LIMIT} of Base64, roughly ${Math.round(parseInt(ART_UPLOAD_LIMIT) * 0.75)}MB of image. Save it smaller and drop it again.`,
+    })
+  }
+  res.status(400).json({ error: `could not read the request body: ${err.message}` })
+}), async (req, res) => {
   const t0 = Date.now()
   try {
     if (!keyOk(req)) return res.status(403).json({ error: 'Forbidden' })

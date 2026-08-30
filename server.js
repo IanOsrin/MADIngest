@@ -51,7 +51,14 @@ const VISION_UPLOAD_ENABLED =
   (process.env.VISION_UPLOAD_ENABLED !== 'false' && process.env.NODE_ENV !== 'production')
 
 app.use(cors())
-app.use(express.json())
+// The app-wide parser keeps express's 100kb default, which is right for every
+// JSON body here except a dragged album cover — that arrives Base64Encoded from
+// a FileMaker container and runs to several MB. Skip those paths so the route's
+// own express.json({ limit: … }) is the one that parses them; a parser mounted
+// here would otherwise reject the body before the route is ever reached.
+const BIG_JSON_PATHS = ['/api/gallo/artwork-upload']
+app.use((req, res, next) =>
+  BIG_JSON_PATHS.includes(req.path) ? next() : express.json()(req, res, next))
 
 // Redirect bare /ingest (submission form) to admin
 app.get('/ingest', (req, res) => res.redirect('/ingest/admin'))
