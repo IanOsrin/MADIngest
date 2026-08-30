@@ -7,7 +7,8 @@
 // This is what a FileMaker web viewer points at instead of the native audio
 // container, so the mount can be retired. Streams THROUGH Ingest because Vision
 // uses a self-signed cert a browser/web-viewer would reject on a direct hit.
-import { Router } from 'express'
+import express, { Router } from 'express'
+import sharp from 'sharp'
 import { Readable } from 'node:stream'
 import { getGalloFieldData, getGalloLayoutFieldSet, updateGalloRecord, reloadGalloLayoutFields } from '../lib/fm-gallo.js'
 import { resolveGalloAudio, resolveGalloAudioLive } from '../lib/gallo-vision.js'
@@ -18,7 +19,8 @@ import path from 'node:path'
 import { parseWavHeader, buildSoundInfoBlock, hmsMillis, readVisionWavInfo } from '../lib/wav-info.js'
 import { wavBufferToMp3 } from '../lib/audio-convert.js'
 import { uploadMp3ByGcat, uploadArtworkByGmvi, artworkKeyForGmvi, headAnyKey,
-         urlForKey, keyFromS3Url, downloadByUrl, listKeysWithPrefix } from '../lib/s3-imports.js'
+         urlForKey, keyFromS3Url, downloadByUrl, listKeysWithPrefix,
+         uploadAnyKey, writeArtworkDerivatives } from '../lib/s3-imports.js'
 
 const router = Router()
 
@@ -479,6 +481,130 @@ router.post('/artwork-copy', async (req, res) => {
     return res.status(400).json({ error: 'direction must be "vision-to-s3" or "s3-to-vision"', got: direction.slice(0, 40) })
   } catch (e) {
     console.error('[artwork-copy] failed:', e.message)
+    if (!res.headersSent) res.status(500).json({ error: e.message })
+  }
+})
+
+// ── artwork upload: a cover dragged into a FileMaker container ──────────────
+// 9,163 albums have no cover on either side, so there is nothing to copy across
+// — the image has to come from outside. FileMaker takes the drop into a
+// container field, Base64Encodes it and posts it here.
+//
+// Replacing an existing cover OVERWRITES its key in place. Minting a new code
+// would leave MADStreamer pointing at the old file, turning one drop into two
+// database updates (Ian, 2026-08-30) — the shared URL is the whole point. The
+// artwork cache-control is max-age=3600, so a replacement propagates within the
+// hour rather than being stuck behind a long-lived cache.
+//
+// S3 overwrites, Vision does not: Vision is the archive of record and has no
+// versioning or trash, so a replacement is written there under a new name and
+// the superseded file is left alone. Nothing outside the master database
+// references the Vision path, so nothing is orphaned by that.
+const ART_MIN_PX = Number(process.env.ART_MIN_PX || 600)
+const VISION_ART_DROP_ROOT = process.env.VISION_ART_DROP_ROOT
+  || '/gallo-music-files-wavs/Digital Sleeves/Added from FileMaker'
+
+// POST /api/gallo/artwork-upload
+//   replace an existing cover: { replaceUrl:"https://…/artwork/GMVi6153.jpg", image, … }
+//   add a first cover:        { code:"GMVin100002", image, artist, album, cat }
+router.post('/artwork-upload', express.json({ limit: '30mb' }), async (req, res) => {
+  const t0 = Date.now()
+  try {
+    if (!keyOk(req)) return res.status(403).json({ error: 'Forbidden' })
+    const b = req.body || {}
+    const replaceUrl = String(b.replaceUrl || '').trim()
+    const code = String(b.code || '').trim()
+    let key, replacing = false
+
+    if (replaceUrl) {
+      const k = keyFromS3Url(replaceUrl)
+      // Only ever overwrite an artwork master. Without this an arbitrary key —
+      // an mp3, a hero banner — could be replaced by posting its URL.
+      if (!k || !k.startsWith('artwork/') || k.startsWith('artwork/resized/')) {
+        return res.status(400).json({ error: 'replaceUrl must point at an artwork master in the bucket', got: replaceUrl.slice(0, 120) })
+      }
+      key = k
+      replacing = true
+    } else {
+      if (!GMVIN_RE.test(code)) {
+        return res.status(400).json({ error: 'send replaceUrl to replace a cover, or code (GMVin…) to add one', got: code.slice(0, 40) })
+      }
+      key = artworkKeyForGmvi(code, '.jpg')
+    }
+    // FileMaker's Base64Encode wraps at 76 chars and may prepend a data: prefix.
+    const raw = String(b.image || '').replace(/^data:[^,]*,/, '').replace(/\s+/g, '')
+    if (!raw) return res.status(400).json({ error: 'image (base64) is required — is the container field empty?' })
+    let buf
+    try { buf = Buffer.from(raw, 'base64') } catch { return res.status(400).json({ error: 'image is not valid base64' }) }
+    if (buf.length < 1024) return res.status(422).json({ error: `decoded image is only ${buf.length} bytes` })
+
+    let meta
+    try { meta = await sharp(buf).metadata() }
+    catch { return res.status(415).json({ error: 'unreadable image — JPEG, PNG, WebP or TIFF please (HEIC is not supported)' }) }
+    if (!meta.width || !meta.height) return res.status(415).json({ error: 'could not read the image dimensions' })
+    if (Math.min(meta.width, meta.height) < ART_MIN_PX) {
+      return res.status(422).json({
+        error: `too small: ${meta.width}×${meta.height}. Sleeves need at least ${ART_MIN_PX}px on the short side.`,
+      })
+    }
+
+    // Normalise to JPEG so every master in the bucket is one format; the
+    // derivatives are webp regardless.
+    const jpeg = meta.format === 'jpeg' ? buf
+      : await sharp(buf).jpeg({ quality: 92 }).toBuffer()
+
+    // Adding is add-only; replacing is the one path allowed to overwrite.
+    if (!replacing && (await headAnyKey(key)).exists) {
+      return res.status(409).json({ error: `${key} already exists — allocate a fresh code`, key })
+    }
+    if (replacing && !(await headAnyKey(key)).exists) {
+      return res.status(404).json({ error: `${key} is not in the bucket — nothing to replace`, key })
+    }
+    await uploadAnyKey(jpeg, key, 'image/jpeg')
+    // The app serves artwork/resized/*, never the master, so a replacement that
+    // skipped these would leave the OLD cover showing everywhere that matters.
+    const derivatives = await writeArtworkDerivatives(key, jpeg)
+    const up = { key, url: urlForKey(key), derivatives }
+
+    // Vision is the archive copy. The code is in the filename so a replacement
+    // never collides with the cover it supersedes.
+    let visionPath = null, visionError = null
+    if (b.alsoVision !== false && b.alsoVision !== 'false') {
+      try {
+        const name = sleeveName(b.artist, b.album, b.cat)
+        if (!name) throw new Error('artist, album or cat is needed to name the Vision file')
+        const letter = (name.match(/[A-Za-z]/)?.[0] || '#').toUpperCase()
+        const stem = code || key.replace(/^artwork\//, '').replace(/\.[^.]+$/, '')
+        let rel = `${VISION_ART_DROP_ROOT}/${letter}/${name}_${stem}.jpg`
+        // Vision never overwrites — a replacement lands beside the file it
+        // supersedes, so the archive keeps every version.
+        for (let n = 2; await visionStat(rel); n++) {
+          if (n > 50) throw new Error('could not find a free Vision filename')
+          rel = `${VISION_ART_DROP_ROOT}/${letter}/${name}_${stem}_v${n}.jpg`
+        }
+        const tmpDir = await mkdtemp(path.join(tmpdir(), 'artdrop-'))
+        try {
+          const tmpFile = path.join(tmpDir, 'img.jpg')
+          await writeFile(tmpFile, jpeg)
+          await visionUploadFile(rel, tmpFile, 'image/jpeg')
+          if (!await visionStat(rel)) throw new Error('upload reported success but the object is not there')
+          visionPath = rel
+        } finally { await rm(tmpDir, { recursive: true, force: true }).catch(() => {}) }
+      } catch (e) {
+        // A failed archive copy must not lose the S3 upload that already worked.
+        visionError = e.message
+        console.error('[artwork-upload] vision copy failed:', e.message)
+      }
+    }
+
+    console.log(`[artwork-upload] ${code} ${meta.width}×${meta.height} ${meta.format} → ${up.key}${visionPath ? ' + vision' : ''} (${Date.now() - t0}ms)`)
+    res.json({
+      ok: true, url: up.url, key: up.key, derivatives: up.derivatives,
+      width: meta.width, height: meta.height, bytes: jpeg.length,
+      visionPath, visionError,
+    })
+  } catch (e) {
+    console.error('[artwork-upload] failed:', e.message)
     if (!res.headersSent) res.status(500).json({ error: e.message })
   }
 })
