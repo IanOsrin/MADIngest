@@ -11,10 +11,14 @@ import { Router } from 'express'
 import { Readable } from 'node:stream'
 import { getGalloFieldData, getGalloLayoutFieldSet, updateGalloRecord, reloadGalloLayoutFields } from '../lib/fm-gallo.js'
 import { resolveGalloAudio, resolveGalloAudioLive } from '../lib/gallo-vision.js'
-import { visionOpen, visionStat } from '../lib/vision-drive.js'
+import { visionOpen, visionStat, visionUploadFile } from '../lib/vision-drive.js'
+import { mkdtemp, writeFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { parseWavHeader, buildSoundInfoBlock, hmsMillis, readVisionWavInfo } from '../lib/wav-info.js'
 import { wavBufferToMp3 } from '../lib/audio-convert.js'
-import { uploadMp3ByGcat } from '../lib/s3-imports.js'
+import { uploadMp3ByGcat, uploadArtworkByGmvi, artworkKeyForGmvi, headAnyKey,
+         urlForKey, keyFromS3Url, downloadByUrl, listKeysWithPrefix } from '../lib/s3-imports.js'
 
 const router = Router()
 
@@ -349,6 +353,133 @@ router.get('/audio/:recordId', async (req, res) => {
     console.error('[gallo-audio] failed:', e.message)
     if (!res.headersSent) res.status(500).json({ error: e.message })
     else res.destroy()
+  }
+})
+
+// ── artwork copy: Vision ⇄ S3 ───────────────────────────────────────────────
+// Ian's Album layout shows a Vision viewer and an S3 viewer side by side; about
+// half the albums have a cover on only one side. These endpoints copy it across
+// so a FileMaker button can fill the empty panel. FileMaker cannot sign S3
+// requests itself (SigV4 by hand, and the secret would have to live in a field),
+// so the copy happens here where the credentials already are.
+//
+// BOTH directions are ADD-ONLY. Vision has no versioning or trash, and on the
+// S3 side the CDN caches a 403 from a missing object — so an accidental
+// overwrite is unrecoverable in one direction and self-inflicted cache poison
+// in the other. An existing destination is a 409, never a silent replace.
+
+// New artwork codes are the GMVin series (seeded at 100000), kept separate from
+// the legacy GMVi / GMVic / GMViv keys so a mis-set counter can never target an
+// existing cover. FileMaker allocates the number — the master file is local, so
+// this server cannot read a counter out of it.
+const GMVIN_RE = /^GMVin\d{6,}$/
+const VISION_ART_ROOT = process.env.VISION_ART_COPY_ROOT
+  || '/gallo-music-files-wavs/Digital Sleeves/Copied from S3'
+
+/** Filename-safe, and close to the existing "Artist_Album_CAT" sleeve naming. */
+function sleeveName(artist, album, cat) {
+  const part = (s) => String(s || '').replace(/[\/\\:*?"<>|\x00-\x1f]/g, ' ').replace(/\s+/g, ' ').trim()
+  const bits = [part(artist), part(album), part(cat)].filter(Boolean)
+  if (!bits.length) return null
+  return bits.join('_').slice(0, 150)
+}
+
+// GET /api/gallo/artwork-next-code — highest GMVin in the bucket, +1.
+// Re-syncs the FileMaker counter from the bucket after a restore or a crash.
+router.get('/artwork-next-code', async (req, res) => {
+  try {
+    if (!keyOk(req)) return res.status(403).json({ error: 'Forbidden' })
+    const keys = await listKeysWithPrefix('artwork/GMVin')
+    let max = 99999
+    for (const k of keys) {
+      const m = k.match(/artwork\/GMVin(\d+)\./)
+      if (m) max = Math.max(max, Number(m[1]))
+    }
+    res.json({ ok: true, count: keys.length, highest: max, nextCode: `GMVin${max + 1}` })
+  } catch (e) {
+    console.error('[artwork-next-code] failed:', e.message)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// POST /api/gallo/artwork-copy
+//   { direction: "vision-to-s3", src: "/gallo-music-files-wavs/…jpg", code: "GMVin100000" }
+//   { direction: "s3-to-vision", src: "https://…/artwork/GMVi123.jpg", artist, album, cat }
+// Returns { ok, url } — the URL to write back into the album record.
+router.post('/artwork-copy', async (req, res) => {
+  const t0 = Date.now()
+  try {
+    if (!keyOk(req)) return res.status(403).json({ error: 'Forbidden' })
+    const b = { ...req.query, ...(req.body || {}) }
+    const direction = String(b.direction || '').trim()
+
+    if (direction === 'vision-to-s3') {
+      const rel = visionPathOk(b.src)
+      if (!rel) return res.status(400).json({ error: 'src must be a path inside a Vision media bucket', got: String(b.src || '').slice(0, 120) })
+      const code = String(b.code || '').trim()
+      if (!GMVIN_RE.test(code)) {
+        return res.status(400).json({ error: 'code must be the GMVin series, e.g. GMVin100000', got: code.slice(0, 40) })
+      }
+      const ext = (rel.match(/\.([a-z0-9]+)$/i)?.[1] || 'jpg').toLowerCase()
+      const key = artworkKeyForGmvi(code, '.' + ext)
+
+      // headAnyKey resolves to { exists: false } for a missing key — an object,
+      // and therefore truthy. Test the flag, not the result.
+      if ((await headAnyKey(key)).exists) {
+        return res.status(409).json({ error: `${key} already exists — refusing to overwrite`, key, url: urlForKey(key) })
+      }
+      const obj = await visionOpen(rel)
+      const chunks = []
+      for await (const c of (obj.Body.transformToWebStream ? Readable.fromWeb(obj.Body.transformToWebStream()) : obj.Body)) chunks.push(c)
+      const buf = Buffer.concat(chunks)
+      if (!buf.length) return res.status(422).json({ error: 'source image is zero bytes', src: rel })
+
+      // uploadArtworkByGmvi also writes the _300/_800 webp derivatives — the MAD
+      // app serves those, never the master, so skipping them leaves the cover
+      // broken in the app AND caches a 403 at the CDN.
+      const up = await uploadArtworkByGmvi(buf, code, '.' + ext, mediaTypeFor(rel))
+      console.log(`[artwork-copy] vision→s3 ${rel} → ${up.key} (${buf.length}B, ${Date.now() - t0}ms)`)
+      return res.json({ ok: true, direction, url: up.url, key: up.key, bytes: buf.length, derivatives: up.derivatives })
+    }
+
+    if (direction === 's3-to-vision') {
+      const src = String(b.src || '').trim()
+      const srcKey = keyFromS3Url(src)
+      if (!srcKey) return res.status(400).json({ error: 'src must be a URL in the artwork bucket', got: src.slice(0, 120) })
+      const name = sleeveName(b.artist, b.album, b.cat)
+      if (!name) return res.status(400).json({ error: 'artist, album or cat is required to name the Vision file' })
+
+      const ext = (srcKey.match(/\.([a-z0-9]+)$/i)?.[1] || 'jpg').toLowerCase()
+      // A letter layer keeps any one Vision directory under ~1000 entries — the
+      // grouped listing breaks past that and the folder view hangs (2026-08-29).
+      const letter = (name.match(/[A-Za-z]/)?.[0] || '#').toUpperCase()
+      const rel = `${VISION_ART_ROOT}/${letter}/${name}.${ext}`
+
+      if (await visionStat(rel)) {
+        return res.status(409).json({ error: `${rel} already exists — refusing to overwrite`, path: rel })
+      }
+      // downloadByUrl resolves to { buffer, contentType } — not a bare Buffer.
+      const { buffer: buf } = await downloadByUrl(src)
+      if (!buf?.length) return res.status(422).json({ error: 'source image is zero bytes or unreadable', src })
+
+      const tmpDir = await mkdtemp(path.join(tmpdir(), 'artcopy-'))
+      const tmpFile = path.join(tmpDir, `img.${ext}`)
+      try {
+        await writeFile(tmpFile, buf)
+        await visionUploadFile(rel, tmpFile, mediaTypeFor(rel))
+        const stat = await visionStat(rel)          // verify-after-put
+        if (!stat) throw new Error('upload reported success but the object is not there')
+        console.log(`[artwork-copy] s3→vision ${srcKey} → ${rel} (${buf.length}B, ${Date.now() - t0}ms)`)
+        return res.json({ ok: true, direction, path: rel, bytes: stat.size })
+      } finally {
+        await rm(tmpDir, { recursive: true, force: true }).catch(() => {})
+      }
+    }
+
+    return res.status(400).json({ error: 'direction must be "vision-to-s3" or "s3-to-vision"', got: direction.slice(0, 40) })
+  } catch (e) {
+    console.error('[artwork-copy] failed:', e.message)
+    if (!res.headersSent) res.status(500).json({ error: e.message })
   }
 })
 
