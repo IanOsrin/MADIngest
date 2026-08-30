@@ -233,6 +233,18 @@ const mediaTypeFor = (name) => {
 function visionPathOk(rel) {
   let clean = String(rel || '').trim()
   if (!clean) return null
+  // A FileMaker web viewer re-encodes a URL that GetAsURLEncoded already
+  // encoded, so the value arrives as "%2Fgallo-music-files-wavs%2F…" — one
+  // decode short. A real path always ends up starting with "/", so keep
+  // decoding until it does (bounded, and never touching a path that already
+  // looks decoded, so a literal % in a filename survives).
+  for (let i = 0; i < 3 && !clean.startsWith('/') && /%[0-9A-Fa-f]{2}/.test(clean); i++) {
+    try {
+      const dec = decodeURIComponent(clean)
+      if (dec === clean) break
+      clean = dec.trim()
+    } catch { break }
+  }
   if (!clean.startsWith('/')) clean = '/' + clean
   if (clean.includes('..')) return null
   const bucket = clean.split('/').filter(Boolean)[0]
