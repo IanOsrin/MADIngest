@@ -651,4 +651,41 @@ router.post('/artwork-upload', (req, res, next) => bigJson(req, res, (err) => {
   }
 })
 
+// ── publish one album to MADStreamer ───────────────────────────────────────
+// The FileMaker button. GET so a web viewer or Insert from URL can call it
+// with no body; POST works too.
+//
+//   /api/gallo/publish-check?albumID=ALB-ALD8057    readiness only, writes nothing
+//   /api/gallo/publish-album?albumID=ALB-ALD8057    does the work
+//
+// Publishing converts every missing track, so expect roughly 10 seconds per
+// track — a 12-track album is about two minutes. FileMaker's Insert from URL
+// blocks for the duration, which is why check comes first: it is instant and
+// tells you whether the wait is worth it.
+async function runPublish(req, res, apply) {
+  try {
+    if (!keyOk(req)) return res.status(403).json({ error: 'Forbidden' })
+    const albumID = String(req.query.albumID || req.body?.albumID || '').trim()
+    if (!albumID) return res.status(400).json({ error: 'albumID is required, e.g. ALB-ALD8057' })
+    const { check, publish } = await import('../lib/publish-album.js')
+    if (!apply) return res.json(await check(albumID))
+
+    const visibility = String(req.query.visibility || req.body?.visibility || 'Show').trim()
+    if (!['Hide', 'Show'].includes(visibility)) {
+      return res.status(400).json({ error: 'visibility must be Hide or Show' })
+    }
+    const t0 = Date.now()
+    const out = await publish(albumID, { visibility, onProgress: s => console.log(`[publish ${albumID}] ${s}`) })
+    console.log(`[publish ${albumID}] ${out.ok ? 'done' : 'blocked'} in ${Math.round((Date.now() - t0) / 1000)}s`)
+    res.status(out.ok ? 200 : 422).json({ ...out, seconds: Math.round((Date.now() - t0) / 1000) })
+  } catch (e) {
+    console.error('[publish] failed:', e.message)
+    if (!res.headersSent) res.status(500).json({ ok: false, error: e.message })
+  }
+}
+router.get('/publish-check', (req, res) => runPublish(req, res, false))
+router.post('/publish-check', (req, res) => runPublish(req, res, false))
+router.get('/publish-album', (req, res) => runPublish(req, res, true))
+router.post('/publish-album', (req, res) => runPublish(req, res, true))
+
 export default router
