@@ -273,7 +273,21 @@ router.get('/vision-player', async (req, res) => {
   const esc = (s) => String(s || '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
   res.setHeader('Content-Type', 'text/html; charset=utf-8')
   if (!rel) {
-    return res.send(`<!doctype html><meta charset="utf-8"><body style="margin:0;font:13px -apple-system,Segoe UI,sans-serif;color:#777;display:flex;align-items:center;justify-content:center;height:100vh">No media for this record</body>`)
+    // Say WHY rather than just "no media" — a web viewer is a black box, and
+    // "the path never arrived" and "the path was rejected" look identical
+    // from the outside.
+    const raw = req.query.path
+    const why = raw === undefined ? 'no path parameter arrived'
+      : Array.isArray(raw) ? 'the path parameter arrived more than once'
+      : !String(raw).trim() ? 'the path parameter was empty'
+      : String(raw).includes('..') ? 'the path contains ".."'
+      : `bucket "${String(raw).split('/').filter(Boolean)[0] || '?'}" is not a Vision media bucket`
+    console.warn('[vision-player] rejected:', why, '| raw:', JSON.stringify(raw)?.slice(0, 300))
+    return res.send(`<!doctype html><meta charset="utf-8"><body style="margin:0;padding:12px;font:12px -apple-system,Segoe UI,sans-serif;color:#777">
+<div style="color:#b45309;font-weight:600;margin-bottom:6px">No media for this record</div>
+<div>${esc(why)}</div>
+<div style="margin-top:8px;color:#999;word-break:break-all">received: ${esc(raw === undefined ? '(nothing)' : String(raw).slice(0, 300))}</div>
+</body>`)
   }
   const filename = rel.split('/').filter(Boolean).pop() || ''
   const isImage = /\.(jpe?g|png|gif|webp|tiff?)$/i.test(filename)
