@@ -418,30 +418,59 @@ router.post('/artwork-copy', async (req, res) => {
     if (direction === 'vision-to-s3') {
       const rel = visionPathOk(b.src)
       if (!rel) return res.status(400).json({ error: 'src must be a path inside a Vision media bucket', got: String(b.src || '').slice(0, 120) })
+
+      // Replacing overwrites the album's existing key so MADStreamer and every
+      // other reference keep working; adding mints a fresh GMVin.
+      const replaceUrl = String(b.replaceUrl || '').trim()
       const code = String(b.code || '').trim()
-      if (!GMVIN_RE.test(code)) {
-        return res.status(400).json({ error: 'code must be the GMVin series, e.g. GMVin100000', got: code.slice(0, 40) })
+      let key, replacing = false
+      if (replaceUrl) {
+        const k = keyFromS3Url(replaceUrl)
+        if (!k || !k.startsWith('artwork/') || k.startsWith('artwork/resized/')) {
+          return res.status(400).json({ error: 'replaceUrl must point at an artwork master in the bucket', got: replaceUrl.slice(0, 120) })
+        }
+        key = k
+        replacing = true
+      } else {
+        if (!GMVIN_RE.test(code)) {
+          return res.status(400).json({ error: 'send replaceUrl to overwrite a cover, or code (GMVin…) to add one', got: code.slice(0, 40) })
+        }
+        key = artworkKeyForGmvi(code, '.jpg')
       }
-      const ext = (rel.match(/\.([a-z0-9]+)$/i)?.[1] || 'jpg').toLowerCase()
-      const key = artworkKeyForGmvi(code, '.' + ext)
 
       // headAnyKey resolves to { exists: false } for a missing key — an object,
       // and therefore truthy. Test the flag, not the result.
-      if ((await headAnyKey(key)).exists) {
-        return res.status(409).json({ error: `${key} already exists — refusing to overwrite`, key, url: urlForKey(key) })
+      if (!replacing && (await headAnyKey(key)).exists) {
+        return res.status(409).json({ error: `${key} already exists — send replaceUrl to overwrite it`, key, url: urlForKey(key) })
       }
       const obj = await visionOpen(rel)
       const chunks = []
       for await (const c of (obj.Body.transformToWebStream ? Readable.fromWeb(obj.Body.transformToWebStream()) : obj.Body)) chunks.push(c)
-      const buf = Buffer.concat(chunks)
-      if (!buf.length) return res.status(422).json({ error: 'source image is zero bytes', src: rel })
+      const raw = Buffer.concat(chunks)
+      if (!raw.length) return res.status(422).json({ error: 'source image is zero bytes', src: rel })
 
-      // uploadArtworkByGmvi also writes the _300/_800 webp derivatives — the MAD
-      // app serves those, never the master, so skipping them leaves the cover
-      // broken in the app AND caches a 403 at the CDN.
-      const up = await uploadArtworkByGmvi(buf, code, '.' + ext, mediaTypeFor(rel))
-      console.log(`[artwork-copy] vision→s3 ${rel} → ${up.key} (${buf.length}B, ${Date.now() - t0}ms)`)
-      return res.json({ ok: true, direction, url: up.url, key: up.key, bytes: buf.length, derivatives: up.derivatives })
+      // Normalise to real JPEG. Some existing masters are PNG or TIFF bytes
+      // sitting behind a .jpg name and an image/jpeg content-type (SSC 331 /
+      // GMVi4580 was a 472x469 PNG), which is exactly what refuses to render in
+      // a web viewer while looking fine as a URL.
+      let meta, jpeg
+      try {
+        meta = await sharp(raw).metadata()
+        jpeg = meta.format === 'jpeg' ? raw : await sharp(raw).jpeg({ quality: 92 }).toBuffer()
+      } catch {
+        return res.status(415).json({ error: 'the Vision file is not a readable image', src: rel })
+      }
+
+      await uploadAnyKey(jpeg, key, 'image/jpeg')
+      // The app serves artwork/resized/*, never the master — a copy that skipped
+      // these leaves the old cover showing everywhere that matters.
+      const derivatives = await writeArtworkDerivatives(key, jpeg)
+      console.log(`[artwork-copy] vision→s3 ${replacing ? '(replace) ' : ''}${rel} ${meta.width}×${meta.height} ${meta.format} → ${key} (${Date.now() - t0}ms)`)
+      return res.json({
+        ok: true, direction, replaced: replacing, url: urlForKey(key), key,
+        bytes: jpeg.length, width: meta.width, height: meta.height,
+        sourceFormat: meta.format, derivatives,
+      })
     }
 
     if (direction === 's3-to-vision') {
