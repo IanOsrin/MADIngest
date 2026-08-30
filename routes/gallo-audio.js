@@ -453,12 +453,15 @@ router.post('/artwork-copy', async (req, res) => {
       // sitting behind a .jpg name and an image/jpeg content-type (SSC 331 /
       // GMVi4580 was a 472x469 PNG), which is exactly what refuses to render in
       // a web viewer while looking fine as a URL.
+      // toJpeg falls back to ffmpeg for HEIC files libheif refuses on its
+      // reference-count safety limit — valid photos the decoder simply declines.
       let meta, jpeg
       try {
-        meta = await sharp(raw).metadata()
-        jpeg = meta.format === 'jpeg' ? raw : await sharp(raw).jpeg({ quality: 92 }).toBuffer()
-      } catch {
-        return res.status(415).json({ error: 'the Vision file is not a readable image', src: rel })
+        const { toJpeg } = await import('../lib/publish-album.js')
+        const r = await toJpeg(raw, `the Vision file ${rel.split('/').pop()}`)
+        jpeg = r.jpeg; meta = { format: r.format, width: r.width, height: r.height }
+      } catch (e) {
+        return res.status(415).json({ error: e.message, src: rel })
       }
 
       await uploadAnyKey(jpeg, key, 'image/jpeg')
@@ -580,9 +583,13 @@ router.post('/artwork-upload', (req, res, next) => bigJson(req, res, (err) => {
     try { buf = Buffer.from(raw, 'base64') } catch { return res.status(400).json({ error: 'image is not valid base64' }) }
     if (buf.length < 1024) return res.status(422).json({ error: `decoded image is only ${buf.length} bytes` })
 
-    let meta
-    try { meta = await sharp(buf).metadata() }
-    catch { return res.status(415).json({ error: 'unreadable image — JPEG, PNG, WebP or TIFF please (HEIC is not supported)' }) }
+    // HEIC included — toJpeg falls back to ffmpeg where libheif refuses.
+    let meta, jpegBuf
+    try {
+      const { toJpeg } = await import('../lib/publish-album.js')
+      const r = await toJpeg(buf, 'the dropped image')
+      jpegBuf = r.jpeg; meta = { format: r.format, width: r.width, height: r.height }
+    } catch (e) { return res.status(415).json({ error: e.message }) }
     if (!meta.width || !meta.height) return res.status(415).json({ error: 'could not read the image dimensions' })
     if (Math.min(meta.width, meta.height) < ART_MIN_PX) {
       return res.status(422).json({
@@ -590,10 +597,9 @@ router.post('/artwork-upload', (req, res, next) => bigJson(req, res, (err) => {
       })
     }
 
-    // Normalise to JPEG so every master in the bucket is one format; the
-    // derivatives are webp regardless.
-    const jpeg = meta.format === 'jpeg' ? buf
-      : await sharp(buf).jpeg({ quality: 92 }).toBuffer()
+    // Already normalised to JPEG above, so every master in the bucket is one
+    // format; the derivatives are webp regardless.
+    const jpeg = jpegBuf
 
     // Adding is add-only; replacing is the one path allowed to overwrite.
     if (!replacing && (await headAnyKey(key)).exists) {
