@@ -284,6 +284,29 @@ router.get('/vision-media', async (req, res) => {
   }
 })
 
+/**
+ * Turn whatever arrives into a readable name.
+ *
+ * Titles reached the viewer as "Bumpa%20Sfe%24%2525" because FileMaker encodes
+ * the value and the query string is decoded only once, leaving a layer behind.
+ * So decode until it stops changing rather than exactly once.
+ *
+ * The catch matters as much as the loop: real Gallo filenames contain literal
+ * "%" and "$" ("04 Bumpa Sfe$%.wav"), and decodeURIComponent THROWS on those.
+ * Unguarded, that took the whole player down with a 500 — which is what the
+ * record showed as "Error". On a throw, keep the last good value.
+ */
+function prettyName(v) {
+  let s = String(v ?? '')
+  for (let i = 0; i < 3; i++) {
+    let next
+    try { next = decodeURIComponent(s.replace(/\+/g, ' ')) } catch { break }
+    if (next === s) break
+    s = next
+  }
+  return s.trim()
+}
+
 // GET /api/gallo/vision-player?path=…[&title=…&artist=…&k=KEY]
 // A whole web-viewer page: audio gets transport controls, images render to fit.
 router.get('/vision-player', async (req, res) => {
@@ -311,8 +334,8 @@ router.get('/vision-player', async (req, res) => {
   const filename = rel.split('/').filter(Boolean).pop() || ''
   const isImage = /\.(jpe?g|png|gif|webp|tiff?)$/i.test(filename)
   const src = `/api/gallo/vision-media?path=${encodeURIComponent(rel)}${AUDIO_KEY ? `&k=${encodeURIComponent(String(req.query.k || ''))}` : ''}`
-  const title = esc(req.query.title) || esc(decodeURIComponent(filename.replace(/\.\w+$/, '')))
-  const artist = esc(req.query.artist)
+  const title = esc(prettyName(req.query.title) || prettyName(filename.replace(/\.\w+$/, '')))
+  const artist = esc(prettyName(req.query.artist))
   res.send(`<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
