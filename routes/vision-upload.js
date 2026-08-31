@@ -16,6 +16,7 @@ import { Router } from 'express'
 import express from 'express'
 import { adminAuth } from '../lib/admin-auth.js'
 import { visionStatus, visionStat, visionListKeys, visionUploadFile } from '../lib/vision-drive.js'
+import { linkAlbumAudio } from '../lib/link-album-audio.js'
 
 const router = Router()
 
@@ -286,13 +287,47 @@ router.post('/upload', adminAuth, express.json(), async (req, res) => {
     }
 
     console.log(`[vision-upload] DONE: ${uploaded} uploaded${failed ? `, ${failed} FAILED` : ''}`)
-    emit({ type: 'done', ok: failed === 0, uploaded, failed, skippedExisting: plan.existingCount,
+
+    // Bytes on Vision are invisible to MAM until the songs point at them, so an
+    // upload that stops at "uploaded" is only half the job. Only when an album
+    // was picked — a typed path names no album to link.
+    let link = null
+    if (plan.album?.AlbumID && uploaded) {
+      emit({ type: 'link-start', albumID: plan.album.AlbumID })
+      try {
+        link = await linkAlbumAudio(plan.album.AlbumID, { apply: true })
+        console.log(`[vision-upload] linked ${link.linked} song(s) in MAM (${link.alreadyLinked} already linked, ${link.noMatch.length} unmatched)`)
+        emit({ type: 'link-done', link })
+      } catch (e) {
+        // The files are safely up; failing to link is worth reporting, not throwing.
+        console.warn(`[vision-upload] link failed: ${e.message}`)
+        emit({ type: 'link-error', error: e.message })
+      }
+    }
+
+    emit({ type: 'done', ok: failed === 0, uploaded, failed, skippedExisting: plan.existingCount, link,
            note: uploaded ? 'New files are not searchable until the Vision index is rebuilt (Vision tab → Reindex).' : undefined })
     res.end()
   } catch (e) {
     console.error('[vision-upload] upload failed:', e.message)
     if (streaming) { if (!res.writableEnded) { res.write(JSON.stringify({ type: 'done', ok: false, error: e.message }) + '\n'); res.end() } }
     else res.status(e.status || 500).json({ error: e.message })
+  }
+})
+
+/**
+ * Link an album that is already on Vision — the backlog case, and the repair
+ * path when an upload linked nothing. Defaults to a dry run: pass apply:true to
+ * write. Only empty Audio_Vision_URL fields are ever filled.
+ */
+router.post('/link-album', adminAuth, express.json(), async (req, res) => {
+  try {
+    const albumID = String(req.body?.albumID || '').trim()
+    if (!albumID) return res.status(400).json({ error: 'albumID is required' })
+    const link = await linkAlbumAudio(albumID, { apply: req.body?.apply === true })
+    res.json({ ok: true, link })
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message })
   }
 })
 
