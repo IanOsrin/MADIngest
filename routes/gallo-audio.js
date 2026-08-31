@@ -780,4 +780,87 @@ router.post('/publish-check', (req, res) => runPublish(req, res, false))
 router.get('/publish-album', (req, res) => runPublish(req, res, true))
 router.post('/publish-album', (req, res) => runPublish(req, res, true))
 
+// ── upscale an album's cover ───────────────────────────────────────────────
+// Small covers are the last artwork problem: a 600px scan looks fine as a
+// thumbnail and poor everywhere else, and DDEX/stores want a large square.
+// This overwrites the SAME S3 key so MADStreamer and the website need no
+// change, and rewrites the derivatives the app actually serves.
+//
+//   GET /api/gallo/artwork-upscale?albumID=…[&size=1500][&fit=cover|contain]
+//
+// Upscaling cannot invent detail — a 600px source at 1500px is a bigger soft
+// image, not a sharper one. The response reports the source size so the
+// operator can see what they started from.
+const UPSCALE_DEFAULT = Number(process.env.ARTWORK_UPSCALE_SIZE || 1500)
+
+async function runUpscale(req, res) {
+  const t0 = Date.now()
+  try {
+    if (!keyOk(req)) return res.status(403).json({ error: 'Forbidden' })
+    const albumID = String(req.query.albumID || req.body?.albumID || '').trim()
+    if (!albumID) return res.status(400).json({ error: 'albumID is required' })
+    const size = Math.min(4000, Math.max(300, Number(req.query.size || req.body?.size || UPSCALE_DEFAULT)))
+    const fit  = String(req.query.fit || req.body?.fit || 'cover').toLowerCase() === 'contain' ? 'contain' : 'cover'
+    const force = String(req.query.force || req.body?.force || '') === 'true'
+
+    // the album, live
+    const base = `${process.env.GALLO_FM_HOST}/fmi/data/vLatest/databases/${encodeURIComponent('Music Arena Master')}`
+    const auth = 'Basic ' + Buffer.from(`${process.env.GALLO_FM_USER}:${process.env.GALLO_FM_PASS}`).toString('base64')
+    const s = await (await fetch(base + '/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: auth }, body: '{}' })).json()
+    const token = s?.response?.token
+    if (!token) throw new Error('could not reach Music Arena Master')
+    const H = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }
+    let album
+    try {
+      const j = await (await fetch(base + '/layouts/Albums/_find', { method: 'POST', headers: H,
+        body: JSON.stringify({ query: [{ AlbumID: '==' + albumID }], limit: 1 }) })).json()
+      album = j?.response?.data?.[0]
+    } finally { await fetch(base + '/sessions/' + token, { method: 'DELETE', headers: H }).catch(() => {}) }
+    if (!album) return res.status(404).json({ error: `no album ${albumID} in Music Arena Master` })
+
+    const url = String(album.fieldData['Artwork_S3_URL'] || '').trim()
+    if (!url) return res.status(422).json({ error: 'this album has no S3 cover to upscale' })
+    const key = keyFromS3Url(url)
+    if (!key || !key.startsWith('artwork/') || key.startsWith('artwork/resized/')) {
+      return res.status(400).json({ error: 'Artwork_S3_URL does not point at an artwork master', url })
+    }
+    if (!(await headAnyKey(key)).exists) return res.status(404).json({ error: `${key} is not in the bucket`, key })
+
+    const { buffer: raw } = await downloadByUrl(url)
+    const { toJpeg } = await import('../lib/publish-album.js')
+    const { jpeg: src, width, height, format } = await toJpeg(raw, `the cover ${key.split('/').pop()}`)
+
+    if (!force && Math.min(width, height) >= size && width === height) {
+      return res.json({ ok: true, skipped: true, reason: `already ${width}×${height} — at or above ${size} and square`,
+                        albumID, key, url, width, height })
+    }
+
+    const out = await sharp(src)
+      .resize(size, size, { fit, position: 'centre', kernel: 'lanczos3',
+                            ...(fit === 'contain' ? { background: { r: 0, g: 0, b: 0 } } : {}) })
+      .jpeg({ quality: 92 })
+      .toBuffer()
+
+    await uploadAnyKey(out, key, 'image/jpeg')
+    const derivatives = await writeArtworkDerivatives(key, out)
+
+    console.log(`[artwork-upscale] ${albumID} ${width}×${height} ${format} → ${size}×${size} (${fit}) ${Math.round((Date.now() - t0) / 1000)}s`)
+    res.json({
+      ok: true, albumID, key, url, fit,
+      from: `${width}×${height}`, to: `${size}×${size}`,
+      sourceFormat: format, bytes: out.length, derivatives,
+      // An honest note the operator can see: upscaling does not add detail.
+      note: Math.min(width, height) < size
+        ? `source was only ${Math.min(width, height)}px on the short side — this is now larger, not sharper`
+        : 'source was large enough; this is a resize, not an upscale',
+      seconds: Math.round((Date.now() - t0) / 1000),
+    })
+  } catch (e) {
+    console.error('[artwork-upscale] failed:', e.message)
+    if (!res.headersSent) res.status(500).json({ error: e.message })
+  }
+}
+router.get('/artwork-upscale', runUpscale)
+router.post('/artwork-upscale', express.json(), runUpscale)
+
 export default router
