@@ -649,7 +649,7 @@ router.post('/artwork-upload', (req, res, next) => bigJson(req, res, (err) => {
     const b = req.body || {}
     const replaceUrl = String(b.replaceUrl || '').trim()
     const code = String(b.code || '').trim()
-    let key, replacing = false
+    let key, replacing = false, allocatedCode = null
 
     if (replaceUrl) {
       const k = keyFromS3Url(replaceUrl)
@@ -661,10 +661,23 @@ router.post('/artwork-upload', (req, res, next) => bigJson(req, res, (err) => {
       key = k
       replacing = true
     } else {
-      if (!GMVIN_RE.test(code)) {
-        return res.status(400).json({ error: 'send replaceUrl to replace a cover, or code (GMVin…) to add one', got: code.slice(0, 40) })
+      // The bucket is the counter — the same rule artwork-copy follows. A code
+      // from FileMaker's Settings::Next_GMVin goes stale the moment anything
+      // else mints one (publish and the copy button both do), so honour it only
+      // if it is genuinely free and otherwise take the next one. A drop should
+      // never fail because a counter drifted.
+      let use = GMVIN_RE.test(code) ? code : null
+      if (use && (await headAnyKey(artworkKeyForGmvi(use, '.jpg'))).exists) use = null
+      if (!use) {
+        let max = 99999
+        for (const k of await listKeysWithPrefix('artwork/GMVin')) {
+          const m = k.match(/artwork\/GMVin(\d+)\./)
+          if (m) max = Math.max(max, Number(m[1]))
+        }
+        use = 'GMVin' + (max + 1)
       }
-      key = artworkKeyForGmvi(code, '.jpg')
+      allocatedCode = use
+      key = artworkKeyForGmvi(use, '.jpg')
     }
     // FileMaker's Base64Encode wraps at 76 chars and may prepend a data: prefix.
     const raw = String(b.image || '').replace(/^data:[^,]*,/, '').replace(/\s+/g, '')
@@ -705,7 +718,8 @@ router.post('/artwork-upload', (req, res, next) => bigJson(req, res, (err) => {
 
     // Adding is add-only; replacing is the one path allowed to overwrite.
     if (!replacing && (await headAnyKey(key)).exists) {
-      return res.status(409).json({ error: `${key} already exists — allocate a fresh code`, key })
+      // Only reachable if something claimed the key between allocation and now.
+      return res.status(409).json({ error: `${key} was taken while this upload was in flight — try again`, key })
     }
     if (replacing && !(await headAnyKey(key)).exists) {
       return res.status(404).json({ error: `${key} is not in the bucket — nothing to replace`, key })
@@ -756,7 +770,7 @@ router.post('/artwork-upload', (req, res, next) => bigJson(req, res, (err) => {
       note: resized && Math.min(meta.width, meta.height) < target
         ? `source was only ${Math.min(meta.width, meta.height)}px on the short side — squared to ${target}, larger but not sharper`
         : resized ? `squared to ${target}` : 'already square and large enough — kept as-is',
-      bytes: jpeg.length, visionPath, visionError,
+      code: allocatedCode, bytes: jpeg.length, visionPath, visionError,
     })
   } catch (e) {
     console.error('[artwork-upload] failed:', e.message)
