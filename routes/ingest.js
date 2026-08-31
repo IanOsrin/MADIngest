@@ -971,11 +971,12 @@ async function _fetchArtworkBuffer(ref) {
   return fetchContainerData(ref) // last resort (an FM container proxy URL)
 }
 
-async function _runDdexBuild({ catalogue_no, source, overrides, output_dir, log, warn }) {
-  const src = (source || 'gallo').toLowerCase()
+async function _runDdexBuild({ catalogue_no, album_id, source, overrides, output_dir, log, warn }) {
+  const src = (source || 'mam').toLowerCase()
   const isCmsSource = src === 'cms2024' || src === 'cms-2024' || src === '2024'
+  const isMamSource = src === 'mam' || src === 'master' || src === 'music arena master'
 
-  log(`Starting build for ${catalogue_no} (source: ${src})`)
+  log(`Starting build for ${album_id || catalogue_no} (source: ${src})`)
 
   // 1. Pull tracks from the chosen source DB. CMS 2024 uses the same flat
   //    track shape (via mapCms2024Record) so the rest of the build pipeline
@@ -984,17 +985,26 @@ async function _runDdexBuild({ catalogue_no, source, overrides, output_dir, log,
   //    themselves live on Gallo and filenames are identical across DBs.
   let tracks
   try {
-    tracks = isCmsSource
-      ? await findCms2024RecordsByCatalogue(catalogue_no)
-      : await findGalloRecordsByCatalogue(catalogue_no)
+    if (isMamSource) {
+      const { findMamRecordsByCatalogue, findMamRecordsByAlbumId } = await import('../lib/fm-mam.js')
+      tracks = album_id ? await findMamRecordsByAlbumId(album_id)
+                        : await findMamRecordsByCatalogue(catalogue_no)
+    } else if (isCmsSource) {
+      tracks = await findCms2024RecordsByCatalogue(catalogue_no)
+    } else {
+      tracks = await findGalloRecordsByCatalogue(catalogue_no)
+    }
   } catch (e) {
     throw Object.assign(new Error(`FM query failed (${src}): ${e.message}`), { status: 502 })
   }
   if (!tracks.length) {
-    throw Object.assign(new Error(`No tracks for catalogue "${catalogue_no}" (source: ${src})`), { status: 404 })
+    throw Object.assign(new Error(`No tracks for ${album_id ? `album ${album_id}` : `catalogue "${catalogue_no}"`} (source: ${src})`), { status: 404 })
   }
 
-  log(`Pulled ${tracks.length} tracks from ${isCmsSource ? 'CMS 2024' : 'Gallo Catalogue'}`)
+  const srcLabel = isMamSource ? 'Music Arena Master' : isCmsSource ? 'CMS 2024' : 'Gallo Catalogue'
+  log(`Pulled ${tracks.length} tracks from ${srcLabel}`)
+  // MAM carries Audio_Vision_URL and Artwork_S3_URL on the records themselves,
+  // so it needs no hydrate step — that is CMS's problem, not this source's.
   if (isCmsSource) {
     tracks = await _hydrateFromGallo(tracks, catalogue_no)
     log(`Hydrated audio/artwork refs from Gallo Catalogue`)
@@ -1181,8 +1191,8 @@ async function _runDdexBuild({ catalogue_no, source, overrides, output_dir, log,
  * the final outcome (e.g. for non-interactive scripts).
  */
 router.post('/ddex/build', adminAuth, express.json(), async (req, res) => {
-  const { catalogue_no, overrides, source, output_dir } = req.body || {}
-  if (!catalogue_no) return res.status(400).json({ error: 'catalogue_no required' })
+  const { catalogue_no, album_id, overrides, source, output_dir } = req.body || {}
+  if (!catalogue_no && !album_id) return res.status(400).json({ error: 'catalogue_no or album_id required' })
 
   const buildLog = []
   const ts  = () => new Date().toISOString().slice(11, 19)
@@ -1190,7 +1200,7 @@ router.post('/ddex/build', adminAuth, express.json(), async (req, res) => {
   const warn = (msg) => { const l = `[${ts()}] ⚠ ${msg}`; console.warn(l); buildLog.push(l) }
 
   try {
-    const result = await _runDdexBuild({ catalogue_no, overrides, source, output_dir, log, warn })
+    const result = await _runDdexBuild({ catalogue_no, album_id, overrides, source, output_dir, log, warn })
     res.json({ ...result, logs: buildLog })
   } catch (err) {
     res.status(err.status || 500).json({
@@ -1207,16 +1217,17 @@ router.post('/ddex/build', adminAuth, express.json(), async (req, res) => {
  */
 router.get('/ddex/build-stream', (req, res) => {
   const catalogue_no = (req.query.catalogue_no || '').toString().trim()
+  const album_id     = (req.query.album_id || '').toString().trim()
   const source       = (req.query.source       || 'gallo').toString().trim()
   const output_dir   = (req.query.output_dir   || '').toString().trim() || undefined
   let overrides = {}
   if (req.query.overrides) {
     try { overrides = JSON.parse(req.query.overrides) } catch { /* ignore */ }
   }
-  if (!catalogue_no) return res.status(400).end('catalogue_no required')
+  if (!catalogue_no && !album_id) return res.status(400).end('catalogue_no or album_id required')
 
   _sseStreamRunner({ req, res, runner: ({ log, warn }) =>
-    _runDdexBuild({ catalogue_no, overrides, source, output_dir, log, warn })
+    _runDdexBuild({ catalogue_no, album_id, overrides, source, output_dir, log, warn })
   })
 })
 
