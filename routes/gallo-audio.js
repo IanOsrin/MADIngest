@@ -423,7 +423,7 @@ router.post('/artwork-copy', async (req, res) => {
       // other reference keep working; adding mints a fresh GMVin.
       const replaceUrl = String(b.replaceUrl || '').trim()
       const code = String(b.code || '').trim()
-      let key, replacing = false
+      let key, replacing = false, allocated = null
       if (replaceUrl) {
         const k = keyFromS3Url(replaceUrl)
         if (!k || !k.startsWith('artwork/') || k.startsWith('artwork/resized/')) {
@@ -432,10 +432,24 @@ router.post('/artwork-copy', async (req, res) => {
         key = k
         replacing = true
       } else {
-        if (!GMVIN_RE.test(code)) {
-          return res.status(400).json({ error: 'send replaceUrl to overwrite a cover, or code (GMVin…) to add one', got: code.slice(0, 40) })
+        // The bucket is the counter, not FileMaker. Two allocators — the
+        // Settings::Next_GMVin field and publish-album's own bucket scan —
+        // drifted apart the moment publish minted codes FileMaker never saw,
+        // and the copy button started colliding (LSJ 382 hit GMVin100005).
+        // A supplied code is honoured only if it is actually free; otherwise
+        // the next free one is taken, so a stale counter cannot block a copy.
+        let use = GMVIN_RE.test(code) ? code : null
+        if (use && (await headAnyKey(artworkKeyForGmvi(use, '.jpg'))).exists) use = null
+        if (!use) {
+          let max = 99999
+          for (const k of await listKeysWithPrefix('artwork/GMVin')) {
+            const m = k.match(/artwork\/GMVin(\d+)\./)
+            if (m) max = Math.max(max, Number(m[1]))
+          }
+          use = 'GMVin' + (max + 1)
         }
-        key = artworkKeyForGmvi(code, '.jpg')
+        allocated = use
+        key = artworkKeyForGmvi(use, '.jpg')
       }
 
       // headAnyKey resolves to { exists: false } for a missing key — an object,
@@ -471,7 +485,7 @@ router.post('/artwork-copy', async (req, res) => {
       console.log(`[artwork-copy] vision→s3 ${replacing ? '(replace) ' : ''}${rel} ${meta.width}×${meta.height} ${meta.format} → ${key} (${Date.now() - t0}ms)`)
       return res.json({
         ok: true, direction, replaced: replacing, url: urlForKey(key), key,
-        bytes: jpeg.length, width: meta.width, height: meta.height,
+        code: allocated, bytes: jpeg.length, width: meta.width, height: meta.height,
         sourceFormat: meta.format, derivatives,
       })
     }
