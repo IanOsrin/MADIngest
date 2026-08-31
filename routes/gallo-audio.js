@@ -618,7 +618,11 @@ router.post('/artwork-copy', async (req, res) => {
 // versioning or trash, so a replacement is written there under a new name and
 // the superseded file is left alone. Nothing outside the master database
 // references the Vision path, so nothing is orphaned by that.
-const ART_MIN_PX = Number(process.env.ART_MIN_PX || 600)
+// A drop is squared to ART_UPLOAD_SIZE on the way in, so the floor only has to
+// stop genuine thumbnails becoming masters — 600 was rejecting usable Discogs
+// scans that the operator then had no way to get in at all.
+const ART_MIN_PX     = Number(process.env.ART_MIN_PX || 300)
+const ART_UPLOAD_SIZE = Number(process.env.ARTWORK_UPSCALE_SIZE || 1500)
 const VISION_ART_DROP_ROOT = process.env.VISION_ART_DROP_ROOT
   || '/gallo-music-files-wavs/Digital Sleeves/Added from FileMaker'
 
@@ -683,9 +687,21 @@ router.post('/artwork-upload', (req, res, next) => bigJson(req, res, (err) => {
       })
     }
 
-    // Already normalised to JPEG above, so every master in the bucket is one
-    // format; the derivatives are webp regardless.
-    const jpeg = jpegBuf
+    // Square it on the way in, so a drop produces a store-ready cover in ONE
+    // action rather than needing artwork-upscale as a second press. Skipped
+    // when the image is already square and at least the target — no point
+    // re-encoding a good 3000×3000 sleeve.
+    const target = Math.min(4000, Math.max(300, Number(b.size || ART_UPLOAD_SIZE)))
+    const squareFit = String(b.fit || 'cover').toLowerCase() === 'contain' ? 'contain' : 'cover'
+    let jpeg = jpegBuf, resized = null
+    if (!(meta.width === meta.height && Math.min(meta.width, meta.height) >= target)) {
+      jpeg = await sharp(jpegBuf)
+        .resize(target, target, { fit: squareFit, position: 'centre', kernel: 'lanczos3',
+                                  ...(squareFit === 'contain' ? { background: { r: 0, g: 0, b: 0 } } : {}) })
+        .jpeg({ quality: 92 })
+        .toBuffer()
+      resized = { from: `${meta.width}×${meta.height}`, to: `${target}×${target}`, fit: squareFit }
+    }
 
     // Adding is add-only; replacing is the one path allowed to overwrite.
     if (!replacing && (await headAnyKey(key)).exists) {
@@ -734,8 +750,13 @@ router.post('/artwork-upload', (req, res, next) => bigJson(req, res, (err) => {
     console.log(`[artwork-upload] ${code} ${meta.width}×${meta.height} ${meta.format} → ${up.key}${visionPath ? ' + vision' : ''} (${Date.now() - t0}ms)`)
     res.json({
       ok: true, url: up.url, key: up.key, derivatives: up.derivatives,
-      width: meta.width, height: meta.height, bytes: jpeg.length,
-      visionPath, visionError,
+      width: resized ? Number(resized.to.split('×')[0]) : meta.width,
+      height: resized ? Number(resized.to.split('×')[1]) : meta.height,
+      sourceSize: `${meta.width}×${meta.height}`, resized,
+      note: resized && Math.min(meta.width, meta.height) < target
+        ? `source was only ${Math.min(meta.width, meta.height)}px on the short side — squared to ${target}, larger but not sharper`
+        : resized ? `squared to ${target}` : 'already square and large enough — kept as-is',
+      bytes: jpeg.length, visionPath, visionError,
     })
   } catch (e) {
     console.error('[artwork-upload] failed:', e.message)
