@@ -352,7 +352,8 @@
           <div>
             <label style="font-size:0.78rem;color:var(--muted);display:block;margin-bottom:4px">Source database</label>
             <select id="ddexBuildSource" onchange="toggleDdexBackfill()" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 10px;color:var(--text);font-family:inherit;font-size:0.88rem">
-              <option value="gallo">Gallo Catalogue (canonical)</option>
+              <option value="mam">Music Arena Master (canonical)</option>
+              <option value="gallo">Gallo Catalogue</option>
               <option value="cms2024">Gallo CMS 2024</option>
             </select>
           </div>
@@ -3436,7 +3437,7 @@ function renderSearchAllResults(songs, sources) {
 
 // ── Build Ingrooves Folder ────────────────────────────────────────────────
 function toggleDdexBackfill() {
-  const isCms2024 = ($('ddexBuildSource')?.value || 'gallo') === 'cms2024'
+  const isCms2024 = ($('ddexBuildSource')?.value || 'mam') === 'cms2024'
   const row = $('ddexBackfillRow')
   if (row) row.style.display = isCms2024 ? 'block' : 'none'
   if (!isCms2024) {
@@ -3564,7 +3565,7 @@ async function loadDdexVolumes() {
 
 async function buildIngroovesFolder() {
   const cat       = $('ddexBuildCat')?.value?.trim()
-  const source    = $('ddexBuildSource')?.value || 'gallo'
+  const source    = $('ddexBuildSource')?.value || 'mam'
   const outputDir = ($('ddexBuildOutDir')?.value || '').trim()
   const backfill  = !!$('ddexBackfillCb')?.checked && source === 'cms2024'
   const status    = $('ddexBuildStatus')
