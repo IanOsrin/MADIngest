@@ -15,6 +15,7 @@ import { startVisionIndexAutoRefresh } from './lib/gallo-vision-link.js'
 import visionImportRouter from './routes/vision-import.js'
 import ccaImportRouter from './routes/cca-import.js'
 import visionUploadRouter from './routes/vision-upload.js'
+import visionLinkRouter from './routes/vision-link.js'
 import visionUtilityRouter, { VISION_DELETE_ENABLED } from './routes/vision-utility.js'
 import galloAudioRouter from './routes/gallo-audio.js'
 import heroBannerRouter from './routes/hero-banner.js'
@@ -172,6 +173,9 @@ app.use('/api/vision', visionRouter)
 app.use('/api/vision-import', visionImportRouter)
 app.use('/api/cca-import', ccaImportRouter)
 if (VISION_UPLOAD_ENABLED) app.use('/api/vision-upload', visionUploadRouter) // local-only — see VISION_UPLOAD_ENABLED above
+// Album search + MAM audio linking share that base path but NOT the flag: they
+// read Vision and write MAM, touching no local filesystem, so they work hosted.
+app.use('/api/vision-upload', visionLinkRouter)
 app.use('/api/vision-util', visionUtilityRouter)  // browser-based file ops — works hosted too, unlike vision-upload
 app.use('/api/gallo', galloAudioRouter)
 if (YOUTUBE_ENABLED) app.use('/api/youtube', youtubeRouter)   // local-only — see YOUTUBE_ENABLED above
