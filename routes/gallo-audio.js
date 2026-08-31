@@ -375,6 +375,31 @@ router.get('/audio/:recordId', async (req, res) => {
 // existing cover. FileMaker allocates the number — the master file is local, so
 // this server cannot read a counter out of it.
 const GMVIN_RE = /^GMVin\d{6,}$/
+
+/** Is this catalogue number already an album on the streamer? */
+async function madstreamerHasAlbum(cat) {
+  const host = String(process.env.MADSTREAMER_FM_HOST || '').replace(/^https?:\/\//, '')
+  const db = process.env.MADSTREAMER_FM_DB || 'MADStreamer'
+  const base = `https://${host}/fmi/data/vLatest/databases/${encodeURIComponent(db)}`
+  const auth = 'Basic ' + Buffer.from(`${process.env.GALLO_FM_USER}:${process.env.GALLO_FM_PASS}`).toString('base64')
+  const s = await (await fetch(base + '/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: auth }, body: '{}' })).json()
+  const token = s?.response?.token
+  if (!token) throw new Error('could not reach MADStreamer to check the album')
+  const H = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }
+  try {
+    // Catalogue numbers vary in spacing between databases (BL 789 vs BL789),
+    // so try the value as given and with spaces removed.
+    for (const c of [...new Set([cat, cat.replace(/\s+/g, '')])]) {
+      for (const layout of ['Tape Files Master', 'Song Files']) {
+        const r = await fetch(`${base}/layouts/${encodeURIComponent(layout)}/_find`, { method: 'POST', headers: H,
+          body: JSON.stringify({ query: [{ 'Reference Catalogue Number': '==' + c }], limit: 1 }) })
+        const j = await r.json()
+        if (j?.response?.dataInfo?.foundCount > 0) return true
+      }
+    }
+    return false
+  } finally { await fetch(base + '/sessions/' + token, { method: 'DELETE', headers: H }).catch(() => {}) }
+}
 const VISION_ART_ROOT = process.env.VISION_ART_COPY_ROOT
   || '/gallo-music-files-wavs/Digital Sleeves/Copied from S3'
 
@@ -418,6 +443,23 @@ router.post('/artwork-copy', async (req, res) => {
     if (direction === 'vision-to-s3') {
       const rel = visionPathOk(b.src)
       if (!rel) return res.status(400).json({ error: 'src must be a path inside a Vision media bucket', got: String(b.src || '').slice(0, 120) })
+
+      // Ian's failsafe: this button maintains artwork for albums that are
+      // already on the streamer. An album that is not there yet should go
+      // through publish-album, which creates its records AND its artwork in one
+      // action — copying a cover for it first would leave an orphan on S3.
+      // (publish-album makes its own artwork internally, so it is unaffected.)
+      const cat = String(b.cat || b.catalogue || '').trim()
+      if (!cat) {
+        return res.status(400).json({ error: 'cat (the album catalogue number) is required so the album can be checked against MADStreamer' })
+      }
+      const inStreamer = await madstreamerHasAlbum(cat)
+      if (!inStreamer) {
+        return res.status(409).json({
+          error: `"${cat}" is not on MADStreamer yet, so there is nothing to update artwork for. Use Publish to put the album on the streamer — that creates its records and its artwork together.`,
+          catalogue: cat, onStreamer: false,
+        })
+      }
 
       // Replacing overwrites the album's existing key so MADStreamer and every
       // other reference keep working; adding mints a fresh GMVin.
