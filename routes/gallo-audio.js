@@ -376,8 +376,26 @@ router.get('/audio/:recordId', async (req, res) => {
 // this server cannot read a counter out of it.
 const GMVIN_RE = /^GMVin\d{6,}$/
 
-/** Is this catalogue number already an album on the streamer? */
-async function madstreamerHasAlbum(cat) {
+/** Both catalogue numbers Music Arena Master holds for an album. */
+async function catalogueNumbersForAlbum(albumID) {
+  const base = `${process.env.GALLO_FM_HOST}/fmi/data/vLatest/databases/${encodeURIComponent('Music Arena Master')}`
+  const auth = 'Basic ' + Buffer.from(`${process.env.GALLO_FM_USER}:${process.env.GALLO_FM_PASS}`).toString('base64')
+  const s = await (await fetch(base + '/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: auth }, body: '{}' })).json()
+  const token = s?.response?.token
+  if (!token) throw new Error('could not reach Music Arena Master')
+  const H = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }
+  try {
+    const j = await (await fetch(base + '/layouts/Albums/_find', { method: 'POST', headers: H,
+      body: JSON.stringify({ query: [{ AlbumID: '==' + albumID }], limit: 1 }) })).json()
+    const f = j?.response?.data?.[0]?.fieldData
+    if (!f) return []
+    return [...new Set([f['Album Catalogue Number'], f['Reference Catalogue Number']]
+      .map(v => String(v || '').trim()).filter(Boolean))]
+  } finally { await fetch(base + '/sessions/' + token, { method: 'DELETE', headers: H }).catch(() => {}) }
+}
+
+/** Is any of these catalogue numbers already an album on the streamer? */
+async function madstreamerHasAlbum(cats) {
   const host = String(process.env.MADSTREAMER_FM_HOST || '').replace(/^https?:\/\//, '')
   const db = process.env.MADSTREAMER_FM_DB || 'MADStreamer'
   const base = `https://${host}/fmi/data/vLatest/databases/${encodeURIComponent(db)}`
@@ -388,8 +406,9 @@ async function madstreamerHasAlbum(cat) {
   const H = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }
   try {
     // Catalogue numbers vary in spacing between databases (BL 789 vs BL789),
-    // so try the value as given and with spaces removed.
-    for (const c of [...new Set([cat, cat.replace(/\s+/g, '')])]) {
+    // so try each value as given and with spaces removed.
+    const list = (Array.isArray(cats) ? cats : [cats]).map(String)
+    for (const c of [...new Set(list.flatMap(x => [x, x.replace(/\s+/g, '')]))]) {
       for (const layout of ['Tape Files Master', 'Song Files']) {
         const r = await fetch(`${base}/layouts/${encodeURIComponent(layout)}/_find`, { method: 'POST', headers: H,
           body: JSON.stringify({ query: [{ 'Reference Catalogue Number': '==' + c }], limit: 1 }) })
@@ -449,15 +468,26 @@ router.post('/artwork-copy', async (req, res) => {
       // through publish-album, which creates its records AND its artwork in one
       // action — copying a cover for it first would leave an orphan on S3.
       // (publish-album makes its own artwork internally, so it is unaffected.)
-      const cat = String(b.cat || b.catalogue || '').trim()
-      if (!cat) {
-        return res.status(400).json({ error: 'cat (the album catalogue number) is required so the album can be checked against MADStreamer' })
+      // Identify the album by albumID where possible — FileMaker already has it,
+      // and looking the catalogue up here avoids depending on the caller to send
+      // a correctly-spaced number (the databases disagree: BL 789 vs BL789).
+      // A bare cat is still accepted for callers that only have that.
+      let cats = []
+      const albumID = String(b.albumID || '').trim()
+      const catIn = String(b.cat || b.catalogue || '').trim()
+      if (albumID) {
+        cats = await catalogueNumbersForAlbum(albumID)
+        if (!cats.length) return res.status(404).json({ error: `no album ${albumID} in Music Arena Master, or it has no catalogue number` })
+      } else if (catIn) {
+        cats = [catIn]
+      } else {
+        return res.status(400).json({ error: 'albumID (preferred) or cat is required, so the album can be checked against MADStreamer' })
       }
-      const inStreamer = await madstreamerHasAlbum(cat)
-      if (!inStreamer) {
+      const found = await madstreamerHasAlbum(cats)
+      if (!found) {
         return res.status(409).json({
-          error: `"${cat}" is not on MADStreamer yet, so there is nothing to update artwork for. Use Publish to put the album on the streamer — that creates its records and its artwork together.`,
-          catalogue: cat, onStreamer: false,
+          error: `"${cats[0]}" is not on MADStreamer yet, so there is nothing to update artwork for. Use Publish to put the album on the streamer — that creates its records and its artwork together.`,
+          catalogue: cats[0], triedCatalogues: cats, onStreamer: false,
         })
       }
 
