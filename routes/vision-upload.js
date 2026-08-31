@@ -165,6 +165,47 @@ async function buildPlan({ localFolder, visionFolder, albumID }) {
 
 const publicFile = ({ abs, ...f }) => f // keep local absolute paths out of responses
 
+/**
+ * Search Music Arena Master and return, for each album, the folder its files
+ * belong in. Picking an album is the safest way to fill the destination: a
+ * typed path one level too high scatters the album loose into the parent,
+ * because the planner maps the picked folder's CONTENTS onto it.
+ */
+router.get('/album-search', adminAuth, async (req, res) => {
+  const q = String(req.query.q || '').trim()
+  if (q.length < 2) return res.status(400).json({ error: 'Type at least two characters' })
+  const base = `${process.env.GALLO_FM_HOST}/fmi/data/vLatest/databases/${encodeURIComponent('Music Arena Master')}`
+  const auth = 'Basic ' + Buffer.from(`${process.env.GALLO_FM_USER}:${process.env.GALLO_FM_PASS}`).toString('base64')
+  let token
+  try {
+    const s = await (await fetch(base + '/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: auth }, body: '{}' })).json()
+    token = s?.response?.token
+    if (!token) throw new Error('Could not reach Music Arena Master')
+    const H = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }
+    const j = await (await fetch(base + '/layouts/Albums/_find', { method: 'POST', headers: H,
+      body: JSON.stringify({
+        query: [{ 'Album Artist': `*${q}*` }, { 'Album Title': `*${q}*` },
+                { 'Album Catalogue Number': `*${q}*` }, { 'Reference Catalogue Number': `*${q}*` }],
+        limit: 25,
+      }) })).json()
+    const { visionFolderForAlbum } = await import('../lib/vision-destination.js')
+    const albums = (j?.response?.data || []).map(r => {
+      const f = r.fieldData
+      const catalogue = f['Album Catalogue Number'] || f['Reference Catalogue Number']
+      let folder = null, why = null
+      try { folder = visionFolderForAlbum({ artist: f['Album Artist'], title: f['Album Title'], catalogue }).folder }
+      catch (e) { why = e.message }
+      return { albumID: f.AlbumID, artist: f['Album Artist'], title: f['Album Title'],
+               catalogue, tracks: f['Track Count'], folder, why }
+    })
+    res.json({ ok: true, count: albums.length, albums })
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message })
+  } finally {
+    if (token) await fetch(base + '/sessions/' + token, { method: 'DELETE', headers: { Authorization: 'Bearer ' + token } }).catch(() => {})
+  }
+})
+
 router.post('/preview', adminAuth, express.json(), async (req, res) => {
   try {
     const plan = await buildPlan(req.body || {})

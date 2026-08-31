@@ -21,6 +21,7 @@ import { wavBufferToMp3 } from '../lib/audio-convert.js'
 import { uploadMp3ByGcat, uploadArtworkByGmvi, artworkKeyForGmvi, headAnyKey,
          urlForKey, keyFromS3Url, downloadByUrl, listKeysWithPrefix,
          uploadAnyKey, writeArtworkDerivatives } from '../lib/s3-imports.js'
+import { contentDisposition } from '../lib/content-disposition.js'
 
 const router = Router()
 
@@ -271,7 +272,7 @@ router.get('/vision-media', async (req, res) => {
     res.setHeader('Content-Type', mediaTypeFor(filename))
     res.setHeader('Accept-Ranges', 'bytes')
     res.setHeader('Cache-Control', 'private, max-age=3600')
-    res.setHeader('Content-Disposition', `inline; filename="${filename.replace(/[\\"\x00-\x1f]/g, ' ')}"`)
+    res.setHeader('Content-Disposition', contentDisposition(filename, { inline: true }))
     if (obj.ContentLength != null) res.setHeader('Content-Length', String(obj.ContentLength))
     if (range && obj.ContentRange) { res.status(206); res.setHeader('Content-Range', obj.ContentRange) }
 
@@ -346,7 +347,7 @@ router.get('/audio/:recordId', async (req, res) => {
     const obj = await visionOpen(r.path, range)
     res.setHeader('Content-Type', typeFor(r.filename))
     res.setHeader('Accept-Ranges', 'bytes')
-    res.setHeader('Content-Disposition', `inline; filename="${(r.filename || 'audio').replace(/[\\"\x00-\x1f]/g, ' ')}"`)
+    res.setHeader('Content-Disposition', contentDisposition(r.filename || 'audio', { inline: true }))
     if (obj.ContentLength != null) res.setHeader('Content-Length', String(obj.ContentLength))
     if (range && obj.ContentRange) { res.status(206); res.setHeader('Content-Range', obj.ContentRange) }
 

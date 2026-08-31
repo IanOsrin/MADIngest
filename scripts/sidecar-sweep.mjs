@@ -40,15 +40,37 @@ const s3 = () => new S3Client({
 const human = (n) => n >= 1e9 ? (n / 1e9).toFixed(2) + ' GB' : n >= 1e6 ? (n / 1e6).toFixed(1) + ' MB' : (n / 1e3).toFixed(0) + ' KB'
 
 const { entries } = await visionList('/')
-const buckets = (entries || []).filter(e => e.type === 'dir' || e.isDir).map(e => e.name)
+const allBuckets = (entries || []).filter(e => e.type === 'dir' || e.isDir).map(e => e.name)
+
+// --folder limits the scan to named top-level folders ("bucket/Folder", repeatable
+// as a comma list). The Vision endpoint lists roughly 10k objects a minute, so a
+// whole-estate sweep is ~193k objects and twenty-odd minutes; the folders that
+// actually hold sidecars are a fraction of that.
+const folderArg = argv.includes('--folder') ? argv[argv.indexOf('--folder') + 1] : ''
+const only = folderArg.split(',').map(s => s.trim().replace(/^\/+/, '')).filter(Boolean)
+
+const targets = only.length
+  ? only.map(o => { const [bucket, ...rest] = o.split('/'); return { bucket, prefix: rest.join('/') + '/' } })
+  : allBuckets.map(bucket => ({ bucket, prefix: '' }))
+
+console.error(only.length
+  ? `scanning ${targets.length} folder(s)`
+  : `scanning ${allBuckets.length} whole bucket(s) — expect ~20 min; use --folder to narrow it`)
 
 const byExt = new Map(), byFolder = new Map()
 const victims = []          // { bucket, key, size }
 let scanned = 0
 
-for (const bucket of buckets) {
-  process.stderr.write(`scanning ${bucket}…\n`)
-  const keys = await visionAllKeys(bucket, {})
+for (const { bucket, prefix } of targets) {
+  const label = `${bucket}/${prefix}`.replace(/\/$/, '')
+  const t0 = Date.now()
+  // Progress on every page. Without it the script looks hung for the whole
+  // listing, which is exactly how it was first read (Ian, 2026-08-17).
+  const keys = await visionAllKeys(bucket, {
+    prefix,
+    onProgress: n => process.stderr.write(
+      `\r  ${label}: ${n.toLocaleString()} objects, ${victims.length.toLocaleString()} matches so far   `),
+  })
   scanned += keys.length
   for (const k of keys) {
     if (!RE.test(k.key)) continue
@@ -59,10 +81,13 @@ for (const bucket of buckets) {
     byFolder.set(folder, (byFolder.get(folder) || 0) + 1)
     victims.push({ bucket, key: k.key, size: k.size || 0 })
   }
+  // Pad to overwrite the progress line entirely — \r alone leaves the tail of
+  // the longer line behind ("...12sfar").
+  process.stderr.write(`\r  ${label}: ${keys.length.toLocaleString()} objects scanned in ${Math.round((Date.now() - t0) / 1000)}s`.padEnd(100) + '\n')
 }
 
 const totalBytes = victims.reduce((a, v) => a + v.size, 0)
-console.log(`\nscanned ${scanned.toLocaleString()} objects across ${buckets.length} bucket(s)`)
+console.log(`\nscanned ${scanned.toLocaleString()} objects across ${targets.length} target(s)`)
 console.log(`matched ${victims.length.toLocaleString()} sidecar files · ${human(totalBytes)}\n`)
 console.log('by extension:')
 for (const [e, v] of [...byExt].sort((a, b) => b[1].n - a[1].n)) {
@@ -90,7 +115,10 @@ if (!DO_DELETE) {
 console.log('\nDELETING…')
 const client = s3()
 let done = 0
-for (const bucket of buckets) {
+// Only the buckets actually holding matches — with --folder, `targets` may
+// cover a subset of one bucket, and the old code iterated a variable that no
+// longer existed here at all.
+for (const bucket of [...new Set(victims.map(v => v.bucket))]) {
   const mine = victims.filter(v => v.bucket === bucket).map(v => ({ Key: v.key }))
   for (let i = 0; i < mine.length; i += 1000) {
     const batch = mine.slice(i, i + 1000)

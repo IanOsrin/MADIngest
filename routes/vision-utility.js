@@ -29,6 +29,7 @@ import {
   visionStatus, visionList, visionStat, visionListKeys,
   visionUploadFile, visionDownloadTo, visionDelete, visionRename,
 } from '../lib/vision-drive.js'
+import { contentDisposition } from '../lib/content-disposition.js'
 
 const router = Router()
 
@@ -186,7 +187,7 @@ router.get('/download-folder', async (req, res) => {
 
     const base = rel.replace(/\/$/, '').split('/').filter(Boolean).pop() || 'vision'
     res.setHeader('Content-Type', 'application/zip')
-    res.setHeader('Content-Disposition', `attachment; filename="${base.replace(/[\\"\x00-\x1f]/g, ' ')}.zip"`)
+    res.setHeader('Content-Disposition', contentDisposition(base + '.zip'))
 
     const zip = archiver('zip', { store: true })
     let failed = null

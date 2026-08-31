@@ -6,6 +6,7 @@ import { Router } from 'express'
 import { adminAuth } from '../lib/admin-auth.js'
 import { visionStatus, visionList, visionDownloadTo } from '../lib/vision-drive.js'
 import { loadVisionIndex, reindexVisionIndex, reindexVisionPath, indexBuilding, indexStatus } from '../lib/gallo-vision-link.js'
+import { contentDisposition } from '../lib/content-disposition.js'
 
 const router = Router()
 const INDEX_CACHE = path.join(process.cwd(), 'tmp', 'vision-index.json')
@@ -125,7 +126,7 @@ router.get('/download', adminAuth, async (req, res) => {
     if (!rel) return res.status(400).json({ error: 'path is required' })
     const name = rel.split('/').filter(Boolean).pop() || 'download'
     res.setHeader('Content-Type', 'application/octet-stream')
-    res.setHeader('Content-Disposition', `attachment; filename="${name.replace(/[\\"\x00-\x1f]/g, ' ')}"`)
+    res.setHeader('Content-Disposition', contentDisposition(name))
     await visionDownloadTo(rel, res)
     res.end()
   } catch (e) {

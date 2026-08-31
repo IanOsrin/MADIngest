@@ -1579,6 +1579,16 @@
           </div>
         </div>
         <div style="display:grid;grid-template-columns:1fr;gap:4px;margin-bottom:10px">
+          <label for="vuAlbumSearch" style="font-size:0.78rem;color:var(--muted)">Pick the album &mdash; the destination is worked out from it (recommended: a typed path one level too high scatters the files loose into the parent)</label>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <input id="vuAlbumSearch" placeholder="artist, album title or catalogue number&hellip;" style="min-width:260px;flex:1"
+              onkeydown="if(event.key==='Enter')vuAlbumSearchGo()">
+            <button class="btn" onclick="vuAlbumSearchGo()">Find album</button>
+            <span id="vuAlbumStatus" class="muted"></span>
+          </div>
+          <div id="vuAlbumHits" style="max-height:240px;overflow-y:auto"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr;gap:4px;margin-bottom:10px">
           <label for="vuDestSearch" style="font-size:0.78rem;color:var(--muted)">Vision destination folder — search for an existing folder, or type a new path (new folders are created by the upload)</label>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             <button class="btn" onclick="vuBrowseToggle()" id="vuBrowseBtn">Browse Vision&hellip;</button>
@@ -1597,7 +1607,8 @@
             </div>
             <div id="vuBrowseList" style="max-height:260px;overflow-y:auto"></div>
           </div>
-          <input id="vuDest" placeholder="/gallo-digital-cupboard/Rendered Files/A-D/Artist/Artist_Album_CAT 123" style="font-family:monospace;font-size:0.82rem">
+          <input id="vuDest" placeholder="/gallo-digital-cupboard/Rendered Files/A-D/Artist/Artist_Album_CAT 123" style="font-family:monospace;font-size:0.82rem"
+            oninput="vuClearAlbum()">
         </div>
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
           <button class="btn" onclick="vuPreview()" id="vuPreviewBtn">Preview</button>
@@ -7640,6 +7651,57 @@ async function aaCreate() {
 }
 
 // ── To Vision tab (add-only local → Vision upload) ──────────────────────────
+
+// Pick a MAM album and let the server work out where its files belong. Typing
+// the destination is what put files loose in a parent folder: the planner maps
+// the picked folder's CONTENTS onto the destination, so one level too high
+// scatters the album with no warning.
+let vuAlbumID = null
+
+async function vuAlbumSearchGo() {
+  const q = document.getElementById('vuAlbumSearch').value.trim()
+  const status = document.getElementById('vuAlbumStatus')
+  const hits = document.getElementById('vuAlbumHits')
+  if (q.length < 2) { status.textContent = 'Type at least two characters.'; return }
+  status.textContent = 'searching…'; hits.innerHTML = ''
+  try {
+    const r = await api('/api/vision-upload/album-search?q=' + encodeURIComponent(q), 'GET')
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || 'search failed')
+    status.textContent = j.count + ' album(s)'
+    if (!j.count) { hits.innerHTML = '<div class="muted" style="padding:6px">No album matched.</div>'; return }
+    hits.innerHTML = j.albums.map(a => `
+      <div style="display:flex;gap:8px;align-items:center;padding:5px 6px;border-bottom:1px solid var(--border)">
+        <button class="btn btn-ghost" ${a.folder ? '' : 'disabled'}
+          onclick="vuUseAlbum('${a.albumID}', ${JSON.stringify(a.folder || '').replace(/"/g, '&quot;')})">Use</button>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:0.86rem">${esc(a.artist || '(no artist)')} — ${esc(a.title || '(no title)')}
+            <span class="muted">[${esc(a.catalogue || 'no cat')}] ${esc(String(a.tracks || '?'))} tracks</span></div>
+          <div class="muted" style="font-family:monospace;font-size:0.72rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+            ${a.folder ? esc(a.folder) : '⚠ ' + esc(a.why || 'cannot place this album')}</div>
+        </div>
+      </div>`).join('')
+  } catch (e) {
+    status.textContent = e.message
+  }
+}
+
+// Editing the path by hand drops the album, so a chosen album can never
+// silently override what is on screen — the server prefers albumID when both
+// are sent.
+function vuClearAlbum() {
+  if (!vuAlbumID) return
+  vuAlbumID = null
+  document.getElementById('vuAlbumStatus').textContent = 'album cleared — using the typed path'
+}
+
+function vuUseAlbum(albumID, folder) {
+  vuAlbumID = albumID
+  document.getElementById('vuDest').value = folder
+  document.getElementById('vuAlbumStatus').textContent = 'destination set from ' + albumID
+  document.getElementById('vuAlbumHits').innerHTML = ''
+}
+
 let vuPlan = null
 
 // Native macOS folder chooser — the server pops a Finder dialog on this Mac
@@ -7752,6 +7814,7 @@ function vuInputs() {
   return {
     localFolder:  document.getElementById('vuLocal').value.trim(),
     visionFolder: document.getElementById('vuDest').value.trim(),
+    albumID:      vuAlbumID || undefined,
   }
 }
 

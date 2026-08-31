@@ -59,6 +59,7 @@ import { visionStat, visionUploadFile, visionList } from '../lib/vision-drive.js
 import { readVisionWavInfo, buildSoundInfoBlock } from '../lib/wav-info.js'
 import { getXrefStatus, getXrefRows, startXrefRebuild } from '../lib/catalogue-xref.js'
 import { artworkState, artworkImage, copyArtwork } from '../lib/artwork-compare.js'
+import { contentDisposition } from '../lib/content-disposition.js'
 
 // Load metadata on startup (non-blocking — portal works even if file is missing)
 loadMetadata()
@@ -815,7 +816,7 @@ router.post('/ddex/export', adminAuth, express.json(), async (req, res) => {
   const zipBuf = zip.toBuffer()
   res.set({
     'Content-Type':        'application/zip',
-    'Content-Disposition': `attachment; filename="${safeTitle}_DDEX.zip"`,
+    'Content-Disposition': contentDisposition(safeTitle + '_DDEX.zip'),
     'Content-Length':      zipBuf.length
   })
   res.send(zipBuf)
