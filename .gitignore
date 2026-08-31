@@ -9,3 +9,9 @@ uploads/
 # Rollback journals written by the genre scripts / Gallo Genre tab.
 # Thousands of FM record IDs — operational artefacts, not source.
 data/
+
+# Working copies of the metadata cache. The canonical store is S3 (see
+# lib/metadata-cache.js); these are local snapshots and backups, and four of
+# them were quietly using 84MB in the V1.1 folder.
+Gallo_Metadata_Extract_BACKUP*
+*_BACKUP_*.xlsx
