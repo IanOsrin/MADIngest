@@ -83,13 +83,52 @@ async function walkLocal(root, dir = root, out = [], warnings = [], depth = 0) {
 }
 
 /** Shared planner. Throws {status,message} on bad input. */
-async function buildPlan({ localFolder, visionFolder }) {
+/**
+ * Look an album up in Music Arena Master and derive where its files belong.
+ * Typing the destination by hand is what put files loose in a parent folder:
+ * this planner maps a picked folder's CONTENTS onto the destination, so a
+ * destination one level too high scatters the album. Deriving it from the
+ * album means the album folder always exists and is named like the other
+ * 18,000 on Vision.
+ */
+async function folderForAlbumId(albumID) {
+  const base = `${process.env.GALLO_FM_HOST}/fmi/data/vLatest/databases/${encodeURIComponent('Music Arena Master')}`
+  const auth = 'Basic ' + Buffer.from(`${process.env.GALLO_FM_USER}:${process.env.GALLO_FM_PASS}`).toString('base64')
+  const s = await (await fetch(base + '/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: auth }, body: '{}' })).json()
+  const token = s?.response?.token
+  if (!token) throw Object.assign(new Error('Could not reach Music Arena Master'), { status: 502 })
+  const H = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }
+  try {
+    const j = await (await fetch(base + '/layouts/Albums/_find', { method: 'POST', headers: H,
+      body: JSON.stringify({ query: [{ AlbumID: '==' + albumID }], limit: 1 }) })).json()
+    const f = j?.response?.data?.[0]?.fieldData
+    if (!f) throw Object.assign(new Error(`No album ${albumID} in Music Arena Master`), { status: 404 })
+    const { visionFolderForAlbum } = await import('../lib/vision-destination.js')
+    const d = visionFolderForAlbum({
+      artist: f['Album Artist'], title: f['Album Title'],
+      catalogue: f['Album Catalogue Number'] || f['Reference Catalogue Number'],
+    })
+    return { ...d, album: { AlbumID: f.AlbumID, artist: f['Album Artist'], title: f['Album Title'],
+                            catalogue: f['Album Catalogue Number'] || f['Reference Catalogue Number'],
+                            tracks: f['Track Count'] } }
+  } finally { await fetch(base + '/sessions/' + token, { method: 'DELETE', headers: H }).catch(() => {}) }
+}
+
+async function buildPlan({ localFolder, visionFolder, albumID }) {
   const fail = (status, message) => { throw Object.assign(new Error(message), { status }) }
 
   localFolder  = String(localFolder  || '').trim().replace(/\/+$/, '')
+  albumID      = String(albumID      || '').trim()
+  let album = null
+  if (albumID) {
+    // An album wins over a typed path — that is the whole point of picking one.
+    const d = await folderForAlbumId(albumID)
+    visionFolder = d.folder
+    album = d.album
+  }
   visionFolder = String(visionFolder || '').trim().replace(/\/+$/, '')
   if (!localFolder)  fail(400, 'Local folder path is required')
-  if (!visionFolder) fail(400, 'Vision destination folder is required')
+  if (!visionFolder) fail(400, 'Choose an album, or give a Vision destination folder')
   if (!visionFolder.startsWith('/')) visionFolder = '/' + visionFolder
   if (visionFolder.split('/').filter(Boolean).length < 2) fail(400, 'Vision destination must be inside a bucket (e.g. /gallo-digital-cupboard/Rendered Files/…), not a bucket root')
   if (!visionStatus().configured) fail(503, 'Vision drive is not configured')
@@ -117,7 +156,7 @@ async function buildPlan({ localFolder, visionFolder }) {
   })
 
   return {
-    localFolder, visionFolder, files, warnings,
+    localFolder, visionFolder, album, files, warnings,
     newFiles:      files.filter(f => !f.exists),
     existingCount: files.filter(f => f.exists).length,
     totalNewBytes: files.filter(f => !f.exists).reduce((s, f) => s + f.size, 0),
