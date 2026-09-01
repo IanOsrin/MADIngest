@@ -421,8 +421,9 @@
         <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
           Reads a CCA delivery straight off Vision: the ERN in each barcode folder is the source of
           truth for metadata, and <code>resources/</code> supplies the audio. Creates one
-          <strong>Tape Files Master</strong> plus a song record per track, with
-          <code>Audio_URL</code> pointing at the delivered master. Releases already in Gallo are
+          <strong>Albums</strong> record plus a Songs record per track, with
+          <code>Audio_Vision_URL</code> pointing at the delivered master. Album and songs are
+          joined on the catalogue number. Releases already in MAM are
           <strong>skipped, not overwritten</strong>.
         </p>
 
@@ -1870,7 +1871,7 @@ $('tokenInput').addEventListener('keydown', e => { if (e.key === 'Enter') login(
 // ── Tabs ───────────────────────────────────────────────────────────────────
 // ── CCA Import ────────────────────────────────────────────────────────────
 // Batch -> scan -> select -> import. The delivery's own ERN is the metadata
-// source; releases already in Gallo are skipped rather than overwritten.
+// source; releases already in MAM are skipped rather than overwritten.
 let _ccaReleases = []
 let _ccaBatchesLoaded = false
 
@@ -1927,7 +1928,7 @@ function ccaRender() {
   $('ccaSummary').style.display = ''
   $('ccaSummary').innerHTML =
     `<span style="color:var(--green,#4ade80)">${ready} ready</span> · ` +
-    `<span style="color:var(--muted)">${exists} already in Gallo</span> · ` +
+    `<span style="color:var(--muted)">${exists} already in MAM</span> · ` +
     `<span style="color:var(--amber,#f59e0b)">${errors} unreadable</span> · ${_ccaReleases.length} total`
 
   $('ccaBody').innerHTML = _ccaReleases.map((r, i) => {
@@ -1936,7 +1937,7 @@ function ccaRender() {
     const shortAudio = r.matchedCount !== r.trackCount
       ? `<span style="color:var(--amber,#f59e0b)">${audio}</span>` : audio
     const status = ok      ? '<span style="color:var(--green,#4ade80)">ready</span>'
-                 : r.status === 'exists' ? `<span style="color:var(--muted)">in Gallo (${r.existingCount})</span>`
+                 : r.status === 'exists' ? `<span style="color:var(--muted)">in MAM (${r.existingCount})</span>`
                  : `<span style="color:var(--amber,#f59e0b)" title="${esc(r.error || '')}">unreadable</span>`
     return `<tr style="border-top:1px solid var(--border)">
       <td style="padding:5px 10px"><input type="checkbox" class="cca-pick" data-i="${i}" ${ok ? 'checked' : 'disabled'}></td>
@@ -2001,8 +2002,8 @@ async function ccaImport() {
   const dry = $('ccaDryRun').checked
   if (!dry && !confirm(
     `Create records in FileMaker for ${picked.length} release(s)?\n\n` +
-    `This writes a Tape Files Master plus a song record per track. Releases already ` +
-    `in Gallo are skipped. There is no undo from here.`)) return
+    `This writes an Albums record plus a Songs record per track into Music Arena ` +
+    `Master. Releases already in MAM are skipped. There is no undo from here.`)) return
 
   const btn = $('ccaImportBtn'); btn.disabled = true
   $('ccaImportStatus').textContent = dry ? 'Planning…' : `Importing ${picked.length} release(s)…`
@@ -2023,7 +2024,7 @@ async function ccaImport() {
         (x.tapeRecordId ? ` · tape ${esc(x.tapeRecordId)}` : '') +
         (x.error ? ` · <span style="color:var(--red)">${esc(x.error)}</span>` : '') + '</div>').join('')
     $('ccaImportStatus').textContent = ''
-    if (j.applied) await ccaScan()   // refresh: imported releases now read as "in Gallo"
+    if (j.applied) await ccaScan()   // refresh: imported releases now read as "in MAM"
   } catch (e) {
     $('ccaImportStatus').textContent = `Error: ${e.message}`
   } finally { btn.disabled = false }
