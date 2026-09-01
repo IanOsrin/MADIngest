@@ -529,6 +529,25 @@
     <div id="tab-excel" class="tab-panel">
 
       <div class="import-section">
+        <h3>&#8594; Fill MAM from the metadata cache</h3>
+        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
+          Music Arena Master was merged from the three FileMaker databases — the metadata cache was
+          never one of its sources, so albums can be missing ISRC, barcode and publisher while the
+          cache holds all of it. This fills <strong>empty fields only</strong>; nothing already in MAM
+          is overwritten. Tracks are matched on <strong>title, never track order</strong>.
+          Near-miss titles are listed separately and are applied only if you tick them.
+        </p>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+          <input id="mcfCat" placeholder="Album catalogue number, e.g. SMCD 185" style="flex:1;max-width:380px"
+            onkeydown="if(event.key==='Enter')mcfPreview()">
+          <button class="btn" id="mcfPreviewBtn" onclick="mcfPreview()">Preview</button>
+          <button class="btn btn-gold" id="mcfApplyBtn" onclick="mcfApply()" disabled>Apply fills</button>
+          <span id="mcfStatus" class="muted" style="font-size:0.82rem"></span>
+        </div>
+        <div id="mcfOut"></div>
+      </div>
+
+      <div class="import-section">
         <h3>Cache Viewer &amp; Editor</h3>
         <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
           Browse the metadata extract like a spreadsheet — click a column header to sort (drag its
@@ -1869,6 +1888,100 @@ function logout() {
 $('tokenInput').addEventListener('keydown', e => { if (e.key === 'Enter') login() })
 
 // ── Tabs ───────────────────────────────────────────────────────────────────
+// ── Fill MAM from the metadata cache ───────────────────────────────────────
+// Preview writes nothing. Apply fills only blank fields, and only sends a
+// near-miss title match when its row is ticked — spelling drift like
+// "Eudiamonia"/"Eudaimonia" is usually the same song, but not always.
+let _mcfPlan = null
+
+async function mcfPreview() {
+  const cat = $('mcfCat').value.trim()
+  if (!cat) { $('mcfStatus').textContent = 'Enter a catalogue number.'; return }
+  $('mcfStatus').textContent = 'Checking…'
+  $('mcfApplyBtn').disabled = true
+  $('mcfOut').innerHTML = ''
+  _mcfPlan = null
+  try {
+    const r = await api('/api/mam/cache-fill/preview', 'POST', { catalogue: cat })
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    _mcfPlan = j.plan
+    mcfRender(j.plan)
+    $('mcfStatus').textContent = ''
+    $('mcfApplyBtn').disabled = j.plan.totalFills === 0 && !j.plan.suggestions.length
+  } catch (e) {
+    $('mcfStatus').innerHTML = `<span style="color:var(--red)">${gfEsc(e.message)}</span>`
+  }
+}
+
+function mcfFillList(fills) {
+  const keys = Object.keys(fills)
+  if (!keys.length) return '<span class="muted">nothing to fill</span>'
+  return keys.map(k => `<span title="${gfEsc(String(fills[k]))}">${gfEsc(k)}</span>`).join(', ')
+}
+
+function mcfRender(p) {
+  const a = p.album
+  const rows = p.tracks.map(t => `<tr style="border-top:1px solid var(--border)">
+      <td style="padding:4px 8px"></td>
+      <td style="padding:4px 8px;text-align:right">${gfEsc(String(t.seq ?? ''))}</td>
+      <td style="padding:4px 8px">${gfEsc(t.title || '')}</td>
+      <td style="padding:4px 8px" class="muted">${t.matched ? gfEsc(t.matched) : '<span style="color:var(--amber,#f59e0b)">no cache row</span>'}</td>
+      <td style="padding:4px 8px;text-align:right">${t.fillCount || ''}</td>
+      <td style="padding:4px 8px;font-size:0.76rem" class="muted">${mcfFillList(t.fills)}</td>
+    </tr>`).join('')
+
+  const sugg = p.suggestions.map(t => `<tr style="border-top:1px solid var(--border);background:rgba(245,158,11,0.06)">
+      <td style="padding:4px 8px"><input type="checkbox" class="mcf-sugg" data-id="${gfEsc(String(t.recordId))}"></td>
+      <td style="padding:4px 8px;text-align:right">${gfEsc(String(t.seq ?? ''))}</td>
+      <td style="padding:4px 8px">${gfEsc(t.title || '')}</td>
+      <td style="padding:4px 8px" class="muted">${gfEsc(t.matched)} <span style="color:var(--amber,#f59e0b)">(${t.score})</span></td>
+      <td style="padding:4px 8px;text-align:right">${t.fillCount || ''}</td>
+      <td style="padding:4px 8px;font-size:0.76rem" class="muted">${mcfFillList(t.fills)}</td>
+    </tr>`).join('')
+
+  $('mcfOut').innerHTML = `
+    <div style="margin-bottom:8px;font-size:0.86rem">
+      <strong>${gfEsc(a.albumID || '')}</strong> — ${gfEsc(a.artist || '')} · ${gfEsc(a.title || '')}<br>
+      <span class="muted">${p.cacheRows} cache row(s) · ${p.songs} track(s) in MAM ·
+      <strong>${p.totalFills}</strong> field(s) would be filled</span>
+      ${a.fillCount ? `<br><span class="muted">album gets: ${mcfFillList(a.fills)}</span>` : ''}
+    </div>
+    <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.82rem">
+      <thead><tr style="text-align:left">
+        <th style="padding:4px 8px"></th><th style="padding:4px 8px">#</th>
+        <th style="padding:4px 8px">MAM track</th><th style="padding:4px 8px">cache row</th>
+        <th style="padding:4px 8px">fields</th><th style="padding:4px 8px">which</th>
+      </tr></thead>
+      <tbody>${rows}${sugg}</tbody>
+    </table></div>
+    ${p.suggestions.length ? '<div class="muted" style="font-size:0.78rem;margin-top:6px">Highlighted rows are near-miss titles — tick one to include it.</div>' : ''}
+    ${p.unusedCacheRows.length ? `<div class="muted" style="font-size:0.78rem;margin-top:4px">cache rows with no MAM track: ${gfEsc(p.unusedCacheRows.join(', '))}</div>` : ''}`
+}
+
+async function mcfApply() {
+  if (!_mcfPlan) return
+  const accept = [...document.querySelectorAll('.mcf-sugg:checked')].map(c => c.dataset.id)
+  const n = _mcfPlan.totalFills + accept.reduce((s, id) =>
+    s + (_mcfPlan.suggestions.find(x => String(x.recordId) === id)?.fillCount || 0), 0)
+  if (!confirm(`Write ${n} field(s) into Music Arena Master for ${_mcfPlan.catalogue}?\n\n` +
+               `Only fields that are currently EMPTY are written. There is no undo.`)) return
+  $('mcfStatus').textContent = 'Writing…'
+  $('mcfApplyBtn').disabled = true
+  try {
+    const r = await api('/api/mam/cache-fill/apply', 'POST', { catalogue: _mcfPlan.catalogue, accept })
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    $('mcfStatus').innerHTML = `<span style="color:var(--gold)">${j.fieldsWritten} field(s) written across ` +
+      `${j.tracksUpdated} track(s)${j.albumUpdated ? ' + album' : ''}` +
+      `${j.failures.length ? ` · <span style="color:var(--red)">${j.failures.length} failed</span>` : ''}</span>`
+    await mcfPreview()   // re-read so what is left is what is genuinely still missing
+  } catch (e) {
+    $('mcfStatus').innerHTML = `<span style="color:var(--red)">${gfEsc(e.message)}</span>`
+    $('mcfApplyBtn').disabled = false
+  }
+}
+
 // ── CCA Import ────────────────────────────────────────────────────────────
 // Batch -> scan -> select -> import. The delivery's own ERN is the metadata
 // source; releases already in MAM are skipped rather than overwritten.
