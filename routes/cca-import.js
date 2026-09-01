@@ -1,10 +1,14 @@
-// routes/cca-import.js — CCA DDEX deliveries → Gallo Catalogue.
+// routes/cca-import.js — CCA DDEX deliveries → Music Arena Master.
 //
 // Follows Add Album's shape (find → preview → create) but takes its metadata
 // from the delivery's own ERN rather than the metadata cache. For CCA releases
 // the ERN IS the source of truth: it carries ISRC, hash sum, resource
 // references and P/C lines that the Ingrooves extract does not cover at all
 // (the CCA_ prefix is absent from that export entirely).
+//
+// Target: MAM is the canonical catalogue, so imports land there by default.
+// Gallo Catalogue remains reachable with target:'gallo' rather than being
+// deleted — the code was working and losing it would be a one-way door.
 //
 // Read-only endpoints here. Creation is separate and deliberate.
 
@@ -14,6 +18,9 @@ import { listBatches, listReleases, loadRelease } from '../lib/cca-ddex.js'
 import { findGalloRecordsByCatalogue, findGalloCataloguesPresent, createGalloRecord, createTapeFileRecord,
          reloadGalloLayoutFields, createArtworkRecord, findArtworkByCatalogue } from '../lib/fm-gallo.js'
 import { visionOpen } from '../lib/vision-drive.js'
+import { mamSession, makeIdAllocator, albumIdFor, findMamAlbum, findMamCataloguesPresent,
+         albumIdTaken, createMamAlbum, createMamSong } from '../lib/fm-mam-write.js'
+import { findMamRecordsByCatalogue } from '../lib/fm-mam.js'
 
 const router = Router()
 
@@ -39,7 +46,7 @@ router.get('/releases', adminAuth, async (req, res) => {
  *   error   — unreadable delivery (empty folders do occur — 193483268613 in
  *             batch 20260408110014377 has no XML and no audio at all)
  */
-async function planRelease(releasePath) {
+async function planRelease(releasePath, target = 'mam') {
   let d
   try {
     d = await loadRelease(releasePath)
@@ -49,9 +56,13 @@ async function planRelease(releasePath) {
 
   const first     = d.tracks[0] || {}
   const catalogue = first.catalogue_no || null
+  // "Already imported?" has to be asked of the database we are about to write
+  // to — asking Gallo while writing MAM would happily import everything twice.
   let existing = []
   if (catalogue) {
-    existing = await findGalloRecordsByCatalogue(catalogue).catch(() => [])
+    existing = target === 'gallo'
+      ? await findGalloRecordsByCatalogue(catalogue).catch(() => [])
+      : await findMamRecordsByCatalogue(catalogue).catch(() => [])
   }
 
   return {
@@ -67,6 +78,7 @@ async function planRelease(releasePath) {
     artworkUrl: d.artwork[0]?.url || null,   // first image in resources/ — the cover
     unmatchedFiles: d.unmatchedFiles,
     existingCount: existing.length,
+    target,
     status: existing.length ? 'exists' : 'ready',
     tracks: d.tracks,
   }
@@ -75,8 +87,9 @@ async function planRelease(releasePath) {
 /** Preview a single release — full track detail. */
 router.post('/preview', adminAuth, async (req, res) => {
   const release = String(req.body?.release || '').trim()
+  const target = req.body?.target === 'gallo' ? 'gallo' : 'mam'
   if (!release) return res.status(400).json({ error: 'release path required' })
-  try { res.json({ ok: true, ...(await planRelease(release)) }) }
+  try { res.json({ ok: true, ...(await planRelease(release, target)) }) }
   catch (e) { res.status(500).json({ error: e.message }) }
 })
 
@@ -87,6 +100,7 @@ router.post('/preview', adminAuth, async (req, res) => {
  */
 router.post('/scan', adminAuth, async (req, res) => {
   const batch  = String(req.body?.batch || '').trim()
+  const target = req.body?.target === 'gallo' ? 'gallo' : 'mam'
   const limit  = Math.min(parseInt(req.body?.limit, 10) || 25, 200)
   const offset = parseInt(req.body?.offset, 10) || 0
   if (!batch) return res.status(400).json({ error: 'batch path required' })
@@ -113,7 +127,9 @@ router.post('/scan', adminAuth, async (req, res) => {
     }))
 
     const catalogues = loaded.filter(x => x.ok).map(x => x.d.tracks[0]?.catalogue_no).filter(Boolean)
-    const present = await findGalloCataloguesPresent(catalogues).catch(() => new Map())
+    const present = target === 'gallo'
+      ? await findGalloCataloguesPresent(catalogues).catch(() => new Map())
+      : await findMamCataloguesPresent(catalogues).catch(() => new Map())
 
     const results = slice.map((r, i) => {
       const L = loaded[i]
@@ -134,7 +150,7 @@ router.post('/scan', adminAuth, async (req, res) => {
       }
     })
     res.json({
-      ok: true, batch, total: all.length, offset, limit,
+      ok: true, batch, target, total: all.length, offset, limit,
       returned: results.length,
       done: offset + slice.length >= all.length,
       summary: {
@@ -257,13 +273,24 @@ const tapeMeta = (rel) => {
 router.post('/create', adminAuth, async (req, res) => {
   const paths = Array.isArray(req.body?.releases) ? req.body.releases : []
   const apply = req.body?.apply === true
+  const target = req.body?.target === 'gallo' ? 'gallo' : 'mam'
   if (!paths.length) return res.status(400).json({ error: 'releases array required' })
 
-  if (apply) reloadGalloLayoutFields()
+  if (apply && target === 'gallo') reloadGalloLayoutFields()
+
+  // One MAM session and ONE id allocation for the whole run. Re-reading the max
+  // per release would race against itself and hand two songs the same MasterID.
+  let mam = null, ids = null
+  if (apply && target === 'mam') {
+    mam = await mamSession()
+    ids = await makeIdAllocator(mam)
+    console.log(`[cca-import] MAM ids continue from MAST${ids.startedAt.master} / REC${ids.startedAt.rec}`)
+  }
   const out = []
 
+  try {
   for (const rp of paths) {
-    const rel = await planRelease(rp)
+    const rel = await planRelease(rp, target)
     if (rel.status !== 'ready') {
       out.push({ barcode: rel.barcode, catalogue: rel.catalogue, status: rel.status,
                  error: rel.error, existingCount: rel.existingCount, created: 0 })
@@ -275,12 +302,44 @@ router.post('/create', adminAuth, async (req, res) => {
       continue
     }
     try {
-      const { tapeRecordId } = await createTapeFileRecord(tapeMeta(rel))
+      let tapeRecordId = null, albumID = null
       let created = 0
       const failures = []
-      for (const t of rel.tracks) {
-        try { await createGalloRecord(trackMeta(t, rel)); created++ }
-        catch (e) { failures.push({ title: t.track_title, error: e.message }) }
+
+      if (target === 'mam') {
+        // Belt and braces over planRelease's check: that looked for SONGS, and
+        // an album shell with no songs would otherwise be duplicated.
+        if (await findMamAlbum(mam, rel.catalogue)) {
+          out.push({ barcode: rel.barcode, catalogue: rel.catalogue, status: 'exists',
+                     existingCount: rel.existingCount, created: 0 })
+          continue
+        }
+        albumID = albumIdFor(rel.catalogue)
+        // The ID is derived and therefore lossy (truncated at 20 chars), so two
+        // different long catalogues can land on the same one. Reusing it would
+        // silently file this album's songs under someone else's album.
+        if (await albumIdTaken(mam, albumID)) {
+          out.push({ barcode: rel.barcode, catalogue: rel.catalogue, status: 'error', created: 0,
+                     error: `AlbumID ${albumID} is already in use by another catalogue — needs a manual ID` })
+          continue
+        }
+        const tm = tapeMeta(rel)
+        tapeRecordId = await createMamAlbum(mam, { ...tm, track_count: rel.tracks.length })
+        for (const t of rel.tracks) {
+          const m = trackMeta(t, rel)
+          try {
+            await createMamSong(mam, { ...m, album_id: albumID,
+              master_id: ids.nextMaster(), recording_id: ids.nextRecording(),
+              sources: 'cca', match_method: 'ddex' })
+            created++
+          } catch (e) { failures.push({ title: t.track_title, error: e.message }) }
+        }
+      } else {
+        ;({ tapeRecordId } = await createTapeFileRecord(tapeMeta(rel)))
+        for (const t of rel.tracks) {
+          try { await createGalloRecord(trackMeta(t, rel)); created++ }
+          catch (e) { failures.push({ title: t.track_title, error: e.message }) }
+        }
       }
       // Artwork record — Ian's manual flow: new record on the Artwork layout,
       // catalogue number in, image dragged into the Picture container. Send
@@ -288,8 +347,12 @@ router.post('/create', adminAuth, async (req, res) => {
       // FileMaker issues the GMVic serial itself, which a supplied value would
       // override. Skipped when the catalogue already has one, so re-running a
       // batch cannot duplicate them.
+      // MAM has no Artwork table — the album row carries Artwork_Vision_URL,
+      // already written above. The container/serial dance below is Gallo's.
       let artwork = null
-      if (rel.artworkUrl) {
+      if (target === 'mam') {
+        artwork = rel.artworkUrl ? { visionUrl: rel.artworkUrl } : null
+      } else if (rel.artworkUrl) {
         try {
           const existingArt = await findArtworkByCatalogue(rel.catalogue)
           if (existingArt.length) {
@@ -312,8 +375,8 @@ router.post('/create', adminAuth, async (req, res) => {
       }
 
       out.push({ barcode: rel.barcode, catalogue: rel.catalogue, status: failures.length ? 'partial' : 'created',
-                 tapeRecordId, created, failed: failures.length, failures, artwork })
-      console.log(`[cca-import] ${rel.catalogue}: tape ${tapeRecordId}, ${created}/${rel.tracks.length} songs` +
+                 target, albumID, tapeRecordId, created, failed: failures.length, failures, artwork })
+      console.log(`[cca-import] ${rel.catalogue}: ${target === 'mam' ? 'album ' + albumID : 'tape ' + tapeRecordId}, ${created}/${rel.tracks.length} songs` +
                   (artwork?.recordId ? `, artwork ${artwork.recordId}` : artwork?.skipped ? ', artwork already present' : ''))
     } catch (e) {
       out.push({ barcode: rel.barcode, catalogue: rel.catalogue, status: 'error', error: e.message, created: 0 })
@@ -321,8 +384,10 @@ router.post('/create', adminAuth, async (req, res) => {
     }
   }
 
+  } finally { if (mam) await mam.logout() }
+
   res.json({
-    ok: true, applied: apply, releases: out,
+    ok: true, applied: apply, target, releases: out,
     summary: {
       created: out.filter(r => r.status === 'created').length,
       partial: out.filter(r => r.status === 'partial').length,
