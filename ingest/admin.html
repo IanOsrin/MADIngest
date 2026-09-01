@@ -1499,12 +1499,13 @@
     <!-- ── Add Album tab ────────────────────────────────────── -->
     <div id="tab-addalbum" class="tab-panel">
       <div class="card">
-        <h3>Add Album — Vision folder &rarr; Gallo Catalogue</h3>
+        <h3>Add Album — Vision folder &rarr; Music Arena Master</h3>
         <p class="muted" style="margin:6px 0 14px">
-          Creates a complete new album: one <strong>Tape Files Master</strong> record plus a
-          <strong>song record per track</strong>, with metadata from the catalogue's rows in the
-          metadata cache and <strong>Audio_URL</strong> pointing at the Vision masters so playback
-          works immediately. Refuses to run if the catalogue already has Gallo records.
+          Creates a complete new album: one <strong>Albums</strong> record plus a
+          <strong>Songs record per track</strong>, with metadata from the catalogue's rows in the
+          metadata cache and <strong>Audio_Vision_URL</strong> pointing at the Vision masters so
+          playback works immediately. Album and songs are joined on the catalogue number.
+          Refuses to run if the catalogue already has records in MAM.
         </p>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
           <input id="aaFolderSearch" placeholder="Find the album folder — search by artist / album / cat no…" style="min-width:320px;flex:1"
@@ -7666,7 +7667,7 @@ async function aaPreview() {
     if (j.blocked) {
       blocked.style.display = ''
       blocked.innerHTML = `&#9888; Catalogue <strong>${gfEsc(inputs.catalogue)}</strong> already has
-        <strong>${j.existingCount}</strong> Gallo Catalogue record(s) — this tab only creates brand-new albums.<br>
+        <strong>${j.existingCount}</strong> record(s) in Music Arena Master — this tab only creates brand-new albums.<br>
         ${(j.existing || []).map(x => `&nbsp;&nbsp;#${gfEsc(x.sequence_no ?? '')} ${gfEsc(x.title || '')} ${x.isrc ? `(${gfEsc(x.isrc)})` : ''}`).join('<br>')}`
       summary.textContent = ''
       wrap.style.display = 'none'
@@ -7724,7 +7725,7 @@ async function aaCreate() {
   const inputs = aaInputs()
   const includeUnmatched = document.getElementById('aaIncludeUnmatched').checked
   const n = includeUnmatched ? aaPlan.tracks.length : aaPlan.matchedCount
-  if (!confirm(`Create 1 Tape Files Master record + ${n} song record(s) for ${inputs.catalogue} in the LIVE Gallo Catalogue?`)) return
+  if (!confirm(`Create 1 Albums record + ${n} Songs record(s) for ${inputs.catalogue} in LIVE Music Arena Master?`)) return
   const status = document.getElementById('aaCreateStatus')
   const btn = document.getElementById('aaCreateBtn')
   btn.disabled = true
@@ -7737,7 +7738,7 @@ async function aaCreate() {
     const card = document.getElementById('aaResultCard')
     card.style.display = ''
     document.getElementById('aaResultSummary').innerHTML =
-      `Tape Files Master: <code>${gfEsc(j.tapeRecordId)}</code> ·
+      `${j.target === 'gallo' ? 'Tape Files Master' : 'Album'}: <code>${gfEsc(j.albumID || j.tapeRecordId)}</code> ·
        <strong>${j.created}</strong> song record(s) created` +
       (j.failed ? ` · <span style="color:var(--red)">${j.failed} FAILED</span>` : ' · all verified by read-back')
     document.getElementById('aaResultBody').innerHTML = (j.results || []).map(t => `

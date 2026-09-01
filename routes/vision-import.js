@@ -1,4 +1,4 @@
-// routes/vision-import.js — the Add Album tab: build a complete Gallo
+// routes/vision-import.js — the Add Album tab: build a complete MAM
 // Catalogue album (one Tape Files Master record + one song record per track)
 // from one or more Vision folders (vinyl A/B sides may live in separate
 // folders) plus the metadata cache (Gallo_Metadata_Extract),
@@ -23,6 +23,11 @@ import { loadMetadata, lookupAlbumTracks, getStatus } from '../lib/metadata-cach
 import { normTitle } from '../lib/gallo-vision-link.js'
 import { fuzzyScore } from '../lib/fuzzy-match.js'
 import { findGalloRecordsByCatalogue, createGalloRecord, createTapeFileRecord, reloadGalloLayoutFields } from '../lib/fm-gallo.js'
+// MAM is the canonical catalogue, so this tab creates there by default. Gallo
+// stays reachable with target:'gallo' rather than being removed.
+import { mamSession, makeIdAllocator, freeAlbumId, findMamAlbum, createMamAlbum, createMamSong } from '../lib/fm-mam-write.js'
+import { findMamRecordsByCatalogue } from '../lib/fm-mam.js'
+import { languageParts } from '../lib/language-codes.js'
 import { readVisionWavInfo, buildSoundInfoBlock, computeVisionMd5 } from '../lib/wav-info.js'
 
 const router = Router()
@@ -157,7 +162,8 @@ function matchTracksToFiles(rows, files) {
 }
 
 /** Build the full import plan. Throws {status, message} on bad input. */
-async function buildPlan({ folder, folders, catalogue, artist, album }) {
+async function buildPlan({ folder, folders, catalogue, artist, album, target = 'mam' }) {
+  target = target === 'gallo' ? 'gallo' : 'mam'
   const fail = (status, message) => { throw Object.assign(new Error(message), { status }) }
 
   // One or several folders (vinyl A/B sides often live in separate folders,
@@ -281,11 +287,17 @@ async function buildPlan({ folder, folders, catalogue, artist, album }) {
   const rows = lookupAlbumTracks(catalogue)
   if (!rows.length) fail(404, `Catalogue "${catalogue}" not found in the metadata cache — add it via the Cache Viewer first`)
 
-  // 3. Duplicate guard — this tab only creates brand-new albums.
-  const existing = await findGalloRecordsByCatalogue(catalogue).catch(e => fail(502, `FM duplicate check failed: ${e.message}`))
+  // 3. Duplicate guard — this tab only creates brand-new albums. Ask the
+  // database we are about to WRITE to: checking Gallo while creating in MAM
+  // would happily import everything twice.
+  const existing = await (target === 'gallo'
+    ? findGalloRecordsByCatalogue(catalogue)
+    : findMamRecordsByCatalogue(catalogue)
+  ).catch(e => fail(502, `FM duplicate check failed: ${e.message}`))
   if (existing.length) {
     return {
       blocked: true,
+      target,
       existingCount: existing.length,
       existing: existing.slice(0, 30).map(r => ({
         fm_record_id: r.fm_record_id, title: r.title, isrc: r.isrc, sequence_no: r.sequence_no,
@@ -361,6 +373,7 @@ async function buildPlan({ folder, folders, catalogue, artist, album }) {
 
   return {
     blocked: false,
+    target,
     folders: folderList, folderCounts, catalogue, artist, album,
     tapeMeta, tracks,
     matchedCount:   tracks.filter(t => t.wav).length,
@@ -395,24 +408,47 @@ router.post('/create', adminAuth, express.json(), async (req, res) => {
   try {
     const plan = await buildPlan(req.body || {})
     if (plan.blocked) {
-      return res.status(409).json({ error: `Catalogue "${req.body?.catalogue}" already has ${plan.existingCount} Gallo record(s) — refusing to create duplicates`, existing: plan.existing })
+      const where = plan.target === 'gallo' ? 'Gallo' : 'Music Arena Master'
+      return res.status(409).json({ error: `Catalogue "${req.body?.catalogue}" already has ${plan.existingCount} record(s) in ${where} — refusing to create duplicates`, existing: plan.existing })
     }
 
     const toCreate = plan.tracks.filter(t => t.wav || includeUnmatched)
     if (!toCreate.length) return res.status(400).json({ error: 'Nothing to create — no cache rows matched the folder\'s audio' })
 
-    console.log(`[vision-import] CREATE ${plan.catalogue} — "${plan.album}" by ${plan.artist}: ${toCreate.length} song record(s) (${plan.matchedCount} with audio), folder(s) ${plan.folders.join(' + ')}`)
+    const target = plan.target
+    console.log(`[vision-import] CREATE (${target}) ${plan.catalogue} — "${plan.album}" by ${plan.artist}: ${toCreate.length} song record(s) (${plan.matchedCount} with audio), folder(s) ${plan.folders.join(' + ')}`)
 
-    // Re-introspect the layout once per run — fields like "Audio details" are
-    // often added in FileMaker mid-session and the in-process cache would
-    // silently drop writes to them otherwise (same pattern as the enrich flow).
-    reloadGalloLayoutFields()
+    let mam = null, ids = null, albumID = null, tapeRecordId = null
+    if (target === 'mam') {
+      mam = await mamSession()
+      // Belt and braces over the plan's check, which looked for SONGS: an album
+      // shell with no songs would otherwise be duplicated.
+      if (await findMamAlbum(mam, plan.catalogue)) {
+        await mam.logout()
+        return res.status(409).json({ error: `Catalogue "${plan.catalogue}" already has an album in Music Arena Master — refusing to create a duplicate` })
+      }
+      // One id allocation for the whole run; re-reading the max per record
+      // would race itself into duplicate MasterIDs.
+      ids = await makeIdAllocator(mam)
+      albumID = await freeAlbumId(mam, plan.catalogue)
+      const cat = String(plan.catalogue).trim()
+      tapeRecordId = await createMamAlbum(mam, {
+        ...plan.tapeMeta, catalogue_no: cat, track_count: toCreate.length,
+        language: languageParts(plan.tapeMeta.language).name,
+      })
+      console.log(`[vision-import] MAM album created: ${albumID} (record ${tapeRecordId}), ids from MAST${ids.startedAt.master}`)
+    } else {
+      // Re-introspect the layout once per run — fields like "Audio details" are
+      // often added in FileMaker mid-session and the in-process cache would
+      // silently drop writes to them otherwise (same pattern as the enrich flow).
+      reloadGalloLayoutFields()
 
-    // Tape Files Master first — album-level fields cascade onto songs via the
-    // FM relationship. A tape failure aborts the whole import (nothing else
-    // written yet), rather than leaving songs with no album record.
-    const { tapeRecordId } = await createTapeFileRecord(plan.tapeMeta)
-    console.log(`[vision-import] Tape Files Master created: ${tapeRecordId}`)
+      // Tape Files Master first — album-level fields cascade onto songs via the
+      // FM relationship. A tape failure aborts the whole import (nothing else
+      // written yet), rather than leaving songs with no album record.
+      ;({ tapeRecordId } = await createTapeFileRecord(plan.tapeMeta))
+      console.log(`[vision-import] Tape Files Master created: ${tapeRecordId}`)
+    }
 
     // Song records sequentially — keeps FM Data API load sane and the log readable.
     const results = []
@@ -422,11 +458,15 @@ router.post('/create', adminAuth, express.json(), async (req, res) => {
         // header) and AudioHashSum (MD5, streamed over the whole file). A
         // read failure never blocks the create — that field just stays empty.
         if (t.audio_url) {
-          try {
-            const read = await readVisionWavInfo(t.audio_url)
-            if (read) t.metadata.audio_details = buildSoundInfoBlock(read.info, { modified: read.modified })
-          } catch (e) {
-            console.warn(`[vision-import] audio-details read failed for ${t.title}: ${e.message}`)
+          // MAM has no "Audio details" field, so that read is skipped there —
+          // it exists only on the Gallo song layout.
+          if (target === 'gallo') {
+            try {
+              const read = await readVisionWavInfo(t.audio_url)
+              if (read) t.metadata.audio_details = buildSoundInfoBlock(read.info, { modified: read.modified })
+            } catch (e) {
+              console.warn(`[vision-import] audio-details read failed for ${t.title}: ${e.message}`)
+            }
           }
           try {
             const tHash = Date.now()
@@ -436,7 +476,22 @@ router.post('/create', adminAuth, express.json(), async (req, res) => {
             console.warn(`[vision-import] md5 failed for ${t.title}: ${e.message}`)
           }
         }
-        const { fmRecordId } = await createGalloRecord(t.metadata)
+        let fmRecordId
+        if (target === 'mam') {
+          const lang = languageParts(t.metadata.language)
+          fmRecordId = await createMamSong(mam, {
+            ...t.metadata,
+            catalogue_no: String(plan.catalogue).trim(),
+            album_id: albumID,
+            master_id: ids.nextMaster(),
+            recording_id: ids.nextRecording(),
+            sources: 'vision',
+            match_method: t.match_method || 'title',
+            language: lang.name, language_code: lang.code,
+          })
+        } else {
+          ;({ fmRecordId } = await createGalloRecord(t.metadata))
+        }
         results.push({ ...publicTrack(t), fmRecordId, ok: true, audioDetails: !!t.metadata.audio_details, audioHash: t.metadata.audio_hash_md5 || null })
       } catch (e) {
         console.warn(`[vision-import] ✗ ${t.title}: ${e.message}`)
@@ -446,8 +501,9 @@ router.post('/create', adminAuth, express.json(), async (req, res) => {
 
     const created = results.filter(r => r.ok).length
     const failed  = results.length - created
-    console.log(`[vision-import] DONE ${plan.catalogue}: tape ${tapeRecordId}, ${created} song(s) created${failed ? `, ${failed} FAILED` : ''}`)
-    res.json({ ok: failed === 0, tapeRecordId, created, failed, results })
+    if (mam) await mam.logout()
+    console.log(`[vision-import] DONE ${plan.catalogue}: ${target === 'mam' ? 'album ' + albumID : 'tape ' + tapeRecordId}, ${created} song(s) created${failed ? `, ${failed} FAILED` : ''}`)
+    res.json({ ok: failed === 0, target, albumID, tapeRecordId, created, failed, results })
   } catch (e) {
     console.error('[vision-import] create failed:', e.message)
     res.status(e.status || 500).json({ error: e.message })
