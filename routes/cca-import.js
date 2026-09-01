@@ -19,8 +19,9 @@ import { findGalloRecordsByCatalogue, findGalloCataloguesPresent, createGalloRec
          reloadGalloLayoutFields, createArtworkRecord, findArtworkByCatalogue } from '../lib/fm-gallo.js'
 import { visionOpen } from '../lib/vision-drive.js'
 import { mamSession, makeIdAllocator, albumIdFor, findMamAlbum, findMamCataloguesPresent,
-         albumIdTaken, createMamAlbum, createMamSong } from '../lib/fm-mam-write.js'
+         freeAlbumId, createMamAlbum, createMamSong } from '../lib/fm-mam-write.js'
 import { findMamRecordsByCatalogue } from '../lib/fm-mam.js'
+import { languageParts } from '../lib/language-codes.js'
 
 const router = Router()
 
@@ -220,7 +221,11 @@ const trackMeta = (t, rel) => ({
   duration:           hhmmss(t.duration_sec),
   genre:              t.genre,
   sub_genre:          t.subgenre,
-  language:           t.language,
+  // The ERN states a code ("en"); MAM wants the code in Language Code and the
+  // spelled-out name in Language. An unknown code keeps the code and leaves the
+  // name blank rather than inventing one.
+  language:           languageParts(t.language).name,
+  language_code:      languageParts(t.language).code,
   composers:          creditNames(t.credits, /composer|writer|lyricist|author/i),
   producers:          creditNames(t.credits, /producer/i),
   label:              t.label_name,
@@ -256,7 +261,7 @@ const tapeMeta = (rel) => {
     catalogue_no: rel.catalogue, barcode: rel.barcode,
     year: (datesFor(f).original_release_date || '').slice(0, 4) || null,
     ...datesFor(f),
-    genre: f.genre, language: f.language,
+    genre: f.genre, language: languageParts(f.language).name,
     rights_territories: f.territories, parental: parentalOf(f.explicit),
     label: f.label_name, p_line: f.pline_text, c_line: f.cline_text,
   }
@@ -314,21 +319,19 @@ router.post('/create', adminAuth, async (req, res) => {
                      existingCount: rel.existingCount, created: 0 })
           continue
         }
-        albumID = albumIdFor(rel.catalogue)
-        // The ID is derived and therefore lossy (truncated at 20 chars), so two
-        // different long catalogues can land on the same one. Reusing it would
-        // silently file this album's songs under someone else's album.
-        if (await albumIdTaken(mam, albumID)) {
-          out.push({ barcode: rel.barcode, catalogue: rel.catalogue, status: 'error', created: 0,
-                     error: `AlbumID ${albumID} is already in use by another catalogue — needs a manual ID` })
-          continue
-        }
+        albumID = await freeAlbumId(mam, rel.catalogue)
+        // ONE catalogue string for both sides. The album and its songs are
+        // joined on Albums::Album Catalogue Number == Songs::Album Catalogue,
+        // so any difference in spacing between them — even a trailing space —
+        // leaves the tracks orphaned from an album that looks correct.
+        const catalogue = String(rel.catalogue).trim()
         const tm = tapeMeta(rel)
-        tapeRecordId = await createMamAlbum(mam, { ...tm, track_count: rel.tracks.length })
+        tapeRecordId = await createMamAlbum(mam,
+          { ...tm, catalogue_no: catalogue, track_count: rel.tracks.length })
         for (const t of rel.tracks) {
           const m = trackMeta(t, rel)
           try {
-            await createMamSong(mam, { ...m, album_id: albumID,
+            await createMamSong(mam, { ...m, catalogue_no: catalogue, album_id: albumID,
               master_id: ids.nextMaster(), recording_id: ids.nextRecording(),
               sources: 'cca', match_method: 'ddex' })
             created++
