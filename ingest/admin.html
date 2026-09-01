@@ -1941,6 +1941,7 @@ function mcfRender(p) {
     </tr>`).join('')
 
   $('mcfOut').innerHTML = `
+    ${p.note ? `<div style="margin-bottom:8px;color:var(--amber,#f59e0b);font-size:0.84rem">${gfEsc(p.note)}</div>` : ''}
     <div style="margin-bottom:8px;font-size:0.86rem">
       <strong>${gfEsc(a.albumID || '')}</strong> — ${gfEsc(a.artist || '')} · ${gfEsc(a.title || '')}<br>
       <span class="muted">${p.cacheRows} cache row(s) · ${p.songs} track(s) in MAM ·
