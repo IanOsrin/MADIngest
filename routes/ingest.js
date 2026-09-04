@@ -54,7 +54,7 @@ import { loadMetadata, lookupByIsrc, lookupByCatalogue, lookupAlbumTracks, looku
 import { previewDbSync, applyDbSync, buildFieldData as buildDbSyncFieldData, galloMetadataFromRow } from '../lib/cache-db-sync.js'
 import { parseIngroovesBuffers, diffAgainstCache } from '../lib/ingrooves-sync.js'
 import { findArtworkByCatalogue as findGalloArtworkByCatalogue, createArtworkRecord as createGalloArtworkRecord, uploadArtworkImage as uploadGalloArtworkImage } from '../lib/fm-gallo.js'
-import { loadVisionIndex, filesForCatalogue, matchTracksToFiles } from '../lib/gallo-vision-link.js'
+import { loadVisionIndex, filesForCatalogue, matchTracksToFiles, reindexAfterUpload } from '../lib/gallo-vision-link.js'
 import { visionStat, visionUploadFile, visionList } from '../lib/vision-drive.js'
 import { readVisionWavInfo, buildSoundInfoBlock } from '../lib/wav-info.js'
 import { getXrefStatus, getXrefRows, startXrefRebuild } from '../lib/catalogue-xref.js'
@@ -1844,6 +1844,9 @@ router.post('/album/audio-upload', adminAuth, uploadTrackAudio.single('audio'), 
     await unlink(req.file.path).catch(() => {})
     const wrote = await _writeAudioRef(recordId, rel)
     console.log(`[Album] Audio uploaded + linked: rec ${recordId} → ${rel}`)
+    // Keep the Vision index in step with the new master so a later Add Album /
+    // catalogue search finds it — splice just this folder in, in the background.
+    reindexAfterUpload(folder, { cacheFile: path.join(process.cwd(), 'tmp', 'vision-index.json') })
     res.json({ ok: true, ...wrote })
   } catch (err) {
     await unlink(req.file?.path).catch(() => {})

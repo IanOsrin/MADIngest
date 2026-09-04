@@ -17,6 +17,7 @@ import express from 'express'
 import { adminAuth } from '../lib/admin-auth.js'
 import { visionStatus, visionStat, visionListKeys, visionUploadFile } from '../lib/vision-drive.js'
 import { linkAlbumAudio } from '../lib/link-album-audio.js'
+import { reindexAfterUpload } from '../lib/gallo-vision-link.js'
 
 const router = Router()
 
@@ -267,8 +268,16 @@ router.post('/upload', adminAuth, express.json(), async (req, res) => {
       }
     }
 
+    // Make the upload searchable without anyone pressing Reindex: splice just
+    // this folder into the Vision index in the background. Fire-and-forget — the
+    // files are safely up, and the 5-min sweep is the backstop if this defers
+    // (e.g. a full refresh holds the lock right now).
+    if (uploaded && plan.visionFolder) {
+      reindexAfterUpload(plan.visionFolder, { cacheFile: path.join(process.cwd(), 'tmp', 'vision-index.json') })
+    }
+
     emit({ type: 'done', ok: failed === 0, uploaded, failed, skippedExisting: plan.existingCount, link,
-           note: uploaded ? 'New files are not searchable until the Vision index is rebuilt (Vision tab → Reindex).' : undefined })
+           note: uploaded ? 'Indexing this folder now — it will be searchable in Add Album within a minute.' : undefined })
     res.end()
   } catch (e) {
     console.error('[vision-upload] upload failed:', e.message)

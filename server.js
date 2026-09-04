@@ -11,7 +11,7 @@ import galloGenreRouter from './routes/gallo-genre.js'
 import { CANONICAL_GENRES } from './lib/genre-taxonomy.js'
 import downloadTrackRouter from './routes/download-track.js'
 import visionRouter from './routes/vision.js'
-import { startVisionIndexAutoRefresh } from './lib/gallo-vision-link.js'
+import { startVisionIndexAutoRefresh, startVisionNewAlbumSweep } from './lib/gallo-vision-link.js'
 import visionImportRouter from './routes/vision-import.js'
 import ccaImportRouter from './routes/cca-import.js'
 import visionUploadRouter from './routes/vision-upload.js'
@@ -207,5 +207,11 @@ app.listen(PORT, () => {
   // Keep the Vision index current without anyone pressing Reindex: each tick
   // picks up folders that have appeared and refreshes the stalest known ones
   // within a small budget. Set VISION_INDEX_AUTO_MS=0 to switch it off.
-  startVisionIndexAutoRefresh({ cacheFile: path.join(process.cwd(), 'tmp', 'vision-index.json') })
+  const visionIndexCache = path.join(process.cwd(), 'tmp', 'vision-index.json')
+  startVisionIndexAutoRefresh({ cacheFile: visionIndexCache })
+  // Catch albums added outside the app (Cyberduck): a cheap delimiter walk of
+  // the album roots that splices in any folder the index does not yet hold, so
+  // an external upload becomes searchable in Add Album within a sweep or two.
+  // Set VISION_DETECT_MS=0 to switch it off. See lib/gallo-vision-link.js.
+  startVisionNewAlbumSweep({ cacheFile: visionIndexCache })
 })
