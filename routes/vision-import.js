@@ -85,6 +85,19 @@ function trackNumFromName(name) {
 function matchTracksToFiles(rows, files) {
   const fileKey  = (f) => `${f.folder}/${f.name}`
   const fileNorm = (f) => normTitle(f.matchName || f.name) // matchName = title segment in flat folders
+  // Space-insensitive form for containment. A WAV named "I-SURPRISE" normalises
+  // to "i surprise" while the title "iSurprise" normalises to "isurprise" — the
+  // lone space defeats a literal substring test, so a track that only differs in
+  // hyphenation/spacing from its file went unmatched (Ian, 2026-09-04, CDIZI 130
+  // "iSurprise"). Collapsing both to alphanumerics-only repairs that whole class.
+  // Only ADDS matches over the plain form (a token-substring is still a substring
+  // once spaces are dropped), and a length floor keeps a 1–2 char title from
+  // matching everything.
+  const squash = (s) => s.replace(/[^a-z0-9]/g, '')
+  const contains = (want, f) => {
+    const w = squash(want), nf = squash(fileNorm(f))
+    return w.length >= 3 && (nf.includes(w) || w.includes(nf))
+  }
   const claimed = new Map() // folder/name → row index
   const matches = new Array(rows.length).fill(null)
   const methods = new Array(rows.length).fill(null)
@@ -103,7 +116,7 @@ function matchTracksToFiles(rows, files) {
     if (!want) return
     const candidates = files
       .filter(f => !claimed.has(fileKey(f)))
-      .filter(f => { const nf = fileNorm(f); return nf.includes(want) || want.includes(nf) })
+      .filter(f => contains(want, f))
       .sort((a, b) => fileNorm(b).length - fileNorm(a).length)
     if (candidates.length) {
       claimed.set(fileKey(candidates[0]), i); matches[i] = candidates[0]
