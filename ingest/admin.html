@@ -3781,7 +3781,16 @@ function renderSearchAllResults(songs, sources, meta = {}) {
         <th>Title</th><th>Artist</th><th>Album</th><th>Cat No</th><th>ISRC</th><th>Found in</th>
       </tr></thead><tbody>`
 
+  // Databases that were searched AND answered. A row lacking one of these was
+  // genuinely not found there — that absence is the interesting fact, so it is
+  // rendered as an explicit ✕ chip rather than left to mental arithmetic.
+  // Skipped or errored sources never show as missing: "we didn't look" and
+  // "it isn't there" must stay visually distinct.
+  const searchedOk = Object.entries(sources).filter(([, s]) => s.ok).map(([key, s]) => ({ key, label: s.label }))
+
   songs.forEach(s => {
+    const have = new Set((s.sources || []).map(x => x.key))
+    const missingChips = searchedOk.filter(db => !have.has(db.key)).map(db => `<span title="Searched ${esc(db.label)} — no record of this song there" style="display:inline-block;margin:1px 3px 1px 0;padding:1px 7px;border:1px dashed var(--red,#d93025);border-radius:9px;font-size:0.68rem;color:var(--red,#d93025);opacity:0.75;white-space:nowrap">✕ ${esc(db.label)}</span>`).join('')
     const badges = (s.sources || []).map(src => {
       const color = _DB_BADGE_COLORS[src.key] || 'var(--muted)'
       // "×N" = that database holds N records sharing this ISRC. Without it the
@@ -3802,7 +3811,7 @@ function renderSearchAllResults(songs, sources, meta = {}) {
         <td style="font-size:0.8rem;color:var(--muted)">${esc(s.album || '—')}</td>
         <td style="font-family:monospace;font-size:0.76rem;color:var(--muted)">${esc(s.catalogue_no || '—')}</td>
         <td style="font-family:monospace;font-size:0.76rem;color:var(--muted)">${esc(s.isrc || '—')}</td>
-        <td>${badges || '—'}</td>
+        <td>${(badges + missingChips) || '—'}</td>
       </tr>`
   })
 
@@ -5759,7 +5768,7 @@ function xvPushRender(preview) {
   const body = document.getElementById('xvPushBody')
   if (!body) return
   _xvPushTargets = preview.targets || []
-  const dbNames = { gallo: 'Gallo Catalogue', cms2024: 'CMS 2024', streamer: 'MadStreamer' }
+  const dbNames = { gallo: 'Gallo Catalogue', cms2024: 'CMS 2024', streamer: 'MadStreamer', mam: 'Music Arena Master' }
   const fmtVal = v => (v == null || v === '') ? '<span style="color:var(--muted)">—</span>' : esc(String(v))
 
   let html = ''
@@ -5777,7 +5786,7 @@ function xvPushRender(preview) {
     html += `<div style="color:var(--amber);margin-bottom:8px">⚠ ${esc(w)}</div>`
   }
   const multiCat = (preview.catalogues || []).length > 1
-  for (const db of ['gallo', 'cms2024', 'streamer']) {
+  for (const db of ['gallo', 'cms2024', 'streamer', 'mam']) {
     const targets = _xvPushTargets.map((t, idx) => ({ t, idx })).filter(x => x.t.db === db)
     if (!targets.length) continue
     const creates = targets.filter(x => x.t.action === 'create').length
