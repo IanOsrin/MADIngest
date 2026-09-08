@@ -3583,7 +3583,16 @@ function renderSearchAllResults(songs, sources, meta = {}) {
   songs.forEach(s => {
     const badges = (s.sources || []).map(src => {
       const color = _DB_BADGE_COLORS[src.key] || 'var(--muted)'
-      return `<span style="display:inline-block;margin:1px 3px 1px 0;padding:1px 7px;border:1px solid ${color};border-radius:9px;font-size:0.68rem;color:${color};white-space:nowrap">${esc(src.db)}</span>`
+      // "×N" = that database holds N records sharing this ISRC. Without it the
+      // row silently stands in for all of them and the per-source counts in the
+      // summary line look wrong (12 found, 7 badges).
+      const dup = src.count > 1
+        ? ` <strong style="color:var(--red)">×${src.count}</strong>`
+        : ''
+      const title = src.count > 1
+        ? ` title="${esc(src.db)} has ${src.count} records sharing this ISRC — they collapse into this one row. That is a data fault worth fixing."`
+        : ''
+      return `<span${title} style="display:inline-block;margin:1px 3px 1px 0;padding:1px 7px;border:1px solid ${color};border-radius:9px;font-size:0.68rem;color:${color};white-space:nowrap">${esc(src.db)}${dup}</span>`
     }).join('')
     html += `
       <tr>

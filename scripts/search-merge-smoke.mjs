@@ -86,6 +86,25 @@ console.log('identity')
   check('no ISRC + renamed → splits into two rows', renamed.length, 2)
 }
 
+console.log('collapsed duplicates are counted, not hidden')
+{
+  // GALP 1296 / Virginia Lee: MadStreamer had 12 records but only 7 distinct
+  // ISRCs, so six different songs collapsed onto one row. The row must say so.
+  const [song] = mergeSourceTracks([
+    { ...MS, tracks: [
+      track({ title: "Don't Cry On My Shoulder" }),
+      track({ title: "Mom and Dad's Waltz" }),          // same ISRC — wrong data
+      track({ title: "'Til I Waltz With You Again" }),  // same ISRC — wrong data
+    ] },
+    { ...GALLO, tracks: [track({ title: "Don't Cry On My Shoulder" })] },
+  ])
+  const ms = song.sources.find(s => s.key === 'madstreamer')
+  const gallo = song.sources.find(s => s.key === 'gallo')
+  check('collapsed source carries its record count', ms.count, 3)
+  check('single-record source counts 1',             gallo.count, 1)
+  check('still one row',                             song.title, "Don't Cry On My Shoulder")
+}
+
 console.log('source selection')
 {
   const ALL = ['madstreamer', 'gallo', 'cms2024', 'metadata']
