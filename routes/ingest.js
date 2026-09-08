@@ -27,7 +27,7 @@ import { uploadImport, uploadArtworkImport, presignImport, presignArtworkImport,
 import { createGalloRecord, createTapeFileRecord, updateGalloRecord, runGalloScript, runScriptOnRecord, pingGallo, findGalloRecordsByCatalogue, searchGalloRecords, fetchContainerData, getGalloTrack, getGalloLayoutFields, getGalloLayoutFieldSet, reloadGalloLayoutFields, getRecentGalloCreates, clearRecentGalloCreates } from '../lib/fm-gallo.js'
 import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, searchMadStreamerRecords, findArtistBio, upsertArtistBio, listArtistBios, findPlaylistArt, upsertPlaylistArt, listPlaylistArt, deletePlaylistArt, PLAYLIST_CATEGORIES, findStreamerSongsByArtist, findStreamerSongsByGenre, listPublicPlaylists, findSongsByPlaylist, setPublicPlaylist, getStreamerSongAudioUrl, findArtworkByCatalogue, createArtworkRecord, setTapeFileArtworkUrl, _config as madStreamerConfig } from '../lib/madstreamer.js'
 import { CANONICAL_GENRES } from '../lib/genre-taxonomy.js'
-import { mergeSourceTracks } from '../lib/search-merge.js'
+import { mergeSourceTracks, selectSources } from '../lib/search-merge.js'
 import {
   pingCms2024,
   findRecord            as findCms2024Record,
@@ -432,7 +432,21 @@ router.get('/catalog/search-all', adminAuth, async (req, res) => {
     )
   })
 
+  // Which databases to actually query. `?sources=a,b,c` selects them by key.
+  // Absent → everything except CMS 2024, which is 95,154 records and ~9s where
+  // the others are ~1.5s; including it by default made every search feel broken.
+  // Unknown keys are ignored rather than erroring, and an empty/garbage list
+  // falls back to the default so a bad param can never return nothing.
+  const selected = selectSources(req.query.sources, SOURCES.map(s => s.key), ['cms2024'])
+
   const settled = await Promise.allSettled(SOURCES.map(async (s) => {
+    if (!selected.has(s.key)) {
+      const e = new Error('not searched')
+      e.skipped = true
+      e.ms = 0
+      throw e
+    }
+
     const restingUntil = _sourceCooldownUntil.get(s.key) || 0
     if (Date.now() < restingUntil) {
       const secs = Math.ceil((restingUntil - Date.now()) / 1000)
@@ -451,7 +465,7 @@ router.get('/catalog/search-all', adminAuth, async (req, res) => {
     } catch (err) {
       // An AbortError here is our own per-request budget firing. Report it as
       // slowness, because "This operation was aborted" reads like a bug.
-      if (err?.resting) throw err
+      if (err?.skipped || err?.resting) throw err
       const timedOut = err?.timedOut || err?.name === 'AbortError' || /abort/i.test(err?.message || '')
       // Rest a source that timed out. The abort did NOT stop FileMaker working
       // on it, so asking again immediately stacks a second heavy find on top of
@@ -472,9 +486,9 @@ router.get('/catalog/search-all', adminAuth, async (req, res) => {
   SOURCES.forEach((src, i) => {
     const outcome = settled[i]
     if (outcome.status === 'rejected') {
-      const { message, timedOut, resting, ms } = outcome.reason || {}
-      if (!resting) console.warn(`[Search-all] ${src.label} ${timedOut ? 'timed out' : 'failed'} after ${ms}ms:`, message)
-      sources[src.key] = { label: src.label, ok: false, error: message || 'failed', timedOut: !!timedOut, resting: !!resting, ms }
+      const { message, timedOut, resting, skipped, ms } = outcome.reason || {}
+      if (!resting && !skipped) console.warn(`[Search-all] ${src.label} ${timedOut ? 'timed out' : 'failed'} after ${ms}ms:`, message)
+      sources[src.key] = { label: src.label, ok: false, error: message || 'failed', timedOut: !!timedOut, resting: !!resting, skipped: !!skipped, ms }
       return
     }
     const { value, ms } = outcome.value
@@ -487,7 +501,7 @@ router.get('/catalog/search-all', adminAuth, async (req, res) => {
 
   // The UI must be able to say "these results are incomplete" rather than
   // quietly showing a short list as if it were the whole catalogue.
-  const failed = Object.values(sources).filter(s => !s.ok).map(s => s.label)
+  const failed = Object.values(sources).filter(s => !s.ok && !s.skipped).map(s => s.label)
   res.json({ songs, count: songs.length, sources, incomplete: failed.length > 0, failedSources: failed })
 })
 

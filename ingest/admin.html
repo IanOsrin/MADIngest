@@ -306,10 +306,15 @@
           style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none"
           onkeydown="if(event.key==='Enter')searchAllDbs()"
           oninput="if(this.value==='')clearCatalog()">
-        <button class="btn btn-gold" onclick="searchAllDbs()" title="Searches Gallo Catalogue, CMS 2024, MadStreamer and the Metadata Extract in one go">Search FM</button>
+        <button class="btn btn-gold" onclick="searchAllDbs()" title="Searches MadStreamer, Gallo Catalogue and the Metadata Extract. Tick CMS 2024 to include it.">Search FM</button>
+        <label style="display:flex;align-items:center;gap:5px;font-size:0.78rem;color:var(--muted);white-space:nowrap;cursor:pointer"
+               title="CMS 2024 Song Files is 95,154 records and takes about 9s — the other three answer in ~2s. Off by default so the everyday search stays fast.">
+          <input id="catIncludeCms" type="checkbox" onchange="setIncludeCms(this.checked)" style="cursor:pointer">
+          Include CMS 2024 <span style="opacity:.7">(slow)</span>
+        </label>
         <span id="catalogCount" style="margin-left:4px;font-size:0.78rem;color:var(--muted)"></span>
       </div>
-      <div id="catalogContent"><div class="empty-state" style="color:var(--muted);padding:40px 0;text-align:center">Enter a search term above — searches Gallo Catalogue, CMS 2024, MadStreamer and the Metadata Extract in one go.</div></div>
+      <div id="catalogContent"><div class="empty-state" style="color:var(--muted);padding:40px 0;text-align:center">Enter a search term above — searches MadStreamer, Gallo Catalogue and the Metadata Extract. Tick <strong>Include CMS 2024</strong> to search that too.</div></div>
     </div>
 
     <!-- ── FM Submit tab ────────────────────────────────────── -->
@@ -2200,7 +2205,12 @@ async function s3Upload() {
 function showTab(name) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name))
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `tab-${name}`))
-  if (name === 'catalog') $('catalogSearch').focus()
+  if (name === 'catalog') {
+    // Reflect the remembered choice — otherwise the box reads unticked while
+    // searches quietly include CMS, or the reverse.
+    const cb = $('catIncludeCms'); if (cb) cb.checked = includeCms()
+    $('catalogSearch').focus()
+  }
   if (name === 'excel') loadMetaStatus()
   if (name === 'podcasts') podcastsInit()
   if (name === 'biography') biographyInit()
@@ -3498,16 +3508,29 @@ const _DB_BADGE_COLORS = {
   metadata:    '#9e9e9e',   // grey
 }
 
+// CMS 2024 Song Files is 95,154 records against Gallo's 59,192, and its search
+// runs ~9s where the others are ~1.5s — enough to make every Source-tab search
+// feel broken. It is opt-in, and the choice is remembered.
+function includeCms() {
+  try { return localStorage.getItem('catIncludeCms') === '1' } catch { return false }
+}
+function setIncludeCms(on) {
+  try { localStorage.setItem('catIncludeCms', on ? '1' : '0') } catch { /* private mode */ }
+  if ($('catalogSearch').value.trim().length >= 2) searchAllDbs()
+}
+
 async function searchAllDbs() {
   const q = $('catalogSearch').value.trim()
   if (!q) return clearCatalog()
   if (q.length < 2) { showToast('Enter at least 2 characters', 'error'); return }
 
-  $('catalogContent').innerHTML = '<div class="loading-state"><span class="spin">⟳</span> Searching all databases…</div>'
+  const withCms = includeCms()
+  $('catalogContent').innerHTML = `<div class="loading-state"><span class="spin">⟳</span> Searching${withCms ? ' all four databases — CMS 2024 takes about 9s…' : '…'}</div>`
   $('catalogCount').textContent = ''
 
   try {
-    const res  = await api(`/api/ingest/catalog/search-all?q=${encodeURIComponent(q)}&limit=100`)
+    const sources = ['madstreamer', 'gallo', 'metadata'].concat(withCms ? ['cms2024'] : [])
+    const res  = await api(`/api/ingest/catalog/search-all?q=${encodeURIComponent(q)}&limit=100&sources=${sources.join(',')}`)
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || 'Search failed')
     renderSearchAllResults(data.songs || [], data.sources || {}, data)
@@ -3521,6 +3544,10 @@ function renderSearchAllResults(songs, sources, meta = {}) {
   const summary = Object.entries(sources).map(([key, s]) => {
     const color = _DB_BADGE_COLORS[key] || 'var(--muted)'
     const ms = s.ms != null ? ` <span style="opacity:.6">${(s.ms / 1000).toFixed(1)}s</span>` : ''
+    // "Not searched" is a deliberate choice, not a fault — show it plainly in
+    // grey rather than red, but never leave it out: a track held only in CMS is
+    // legitimately missing from these results and the user has to know that.
+    if (s.skipped) return `<span style="opacity:.45">○</span> <span style="opacity:.7">${esc(s.label)}: not searched</span>`
     return s.ok
       ? `<span style="color:${color}">●</span> ${esc(s.label)}: ${s.foundCount}${ms}`
       : `<span style="color:var(--red)">●</span> ${esc(s.label)}: ${esc(s.error || 'unavailable')}${ms}`

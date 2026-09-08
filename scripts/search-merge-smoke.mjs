@@ -9,7 +9,7 @@
  * it had a value for and an edit made in MadStreamer could never appear in the
  * Source tab. It looked exactly like a caching problem and wasn't.
  */
-import { mergeSourceTracks } from '../lib/search-merge.js'
+import { mergeSourceTracks, selectSources } from '../lib/search-merge.js'
 
 let failures = 0
 const check = (name, actual, expected) => {
@@ -84,6 +84,20 @@ console.log('identity')
   // Documents a real limitation: with no ISRC there is no stable identity, so a
   // title edit in one database splits the row instead of updating it.
   check('no ISRC + renamed → splits into two rows', renamed.length, 2)
+}
+
+console.log('source selection')
+{
+  const ALL = ['madstreamer', 'gallo', 'cms2024', 'metadata']
+  const sel = (csv) => [...selectSources(csv, ALL, ['cms2024'])].sort()
+  check('absent → everything except CMS', sel(undefined), ['gallo', 'madstreamer', 'metadata'])
+  check('empty  → everything except CMS', sel(''), ['gallo', 'madstreamer', 'metadata'])
+  check('explicit list honoured', sel('madstreamer,cms2024'), ['cms2024', 'madstreamer'])
+  check('unknown keys ignored', sel('madstreamer,nonsense'), ['madstreamer'])
+  // A malformed param must never search nothing — that looks exactly like
+  // "this track doesn't exist" and would be silent.
+  check('all-garbage → falls back to default', sel('nonsense,,rubbish'), ['gallo', 'madstreamer', 'metadata'])
+  check('whitespace tolerated', sel(' gallo , cms2024 '), ['cms2024', 'gallo'])
 }
 
 console.log(failures ? `\n${failures} check(s) FAILED` : '\nall search-merge checks passed')
