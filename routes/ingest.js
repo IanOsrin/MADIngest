@@ -22,10 +22,10 @@ import { parseDDEXPackage, parseDDEXXml } from '../lib/ddex.js'
 import { parseTrackSheet } from '../lib/excel-ingest.js'
 import { uploadImport, uploadArtworkImport, presignImport, presignArtworkImport, presignAudioDownload, downloadImport,
          uploadMp3ByGcat, uploadWavByGcat, uploadArtworkByGmvi, uploadPlaylistArt, downloadAnyKey, keyFromS3Url, downloadByUrl,
-         artworkKeyForGmvi, headAnyKey, deleteAnyKey, urlForKey, uploadAnyKey,
+         artworkKeyForGmvi, listArtworkKeysForGmvi, headAnyKey, urlForKey, uploadAnyKey,
          writeArtworkDerivatives } from '../lib/s3-imports.js'
 import { createGalloRecord, createTapeFileRecord, updateGalloRecord, runGalloScript, runScriptOnRecord, pingGallo, findGalloRecordsByCatalogue, searchGalloRecords, fetchContainerData, getGalloTrack, getGalloLayoutFields, getGalloLayoutFieldSet, reloadGalloLayoutFields, getRecentGalloCreates, clearRecentGalloCreates } from '../lib/fm-gallo.js'
-import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, searchMadStreamerRecords, findArtistBio, upsertArtistBio, listArtistBios, findPlaylistArt, upsertPlaylistArt, listPlaylistArt, deletePlaylistArt, PLAYLIST_CATEGORIES, findStreamerSongsByArtist, findStreamerSongsByGenre, listPublicPlaylists, findSongsByPlaylist, setPublicPlaylist, getStreamerSongAudioUrl, findArtworkByCatalogue, createArtworkRecord, _config as madStreamerConfig } from '../lib/madstreamer.js'
+import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, searchMadStreamerRecords, findArtistBio, upsertArtistBio, listArtistBios, findPlaylistArt, upsertPlaylistArt, listPlaylistArt, deletePlaylistArt, PLAYLIST_CATEGORIES, findStreamerSongsByArtist, findStreamerSongsByGenre, listPublicPlaylists, findSongsByPlaylist, setPublicPlaylist, getStreamerSongAudioUrl, findArtworkByCatalogue, createArtworkRecord, setTapeFileArtworkUrl, _config as madStreamerConfig } from '../lib/madstreamer.js'
 import { CANONICAL_GENRES } from '../lib/genre-taxonomy.js'
 import {
   pingCms2024,
@@ -3065,19 +3065,27 @@ router.post('/madstreamer/public-playlists/assign', adminAuth, express.json(), a
  *     allocates the GMVi (we poll it back, never compute it). Response always
  *     includes the S3 file state and a streamer-songs sanity check so the UI
  *     can warn about typo'd catalogues before anything is created.
- * POST /madstreamer/artwork/upload (multipart image + gmvi)
- *   → uploads/replaces artwork/<GMVi>.<ext>. If the previous file lived under
- *     a different extension it is deleted (bucket versioning keeps a copy) so
- *     lookups and the derivatives cron never see two variants.
+ * POST /madstreamer/artwork/upload (multipart image + gmvi [+ catalogue_no])
+ *   → a FIRST cover lands on artwork/<GMVi>.<ext>. A REPLACEMENT lands on a
+ *     timestamped key, artwork/<GMVi>-<YYYYMMDD-HHmmss>.<ext>, and the Tape
+ *     Files Master record is repointed at it — see uploadArtworkByGmvi for why
+ *     overwriting the old key does not reach the site. `catalogue_no` is what
+ *     makes the repoint possible, so a replacement without it is refused.
+ *     Superseded masters are LEFT IN PLACE (they are a few hundred KB and any
+ *     page still holding the old URL keeps rendering).
  */
 const ARTWORK_EXTS = ['.jpg', '.jpeg', '.png', '.webp']
 
+// The CURRENT cover for a GMVi: newest stamped key, else the bare legacy key.
+// Probing artwork/<GMVi>.<ext> directly is no longer enough — once a cover has
+// been replaced the live master carries a timestamp, and a bare-key probe would
+// report the superseded image (or nothing at all).
 async function artworkFileState(gmvi) {
-  for (const ext of ARTWORK_EXTS) {
-    const key  = artworkKeyForGmvi(gmvi, ext)
+  const keys = await listArtworkKeysForGmvi(gmvi)
+  for (const key of keys) {
     const head = await headAnyKey(key)
     if (head.exists) {
-      return { exists: true, key, url: urlForKey(key), size: head.size, lastModified: head.lastModified }
+      return { exists: true, key, url: urlForKey(key), size: head.size, lastModified: head.lastModified, supersededCount: keys.length - 1 }
     }
   }
   return { exists: false, key: artworkKeyForGmvi(gmvi, '.jpg') }
@@ -3126,19 +3134,45 @@ const uploadAlbumArtImage = multer({
 
 router.post('/madstreamer/artwork/upload', adminAuth, uploadAlbumArtImage.single('image'), async (req, res) => {
   const gmvi = String(req.body?.gmvi || '').trim()
+  const cat  = String(req.body?.catalogue_no || '').trim()
   if (!gmvi)     return res.status(400).json({ error: 'gmvi required' })
   if (!req.file) return res.status(400).json({ error: 'image file required' })
   try {
-    const prev = await artworkFileState(gmvi)
-    const ext  = (path.extname(req.file.originalname) || '.jpg').toLowerCase()
-    const up   = await uploadArtworkByGmvi(req.file.buffer, gmvi, ext, req.file.mimetype)
-    let removedOld = null
-    if (prev.exists && prev.key !== up.key) {
-      await deleteAnyKey(prev.key)
-      removedOld = prev.key
+    const prev      = await artworkFileState(gmvi)
+    const replacing = prev.exists
+
+    // A replacement gets a new URL, so something has to write that URL to
+    // FileMaker or the cover is invisible. Refuse BEFORE touching S3 rather
+    // than uploading an image nothing will ever point at.
+    if (replacing && !cat) {
+      return res.status(400).json({ error: 'catalogue_no required when replacing artwork — the new cover lands on a timestamped key and the Tape Files record has to be repointed at it' })
     }
-    console.log(`[Artwork] ${prev.exists ? 'Replaced' : 'Uploaded'} ${up.key}${removedOld ? ` (removed old ${removedOld})` : ''}`)
-    res.json({ ok: true, key: up.key, url: up.url, replaced: prev.exists, removedOld })
+
+    const ext = (path.extname(req.file.originalname) || '.jpg').toLowerCase()
+    const up  = await uploadArtworkByGmvi(req.file.buffer, gmvi, ext, req.file.mimetype, { stamped: replacing })
+
+    // Repoint FileMaker. The old master is deliberately NOT deleted: anything
+    // still holding the previous URL (a cached page, the Postgres mirror until
+    // its next sync) keeps rendering instead of breaking.
+    let repointed = null
+    if (replacing) {
+      repointed = await setTapeFileArtworkUrl(cat, up.url)
+      if (!repointed.ok) {
+        return res.status(409).json({
+          error: `Cover uploaded to ${up.key} but FileMaker was NOT repointed: ${repointed.reason}. The site still shows the old cover. Fix the catalogue number and upload again.`,
+          key: up.key, url: up.url, repointed: false,
+        })
+      }
+    }
+
+    console.log(`[Artwork] ${replacing ? 'Replaced' : 'Uploaded'} ${up.key}` +
+      (repointed?.ok ? ` (Tape Files ${repointed.recordId} repointed from ${repointed.previousUrl || 'nothing'})` : ''))
+    res.json({
+      ok: true, key: up.key, url: up.url, replaced: replacing,
+      repointed: repointed?.ok ?? null,
+      supersededKept: replacing ? prev.key : null,
+      duplicateTapeRecords: repointed?.duplicates || null,
+    })
   } catch (err) {
     res.status(502).json({ error: err.message })
   }

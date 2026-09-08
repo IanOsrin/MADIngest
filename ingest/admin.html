@@ -2590,6 +2590,9 @@ async function awUpload() {
     const fd = new FormData()
     fd.append('image', _awNewFile)
     fd.append('gmvi', _awState.record.gmvi)
+    // Required when replacing: the new cover lands on a timestamped key, so the
+    // server has to repoint the Tape Files record at it or nothing changes.
+    fd.append('catalogue_no', _awState.catalogue_no || '')
     const res  = await fetch('/api/ingest/madstreamer/artwork/upload', {
       method: 'POST',
       headers: { Authorization: `Bearer ${adminToken}` },
@@ -4417,6 +4420,7 @@ async function abPushCoverMad() {
     status.textContent = `⟳ Uploading cover to MAD (GMVi ${gmvi})…`
     const fd = new FormData()
     fd.append('gmvi', gmvi)
+    fd.append('catalogue_no', _abAlbum.catalogue)
     fd.append('image', new File([blob], 'cover.jpg', { type: blob.type || 'image/jpeg' }))
     const upRes = await fetch('/api/ingest/madstreamer/artwork/upload', { method: 'POST', headers: { Authorization: `Bearer ${adminToken}` }, body: fd })
     const up    = await upRes.json()
