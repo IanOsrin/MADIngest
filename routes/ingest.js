@@ -354,6 +354,16 @@ router.get('/catalog/search', adminAuth, async (req, res) => {
 
 // ── Cross-database search — queries every source in parallel ─────────────────
 // Merges results by ISRC (fallback: normalised title+artist) and tags each
+// ── Cross-DB search: cooldown after a timeout ────────────────────────────────
+// Aborting the HTTP request does NOT cancel the work FileMaker is doing — it
+// only stops US waiting. On 2026-08-18 repeated retries against CMS 2024 piled
+// stuck requests onto the digitalcupboard host until FileMaker logins froze for
+// every database. So a source that just timed out is RESTED rather than asked
+// again: without this, a user who retries a slow search three times has three
+// heavy finds grinding away on the FM host simultaneously.
+const _sourceCooldownUntil = new Map()   // source key → timestamp
+const SOURCE_COOLDOWN_MS = Number(process.env.SEARCH_SOURCE_COOLDOWN_MS) || 60_000
+
 // song with the databases it was found in.
 router.get('/catalog/search-all', adminAuth, async (req, res) => {
   const { q } = req.query
@@ -368,6 +378,8 @@ router.get('/catalog/search-all', adminAuth, async (req, res) => {
   // regularly takes ~15s and from Render it hit the full 60s, so EVERY search
   // took 60s and then showed CMS as a small grey "unavailable".
   const SEARCH_TIMEOUT_MS = Number(process.env.SEARCH_SOURCE_TIMEOUT_MS) || 12_000
+  // Don't round 2.5s up to "3s" — the message is read while tuning the budget.
+  const secs = (ms) => (ms % 1000 === 0 ? ms / 1000 : (ms / 1000).toFixed(1))
 
   // `rank` is the precedence when databases disagree — LOWER WINS. MadStreamer
   // is the record the public site actually serves, so it is the value to show;
@@ -410,7 +422,7 @@ router.get('/catalog/search-all', adminAuth, async (req, res) => {
   // 5.8s against a 3s setting before this was added.
   const withBudget = (promise, ms) => new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
-      const e = new Error(`no response within ${Math.round(ms / 1000)}s`)
+      const e = new Error(`no response within ${secs(ms)}s`)
       e.timedOut = true
       reject(e)
     }, ms)
@@ -421,15 +433,32 @@ router.get('/catalog/search-all', adminAuth, async (req, res) => {
   })
 
   const settled = await Promise.allSettled(SOURCES.map(async (s) => {
+    const restingUntil = _sourceCooldownUntil.get(s.key) || 0
+    if (Date.now() < restingUntil) {
+      const secs = Math.ceil((restingUntil - Date.now()) / 1000)
+      const e = new Error(`resting after a timeout — retrying in ${secs}s`)
+      e.timedOut = true
+      e.resting  = true
+      e.ms = 0
+      throw e
+    }
+
     const started = Date.now()
     try {
-      return { value: await withBudget(s.run(SEARCH_TIMEOUT_MS), SEARCH_TIMEOUT_MS), ms: Date.now() - started }
+      const value = await withBudget(s.run(SEARCH_TIMEOUT_MS), SEARCH_TIMEOUT_MS)
+      _sourceCooldownUntil.delete(s.key)   // answered — clear any cooldown
+      return { value, ms: Date.now() - started }
     } catch (err) {
       // An AbortError here is our own per-request budget firing. Report it as
       // slowness, because "This operation was aborted" reads like a bug.
+      if (err?.resting) throw err
       const timedOut = err?.timedOut || err?.name === 'AbortError' || /abort/i.test(err?.message || '')
+      // Rest a source that timed out. The abort did NOT stop FileMaker working
+      // on it, so asking again immediately stacks a second heavy find on top of
+      // one that is still running.
+      if (timedOut) _sourceCooldownUntil.set(s.key, Date.now() + SOURCE_COOLDOWN_MS)
       const e = new Error(timedOut
-        ? `no response within ${Math.round(SEARCH_TIMEOUT_MS / 1000)}s`
+        ? `no response within ${secs(SEARCH_TIMEOUT_MS)}s — resting for ${secs(SOURCE_COOLDOWN_MS)}s`
         : (err?.message || 'failed'))
       e.timedOut = timedOut
       e.ms = Date.now() - started
@@ -443,9 +472,9 @@ router.get('/catalog/search-all', adminAuth, async (req, res) => {
   SOURCES.forEach((src, i) => {
     const outcome = settled[i]
     if (outcome.status === 'rejected') {
-      const { message, timedOut, ms } = outcome.reason || {}
-      console.warn(`[Search-all] ${src.label} ${timedOut ? 'timed out' : 'failed'} after ${ms}ms:`, message)
-      sources[src.key] = { label: src.label, ok: false, error: message || 'failed', timedOut: !!timedOut, ms }
+      const { message, timedOut, resting, ms } = outcome.reason || {}
+      if (!resting) console.warn(`[Search-all] ${src.label} ${timedOut ? 'timed out' : 'failed'} after ${ms}ms:`, message)
+      sources[src.key] = { label: src.label, ok: false, error: message || 'failed', timedOut: !!timedOut, resting: !!resting, ms }
       return
     }
     const { value, ms } = outcome.value
