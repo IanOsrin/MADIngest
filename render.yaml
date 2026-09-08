@@ -61,6 +61,15 @@ services:
         value: AudioImports/
       - key: S3_IMPORTS_BASE_URL
         value: https://mass-music-audio-files.s3.eu-north-1.amazonaws.com
+      # Postgres READ mirror of MadStreamer — powers the Data Health tab only.
+      # This is the MAD website's database; GalloIngest only ever reads it
+      # (lib/mirror-db.js refuses any statement that is not SELECT/WITH).
+      # Use the INTERNAL Database URL: that Postgres is in frankfurt and so is
+      # this service, so private networking applies — faster and no SSL setup.
+      # Leave it unset and the Data Health tab simply says "not configured";
+      # nothing else in GalloIngest is affected.
+      - key: MIRROR_DATABASE_URL
+        sync: false
       # FileMaker server-side asset path
       - key: FM_SERVER_ASSET_PATH
         value: /Macintosh HD/Users/fmuser/Documents/Vision.localized/gallo-music-files-wavs
