@@ -47,6 +47,7 @@ import {
   mapCms2024Record,
   _config               as cms2024Config,
 } from '../lib/fm-cms2024.js'
+import { searchMamRecords } from '../lib/fm-mam.js'
 import { wavBufferToMp3, ensureFfmpeg } from '../lib/audio-convert.js'
 import { languageNameToCode } from '../lib/language-codes.js'
 import { generateDDEX382 } from '../lib/ddex-generate.js'
@@ -394,11 +395,16 @@ router.get('/catalog/search-all', adminAuth, async (req, res) => {
   const SOURCES = [
     { key: 'madstreamer', label: 'MadStreamer',      rank: 0,
       run: (timeoutMs) => searchMadStreamerRecords(term, { limit, timeoutMs }) },
-    { key: 'gallo',       label: 'Gallo Catalogue',  rank: 1,
+    // MAM is the merge of the other three, so its metadata outranks them —
+    // but never MadStreamer, where live edits happen (see 2026-09-08 note in
+    // search-merge.js about Gallo silently winning fields).
+    { key: 'mam',         label: 'Music Arena Master', rank: 1,
+      run: () => searchMamRecords(term, { limit }) },
+    { key: 'gallo',       label: 'Gallo Catalogue',  rank: 2,
       run: (timeoutMs) => searchGalloRecords(term, limit, 0, { timeoutMs }) },
-    { key: 'cms2024',     label: 'CMS 2024',         rank: 2,
+    { key: 'cms2024',     label: 'CMS 2024',         rank: 3,
       run: (timeoutMs) => searchCms2024Records(term, { limit, timeoutMs }) },
-    { key: 'metadata',    label: 'Metadata Extract', rank: 3,
+    { key: 'metadata',    label: 'Metadata Extract', rank: 4,
       run: async () => {
         const rows = searchMetadata(term, limit)
         return {
