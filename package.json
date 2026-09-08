@@ -13,7 +13,8 @@
     "cms2024:smoke": "node scripts/cms2024-smoke.js",
     "vision": "node scripts/vision-cli.mjs",
     "artwork:smoke": "node scripts/artwork-keys-smoke.mjs",
-    "search:smoke": "node scripts/search-merge-smoke.mjs"
+    "search:smoke": "node scripts/search-merge-smoke.mjs",
+    "health:smoke": "node scripts/data-health-smoke.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.0.0",

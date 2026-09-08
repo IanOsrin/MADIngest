@@ -28,6 +28,7 @@ import { createGalloRecord, createTapeFileRecord, updateGalloRecord, runGalloScr
 import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, searchMadStreamerRecords, findArtistBio, upsertArtistBio, listArtistBios, findPlaylistArt, upsertPlaylistArt, listPlaylistArt, deletePlaylistArt, PLAYLIST_CATEGORIES, findStreamerSongsByArtist, findStreamerSongsByGenre, listPublicPlaylists, findSongsByPlaylist, setPublicPlaylist, getStreamerSongAudioUrl, findArtworkByCatalogue, createArtworkRecord, setTapeFileArtworkUrl, _config as madStreamerConfig } from '../lib/madstreamer.js'
 import { CANONICAL_GENRES } from '../lib/genre-taxonomy.js'
 import { mergeSourceTracks, selectSources } from '../lib/search-merge.js'
+import { checkDataHealth } from '../lib/data-health.js'
 import {
   pingCms2024,
   findRecord            as findCms2024Record,
@@ -499,10 +500,16 @@ router.get('/catalog/search-all', adminAuth, async (req, res) => {
 
   const songs = mergeSourceTracks(entries)
 
+  // Data faults in what was just fetched — no extra queries. Advisory only:
+  // it never changes which rows are shown, it explains them.
+  let health = []
+  try { health = checkDataHealth(entries) }
+  catch (e) { console.warn('[Search-all] health checks failed (results still returned):', e?.message) }
+
   // The UI must be able to say "these results are incomplete" rather than
   // quietly showing a short list as if it were the whole catalogue.
   const failed = Object.values(sources).filter(s => !s.ok && !s.skipped).map(s => s.label)
-  res.json({ songs, count: songs.length, sources, incomplete: failed.length > 0, failedSources: failed })
+  res.json({ songs, count: songs.length, sources, health, incomplete: failed.length > 0, failedSources: failed })
 })
 
 // ── FM serial queue — prevents Thrift pool exhaustion ────────────────────────

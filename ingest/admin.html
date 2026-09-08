@@ -3539,6 +3539,39 @@ async function searchAllDbs() {
   }
 }
 
+// ── Data-health panel ────────────────────────────────────────────────────────
+// Collapsed by default so it never gets in the way of a normal search; the
+// headline count is always visible so a fault can't be missed either.
+const _HEALTH_STYLE = {
+  error: { border: 'var(--red)',   dot: 'var(--red)',   label: 'Data error' },
+  warn:  { border: 'var(--amber)', dot: 'var(--amber)', label: 'Check' },
+  info:  { border: 'var(--border)',dot: 'var(--muted)', label: 'Note' },
+}
+function renderHealth(findings) {
+  if (!findings.length) return ''
+  const errs = findings.filter(f => f.severity === 'error').length
+  const rest = findings.length - errs
+  const worst = errs ? 'error' : (findings.some(f => f.severity === 'warn') ? 'warn' : 'info')
+  const head = [errs ? `${errs} data error${errs === 1 ? '' : 's'}` : '', rest ? `${rest} to check` : '']
+    .filter(Boolean).join(' · ')
+  const items = findings.map(f => {
+    const st = _HEALTH_STYLE[f.severity] || _HEALTH_STYLE.info
+    return `<li style="margin:0 0 7px 0">
+      <span style="color:${st.dot}">●</span>
+      <strong>${esc(f.message)}</strong>
+      ${f.detail ? `<div style="color:var(--muted);margin:2px 0 0 14px;font-size:0.78rem">${esc(f.detail)}</div>` : ''}
+    </li>`
+  }).join('')
+  return `
+    <details style="border:1px solid ${_HEALTH_STYLE[worst].border};border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:0.82rem">
+      <summary style="cursor:pointer;outline:none">
+        <strong style="color:${_HEALTH_STYLE[worst].dot}">Data health:</strong> ${esc(head)}
+        <span style="color:var(--muted);font-weight:400"> — in these results, not the software</span>
+      </summary>
+      <ul style="margin:9px 0 2px 0;padding-left:16px;list-style:none">${items}</ul>
+    </details>`
+}
+
 function renderSearchAllResults(songs, sources, meta = {}) {
   // Per-source summary line (including any DB that errored)
   const summary = Object.entries(sources).map(([key, s]) => {
@@ -3562,18 +3595,23 @@ function renderSearchAllResults(songs, sources, meta = {}) {
       ${esc(meta.failedSources.join(' and '))} did not answer, so tracks held only there are missing from this list.
     </div>` : ''
 
+  // Data faults in what was just fetched. This exists because time keeps going
+  // into debugging the software when the data is what's wrong — so when a
+  // result looks strange, the reason should be on screen, not in a hunch.
+  const health = renderHealth(meta.health || [])
+
   $('catalogCount').textContent = songs.length
     ? `${songs.length} unique song${songs.length !== 1 ? 's' : ''}`
     : ''
 
   if (!songs.length) {
-    $('catalogContent').innerHTML = `${warn}
+    $('catalogContent').innerHTML = `${warn}${health}
       <div style="font-size:0.78rem;color:var(--muted);margin-bottom:10px">${summary}</div>
       <div class="empty-state" style="padding:40px 0;text-align:center;color:var(--muted)">No songs found in any database.</div>`
     return
   }
 
-  let html = `${warn}
+  let html = `${warn}${health}
     <div style="font-size:0.78rem;color:var(--muted);margin-bottom:10px">${summary}</div>
     <div class="table-wrap"><table>
       <thead><tr>
