@@ -3510,33 +3510,43 @@ async function searchAllDbs() {
     const res  = await api(`/api/ingest/catalog/search-all?q=${encodeURIComponent(q)}&limit=100`)
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || 'Search failed')
-    renderSearchAllResults(data.songs || [], data.sources || {})
+    renderSearchAllResults(data.songs || [], data.sources || {}, data)
   } catch (err) {
     $('catalogContent').innerHTML = `<div class="empty-state" style="color:var(--red)">Error: ${esc(err.message)}</div>`
   }
 }
 
-function renderSearchAllResults(songs, sources) {
+function renderSearchAllResults(songs, sources, meta = {}) {
   // Per-source summary line (including any DB that errored)
   const summary = Object.entries(sources).map(([key, s]) => {
     const color = _DB_BADGE_COLORS[key] || 'var(--muted)'
+    const ms = s.ms != null ? ` <span style="opacity:.6">${(s.ms / 1000).toFixed(1)}s</span>` : ''
     return s.ok
-      ? `<span style="color:${color}">●</span> ${esc(s.label)}: ${s.foundCount}`
-      : `<span style="color:var(--red)">●</span> ${esc(s.label)}: unavailable`
+      ? `<span style="color:${color}">●</span> ${esc(s.label)}: ${s.foundCount}${ms}`
+      : `<span style="color:var(--red)">●</span> ${esc(s.label)}: ${esc(s.error || 'unavailable')}${ms}`
   }).join(' &nbsp; ')
+
+  // A database that didn't answer means the result list is INCOMPLETE. Saying so
+  // in small grey text was too easy to miss — a short list then reads as "this
+  // track isn't in the catalogue", which is a different and wrong conclusion.
+  const warn = (meta.failedSources || []).length ? `
+    <div style="border:1px solid var(--red);border-radius:6px;padding:9px 12px;margin-bottom:10px;font-size:0.82rem">
+      <strong style="color:var(--red)">Incomplete results.</strong>
+      ${esc(meta.failedSources.join(' and '))} did not answer, so tracks held only there are missing from this list.
+    </div>` : ''
 
   $('catalogCount').textContent = songs.length
     ? `${songs.length} unique song${songs.length !== 1 ? 's' : ''}`
     : ''
 
   if (!songs.length) {
-    $('catalogContent').innerHTML = `
+    $('catalogContent').innerHTML = `${warn}
       <div style="font-size:0.78rem;color:var(--muted);margin-bottom:10px">${summary}</div>
       <div class="empty-state" style="padding:40px 0;text-align:center;color:var(--muted)">No songs found in any database.</div>`
     return
   }
 
-  let html = `
+  let html = `${warn}
     <div style="font-size:0.78rem;color:var(--muted);margin-bottom:10px">${summary}</div>
     <div class="table-wrap"><table>
       <thead><tr>

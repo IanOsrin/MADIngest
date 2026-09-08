@@ -27,6 +27,7 @@ import { uploadImport, uploadArtworkImport, presignImport, presignArtworkImport,
 import { createGalloRecord, createTapeFileRecord, updateGalloRecord, runGalloScript, runScriptOnRecord, pingGallo, findGalloRecordsByCatalogue, searchGalloRecords, fetchContainerData, getGalloTrack, getGalloLayoutFields, getGalloLayoutFieldSet, reloadGalloLayoutFields, getRecentGalloCreates, clearRecentGalloCreates } from '../lib/fm-gallo.js'
 import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, searchMadStreamerRecords, findArtistBio, upsertArtistBio, listArtistBios, findPlaylistArt, upsertPlaylistArt, listPlaylistArt, deletePlaylistArt, PLAYLIST_CATEGORIES, findStreamerSongsByArtist, findStreamerSongsByGenre, listPublicPlaylists, findSongsByPlaylist, setPublicPlaylist, getStreamerSongAudioUrl, findArtworkByCatalogue, createArtworkRecord, setTapeFileArtworkUrl, _config as madStreamerConfig } from '../lib/madstreamer.js'
 import { CANONICAL_GENRES } from '../lib/genre-taxonomy.js'
+import { mergeSourceTracks } from '../lib/search-merge.js'
 import {
   pingCms2024,
   findRecord            as findCms2024Record,
@@ -360,16 +361,31 @@ router.get('/catalog/search-all', adminAuth, async (req, res) => {
   if (!q || q.trim().length < 2) return res.json({ songs: [], count: 0, sources: {} })
 
   const term = q.trim()
-  const norm = s => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ')
 
+  // One slow database must not hold up the page. Each source gets this budget
+  // and is reported as timed-out beyond it. The FM clients' own FM_TIMEOUT_MS is
+  // 60s, which is right for a batch job and hopeless for a search box: CMS 2024
+  // regularly takes ~15s and from Render it hit the full 60s, so EVERY search
+  // took 60s and then showed CMS as a small grey "unavailable".
+  const SEARCH_TIMEOUT_MS = Number(process.env.SEARCH_SOURCE_TIMEOUT_MS) || 12_000
+
+  // `rank` is the precedence when databases disagree — LOWER WINS. MadStreamer
+  // is the record the public site actually serves, so it is the value to show;
+  // the Metadata Extract is a cached snapshot and is last on purpose.
+  //
+  // This used to be implicit in array order with a first-writer-wins merge, so
+  // Gallo silently won every field it had a value for and an edit made in
+  // MadStreamer could NEVER appear here (Ian, 2026-09-08 — reported as a cache
+  // problem; nothing was cached, Gallo's value was simply being displayed).
+  // Precedence is explicit now so it cannot be changed by accident.
   const SOURCES = [
-    { key: 'gallo',       label: 'Gallo Catalogue',
-      run: () => searchGalloRecords(term, limit) },
-    { key: 'cms2024',     label: 'CMS 2024',
-      run: () => searchCms2024Records(term, { limit }) },
-    { key: 'madstreamer', label: 'MadStreamer',
-      run: () => searchMadStreamerRecords(term, { limit }) },
-    { key: 'metadata',    label: 'Metadata Extract',
+    { key: 'madstreamer', label: 'MadStreamer',      rank: 0,
+      run: (timeoutMs) => searchMadStreamerRecords(term, { limit, timeoutMs }) },
+    { key: 'gallo',       label: 'Gallo Catalogue',  rank: 1,
+      run: (timeoutMs) => searchGalloRecords(term, limit, 0, { timeoutMs }) },
+    { key: 'cms2024',     label: 'CMS 2024',         rank: 2,
+      run: (timeoutMs) => searchCms2024Records(term, { limit, timeoutMs }) },
+    { key: 'metadata',    label: 'Metadata Extract', rank: 3,
       run: async () => {
         const rows = searchMetadata(term, limit)
         return {
@@ -386,54 +402,64 @@ router.get('/catalog/search-all', adminAuth, async (req, res) => {
       } },
   ]
 
-  const settled = await Promise.allSettled(SOURCES.map(s => s.run()))
+  // Two layers, deliberately. The budget passed INTO the client aborts the
+  // in-flight FM request so its connection is released; the race here bounds
+  // what the USER waits for. Both are needed: a source can make several
+  // sequential FM calls (CMS does a layout introspection then the find), so a
+  // per-request abort alone lets the total run past the budget — it measured
+  // 5.8s against a 3s setting before this was added.
+  const withBudget = (promise, ms) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      const e = new Error(`no response within ${Math.round(ms / 1000)}s`)
+      e.timedOut = true
+      reject(e)
+    }, ms)
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v) },
+      (e) => { clearTimeout(timer); reject(e) },
+    )
+  })
 
-  const merged  = new Map()   // mergeKey → song
+  const settled = await Promise.allSettled(SOURCES.map(async (s) => {
+    const started = Date.now()
+    try {
+      return { value: await withBudget(s.run(SEARCH_TIMEOUT_MS), SEARCH_TIMEOUT_MS), ms: Date.now() - started }
+    } catch (err) {
+      // An AbortError here is our own per-request budget firing. Report it as
+      // slowness, because "This operation was aborted" reads like a bug.
+      const timedOut = err?.timedOut || err?.name === 'AbortError' || /abort/i.test(err?.message || '')
+      const e = new Error(timedOut
+        ? `no response within ${Math.round(SEARCH_TIMEOUT_MS / 1000)}s`
+        : (err?.message || 'failed'))
+      e.timedOut = timedOut
+      e.ms = Date.now() - started
+      throw e
+    }
+  }))
+
   const sources = {}          // per-source result/error summary
+  const entries = []          // what actually answered, for the merge
 
   SOURCES.forEach((src, i) => {
     const outcome = settled[i]
     if (outcome.status === 'rejected') {
-      console.warn(`[Search-all] ${src.label} failed:`, outcome.reason?.message)
-      sources[src.key] = { label: src.label, ok: false, error: outcome.reason?.message || 'failed' }
+      const { message, timedOut, ms } = outcome.reason || {}
+      console.warn(`[Search-all] ${src.label} ${timedOut ? 'timed out' : 'failed'} after ${ms}ms:`, message)
+      sources[src.key] = { label: src.label, ok: false, error: message || 'failed', timedOut: !!timedOut, ms }
       return
     }
-    const { tracks = [], foundCount = 0 } = outcome.value || {}
-    sources[src.key] = { label: src.label, ok: true, foundCount, returned: tracks.length }
-
-    for (const t of tracks) {
-      const isrc = (t.isrc || '').trim().toUpperCase()
-      const key  = isrc || `t:${norm(t.title)}|a:${norm(t.artist_name)}`
-      if (!merged.has(key)) {
-        merged.set(key, {
-          title:        t.title        || null,
-          artist:       t.artist_name  || null,
-          album:        t.album_title  || null,
-          catalogue_no: t.catalogue_no || null,
-          isrc:         isrc || null,
-          sequence_no:  t.sequence_no ?? null,
-          sources:      [],
-        })
-      }
-      const song = merged.get(key)
-      if (!song.sources.some(s => s.db === src.label)) {
-        song.sources.push({ db: src.label, key: src.key, fm_record_id: t.fm_record_id || null })
-      }
-      // Backfill blanks from whichever source has the value
-      song.title        ||= t.title        || null
-      song.artist       ||= t.artist_name  || null
-      song.album        ||= t.album_title  || null
-      song.catalogue_no ||= t.catalogue_no || null
-    }
+    const { value, ms } = outcome.value
+    const { tracks = [], foundCount = 0 } = value || {}
+    sources[src.key] = { label: src.label, ok: true, foundCount, returned: tracks.length, ms }
+    entries.push({ key: src.key, label: src.label, rank: src.rank, tracks })
   })
 
-  const songs = [...merged.values()].sort((a, b) =>
-    (b.sources.length - a.sources.length) ||
-    String(a.artist || '').localeCompare(String(b.artist || '')) ||
-    String(a.title  || '').localeCompare(String(b.title  || ''))
-  )
+  const songs = mergeSourceTracks(entries)
 
-  res.json({ songs, count: songs.length, sources })
+  // The UI must be able to say "these results are incomplete" rather than
+  // quietly showing a short list as if it were the whole catalogue.
+  const failed = Object.values(sources).filter(s => !s.ok).map(s => s.label)
+  res.json({ songs, count: songs.length, sources, incomplete: failed.length > 0, failedSources: failed })
 })
 
 // ── FM serial queue — prevents Thrift pool exhaustion ────────────────────────

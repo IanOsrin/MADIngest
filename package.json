@@ -12,7 +12,8 @@
     "fix-paths:dry": "node scripts/fix-fm-paths.js --dry-run",
     "cms2024:smoke": "node scripts/cms2024-smoke.js",
     "vision": "node scripts/vision-cli.mjs",
-    "artwork:smoke": "node scripts/artwork-keys-smoke.mjs"
+    "artwork:smoke": "node scripts/artwork-keys-smoke.mjs",
+    "search:smoke": "node scripts/search-merge-smoke.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.0.0",
