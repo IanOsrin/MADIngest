@@ -280,6 +280,7 @@
     <nav class="admin-tabs">
       <button class="tab-btn active" data-tab="album" onclick="showTab('album')">Gallo Catalogue</button>
       <button class="tab-btn" data-tab="catalog" onclick="showTab('catalog')">Source</button>
+      <button class="tab-btn" data-tab="health" onclick="showTab('health')">Data Health</button>
       <button class="tab-btn" data-tab="ddex" onclick="showTab('ddex')">DDEX</button>
       <button class="tab-btn" data-tab="excel" onclick="showTab('excel')">Excel</button>
       <button class="tab-btn" data-tab="dbsync" onclick="showTab('dbsync')">DB Sync</button>
@@ -300,6 +301,27 @@
     </nav>
 
     <!-- ── Catalog tab ──────────────────────────────────────── -->
+    <!-- ── Data Health tab ─────────────────────────────────────
+         Catalogue-wide data faults, read from the MAD website's Postgres
+         mirror. Never touches FileMaker: scanning 67k FM records is slow and
+         once froze logins across all three databases, while the same questions
+         cost seconds here. Everything shown is as of the mirror's last sync. -->
+    <div id="tab-health" class="tab-panel">
+      <div style="display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:6px">
+        <h3 style="margin:0">Catalogue data health</h3>
+        <span id="healthMeta" style="font-size:0.78rem;color:var(--muted)"></span>
+        <span style="flex:1"></span>
+        <button class="btn" onclick="healthLoad(true)" title="Re-sweep the catalogue now">↻ Refresh</button>
+      </div>
+      <p style="font-size:0.82rem;color:var(--muted);margin:0 0 14px 0;max-width:760px">
+        What is wrong with the <strong>data</strong>, catalogue-wide. Click any row to see the
+        records and download them. Read from the website's nightly mirror of MadStreamer —
+        no load on FileMaker, and nothing here writes anything.
+      </p>
+      <div id="healthContent"><div class="empty-state" style="color:var(--muted);padding:40px 0;text-align:center">Loading…</div></div>
+      <div id="healthDrill" style="margin-top:18px"></div>
+    </div>
+
     <div id="tab-catalog" class="tab-panel">
       <div style="display:flex;gap:8px;margin-bottom:16px;align-items:center">
         <input id="catalogSearch" type="text" placeholder="Search artist, title, catalogue number, ISRC…"
@@ -2202,6 +2224,145 @@ async function s3Upload() {
   } finally { btn.disabled = false }
 }
 
+// ── Data Health tab ──────────────────────────────────────────────────────────
+// Catalogue-wide data faults from the Postgres mirror. The sweep takes ~90s on
+// a cold start, so the endpoint answers 202 while it runs and we poll — a
+// silent minute-and-a-half request is indistinguishable from a hang.
+let _healthLoaded = false, _healthPoll = null
+const _HSEV = {
+  error: { c: 'var(--red)',    label: 'Error' },
+  warn:  { c: 'var(--amber)',  label: 'Check' },
+  info:  { c: 'var(--muted)',  label: 'Note'  },
+}
+
+function healthInit() { if (!_healthLoaded) { _healthLoaded = true; healthLoad(false) } }
+
+async function healthLoad(refresh) {
+  const box = $('healthContent')
+  if (refresh) box.innerHTML = '<div class="loading-state"><span class="spin">⟳</span> Re-sweeping the catalogue…</div>'
+  try {
+    const res  = await api(`/api/ingest/health/summary${refresh ? '?refresh=1' : ''}`)
+    const data = await res.json()
+
+    if (res.status === 202 || data.building) {
+      box.innerHTML = '<div class="loading-state"><span class="spin">⟳</span> Sweeping 67,000 records — about half a minute the first time…</div>'
+      clearTimeout(_healthPoll); _healthPoll = setTimeout(() => healthLoad(false), 4000)
+      return
+    }
+    if (!data.ok) {
+      box.innerHTML = `<div class="empty-state" style="color:var(--amber);padding:30px 0">${esc(data.reason || 'Unavailable')}</div>`
+      return
+    }
+    healthRender(data)
+  } catch (err) {
+    box.innerHTML = `<div class="empty-state" style="color:var(--red);padding:30px 0">${esc(err.message)}</div>`
+  }
+}
+
+function healthRender(d) {
+  const synced = d.syncedAt ? new Date(d.syncedAt).toLocaleString() : 'unknown'
+  $('healthMeta').innerHTML =
+    `${d.total.toLocaleString()} records · mirror synced ${esc(synced)} · swept in ${(d.tookMs / 1000).toFixed(1)}s` +
+    (d.refreshing ? ' · <span style="color:var(--amber)">refreshing…</span>' : '')
+
+  const groups = []
+  for (const c of d.checks) {
+    let g = groups.find(x => x.name === c.group)
+    if (!g) groups.push(g = { name: c.group, rows: [] })
+    g.rows.push(c)
+  }
+
+  $('healthContent').innerHTML = groups.map(g => `
+    <div style="margin-bottom:18px">
+      <div style="font-size:0.74rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px">${esc(g.name)}</div>
+      <div class="table-wrap"><table>
+        <tbody>${g.rows.map(c => {
+          const sev = _HSEV[c.severity] || _HSEV.info
+          if (c.error) return `<tr><td colspan="3" style="color:var(--red);font-size:0.8rem">${esc(c.label)} — could not be computed: ${esc(c.error)}</td></tr>`
+          const zero = c.count === 0
+          return `<tr class="health-row" data-check="${esc(c.code)}"
+                      style="cursor:${zero ? 'default' : 'pointer'};opacity:${zero ? '.45' : '1'}"
+                      ${zero ? '' : `onclick="healthDrill('${esc(c.code)}')"`}>
+            <td style="width:120px;text-align:right;font-variant-numeric:tabular-nums">
+              <strong style="color:${zero ? 'var(--muted)' : sev.c};font-size:1.05rem">${c.count.toLocaleString()}</strong>
+              <div style="font-size:0.68rem;color:var(--muted)">${esc(c.unit)}${c.pct != null && c.pct >= 0.1 ? ` · ${c.pct}%` : ''}</div>
+            </td>
+            <td>
+              <div><span style="color:${sev.c}">●</span> <strong>${esc(c.label)}</strong></div>
+              ${c.why ? `<div style="font-size:0.76rem;color:var(--muted);margin-top:2px;max-width:640px">${esc(c.why)}</div>` : ''}
+            </td>
+            <td style="width:70px;text-align:right;font-size:0.76rem;color:var(--muted)">${zero ? '' : 'view →'}</td>
+          </tr>`
+        }).join('')}</tbody>
+      </table></div>
+    </div>`).join('')
+}
+
+let _healthRows = [], _healthCode = '', _healthHasMore = false
+async function healthDrill(code) {
+  const box = $('healthDrill')
+  box.innerHTML = '<div class="loading-state"><span class="spin">⟳</span> Loading records…</div>'
+  box.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  try {
+    const res = await api(`/api/ingest/health/records?check=${encodeURIComponent(code)}&limit=500`)
+    const d   = await res.json()
+    if (!d.ok) throw new Error(d.reason || 'lookup failed')
+    _healthRows = d.rows; _healthCode = code; _healthHasMore = !!d.hasMore
+    if (!d.rows.length) { box.innerHTML = '<div class="empty-state" style="color:var(--muted)">Nothing to show.</div>'; return }
+    const cols = d.columns
+    box.innerHTML = `
+      <div style="display:flex;gap:10px;align-items:baseline;margin-bottom:8px;flex-wrap:wrap">
+        <h3 style="margin:0">${esc(d.label)}</h3>
+        <span style="font-size:0.78rem;color:var(--muted)">showing ${d.rows.length}${d.hasMore ? ' of more — download for the full list' : ''}</span>
+        <span style="flex:1"></span>
+        <button class="btn btn-gold" onclick="healthExport(this)">⬇ Excel</button>
+        <button class="btn" onclick="$('healthDrill').innerHTML=''">Close</button>
+      </div>
+      <div class="table-wrap" style="max-height:520px;overflow:auto"><table>
+        <thead><tr>${cols.map(c => `<th>${esc(c.replace(/_/g, ' '))}</th>`).join('')}</tr></thead>
+        <tbody>${d.rows.map(r => `<tr>${cols.map(c =>
+          `<td style="font-size:0.8rem${/id|isrc|upc|cat|seq/i.test(c) ? ';font-family:monospace;font-size:0.75rem' : ''}">${esc(r[c] ?? '')}</td>`).join('')}</tr>`).join('')}</tbody>
+      </table></div>`
+  } catch (err) {
+    box.innerHTML = `<div class="empty-state" style="color:var(--red)">${esc(err.message)}</div>`
+  }
+}
+
+// Built client-side with ExcelJS, same as the Cache Viewer and the XRef export —
+// the server never holds a spreadsheet in memory, which is what OOM-killed the
+// small instance before. Exports the FULL result set, not just the rows on
+// screen, so the download is the worklist rather than a sample.
+async function healthExport(btn) {
+  if (!_healthRows.length) return
+  if (btn) { btn.disabled = true; btn.textContent = '⟳ Building…' }
+  try {
+    let rows = _healthRows
+    if (_healthHasMore) {
+      const res = await api(`/api/ingest/health/records?check=${encodeURIComponent(_healthCode)}&limit=5000`)
+      const d = await res.json()
+      if (d.ok) rows = d.rows
+    }
+    const cols = Object.keys(rows[0])
+    const wb = new ExcelJS.Workbook()
+    const ws = wb.addWorksheet('Data health')
+    ws.addRow(cols.map(c => c.replace(/_/g, ' ')))
+    ws.getRow(1).font = { bold: true }
+    for (const r of rows) ws.addRow(cols.map(c => r[c] ?? null))
+    ws.columns.forEach((c, i) => { c.width = Math.min(52, Math.max(12, cols[i].length + 6)) })
+    const buf = await wb.xlsx.writeBuffer()
+    const url = URL.createObjectURL(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }))
+    const a = document.createElement('a')
+    a.href = url; a.download = `MadStreamer_${_healthCode}_${new Date().toISOString().slice(0, 10)}.xlsx`
+    a.click()
+    URL.revokeObjectURL(url)
+    showToast(`${rows.length} rows exported`)
+  } catch (err) {
+    showToast('xlsx build failed: ' + err.message, 'error')
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '⬇ Excel' }
+  }
+}
+
 function showTab(name) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name))
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `tab-${name}`))
@@ -2211,6 +2372,7 @@ function showTab(name) {
     const cb = $('catIncludeCms'); if (cb) cb.checked = includeCms()
     $('catalogSearch').focus()
   }
+  if (name === 'health') healthInit()
   if (name === 'excel') loadMetaStatus()
   if (name === 'podcasts') podcastsInit()
   if (name === 'biography') biographyInit()

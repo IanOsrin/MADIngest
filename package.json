@@ -14,7 +14,8 @@
     "vision": "node scripts/vision-cli.mjs",
     "artwork:smoke": "node scripts/artwork-keys-smoke.mjs",
     "search:smoke": "node scripts/search-merge-smoke.mjs",
-    "health:smoke": "node scripts/data-health-smoke.mjs"
+    "health:smoke": "node scripts/data-health-smoke.mjs",
+    "health:catalogue-smoke": "node scripts/catalogue-health-smoke.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.0.0",
@@ -28,6 +29,7 @@
     "express": "^4.18.0",
     "multer": "^1.4.5-lts.1",
     "music-metadata": "^9.0.0",
+    "pg": "^8.23.0",
     "sharp": "^0.35.3",
     "ssh2-sftp-client": "^12.1.1",
     "xlsx": "^0.18.5",

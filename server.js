@@ -4,6 +4,7 @@ import cors from 'cors'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import ingestRouter from './routes/ingest.js'
+import healthRouter from './routes/health.js'
 import podcastsRouter from './routes/podcasts.js'
 import youtubeRouter from './routes/youtube.js'
 import genreFixRouter from './routes/genre-fix.js'
@@ -164,6 +165,7 @@ app.get('/api/genres', async (req, res) => {
 })
 
 // API routes
+app.use('/api/ingest/health', healthRouter)   // mounted BEFORE ingest so its paths win
 app.use('/api/ingest', ingestRouter)
 app.use('/api/podcasts', podcastsRouter)
 app.use('/api/genre-fix', genreFixRouter)
