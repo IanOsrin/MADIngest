@@ -38,9 +38,24 @@ check('two databases agreeing report nothing', checkDataHealth([
 check('no sources at all', checkDataHealth([]), [])
 
 console.log('identity faults')
-check('one ISRC on two different songs', codes(checkDataHealth([
+check('one ISRC on two songs of the SAME album is an error', codes(checkDataHealth([
   { ...MS, tracks: [t(), t({ title: 'Different Song', sequence_no: 2 })] },
 ])), ['isrc-shared'])
+// An ISRC identifies a recording, so one code across an original album and a
+// compilation is correct — and the titles usually differ only in spelling.
+// Calling that an error made 254 of 543 catalogue findings false.
+check('the same recording on DIFFERENT albums is not an error', codes(checkDataHealth([
+  { ...MS, tracks: [
+    t({ title: 'Pata Pata',     catalogue_no: 'CAT 1', album_title: 'Grand Masters' }),
+    t({ title: 'Phatha Phatha', catalogue_no: 'CAT 2', album_title: 'The Best Of', sequence_no: 2 }),
+  ] },
+])), ['isrc-across-albums'])
+check('…and it is only an INFO', checkDataHealth([
+  { ...MS, tracks: [
+    t({ title: 'Pata Pata',     catalogue_no: 'CAT 1', album_title: 'Grand Masters' }),
+    t({ title: 'Phatha Phatha', catalogue_no: 'CAT 2', album_title: 'The Best Of', sequence_no: 2 }),
+  ] },
+])[0].severity, 'info')
 check('the SAME song twice is not an ISRC fault', codes(checkDataHealth([
   { ...MS, tracks: [t(), t({ sequence_no: 2 })] },
 ])), ['repeated-track'])
@@ -100,7 +115,7 @@ check('genuinely different text is reported', codes(checkDataHealth([
 }
 
 console.log('severity')
-check('shared ISRC is an error', checkDataHealth([
+check('same-album shared ISRC is an error', checkDataHealth([
   { ...MS, tracks: [t(), t({ title: 'Different', sequence_no: 2 })] },
 ])[0].severity, 'error')
 check('errors sort before warnings', checkDataHealth([
