@@ -47,7 +47,7 @@ import {
   mapCms2024Record,
   _config               as cms2024Config,
 } from '../lib/fm-cms2024.js'
-import { searchMamRecords } from '../lib/fm-mam.js'
+import { searchMamRecords, findMamTracksByCatalogue } from '../lib/fm-mam.js'
 import { wavBufferToMp3, ensureFfmpeg } from '../lib/audio-convert.js'
 import { languageNameToCode } from '../lib/language-codes.js'
 import { generateDDEX382 } from '../lib/ddex-generate.js'
@@ -3974,10 +3974,11 @@ router.get('/catalogue/:catNo/status', adminAuth, async (req, res) => {
   if (!catalogueNo) return res.status(400).json({ error: 'catalogue_no required' })
 
   // Hit all three DBs in parallel; one failure shouldn't sink the whole check
-  const [galloRes, cmsRes, streamerRes] = await Promise.allSettled([
+  const [galloRes, cmsRes, streamerRes, mamRes] = await Promise.allSettled([
     findGalloRecordsByCatalogue(catalogueNo),
     findCms2024RecordsByCatalogue(catalogueNo),
     findStreamerRecordsByCatalogue(catalogueNo),
+    findMamTracksByCatalogue(catalogueNo),
   ])
 
   function summary(s) {
@@ -3987,6 +3988,19 @@ router.get('/catalogue/:catNo/status', adminAuth, async (req, res) => {
   const gallo    = summary(galloRes)
   const cms2024  = summary(cmsRes)
   const streamer = summary(streamerRes)
+  // MAM returns {album, tracks} (or null when the album isn't there at all) —
+  // flatten to the track shape add() expects. Filename comes along so the
+  // GMV-asset merge works for pre-ISRC records.
+  const mam = mamRes.status === 'fulfilled'
+    ? { ok: true, error: null,
+        tracks: (mamRes.value?.tracks || []).map(t => ({
+          isrc: t.isrc, sequence_no: t.sequence_no, title: t.title,
+          artist: t.fieldData?.['Track Artist'] || null,
+          filename: t.fieldData?.['Filename'] || null,
+          fm_record_id: t.recordId,
+        })),
+        count: mamRes.value?.tracks?.length || 0 }
+    : { ok: false, tracks: [], count: 0, error: mamRes.reason?.message || String(mamRes.reason) }
 
   // Also pull rows for this catalogue out of the preloaded
   // Gallo_Metadata_Extract.xlsx cache. Used to backfill missing ISRCs and
@@ -4081,10 +4095,12 @@ router.get('/catalogue/:catNo/status', adminAuth, async (req, res) => {
         in_gallo:      false,
         in_cms2024:    false,
         in_streamer:   false,
+        in_mam:        false,
         in_metadata:   false,
         gallo_id:      null,
         cms2024_id:    null,
         streamer_id:   null,
+        mam_id:        null,
         metadata_isrc: null,
       }
       allRows.push(row)
@@ -4105,6 +4121,7 @@ router.get('/catalogue/:catNo/status', adminAuth, async (req, res) => {
   for (const t of gallo.tracks)    add(t, 'gallo')
   for (const t of cms2024.tracks)  add(t, 'cms2024')
   for (const t of streamer.tracks) add(t, 'streamer')
+  for (const t of mam.tracks)      add(t, 'mam')
 
   // Fold metadata-cache rows into the matrix. Strategy:
   //   1. Try ISRC exact match first (always reliable when present).
@@ -4147,10 +4164,12 @@ router.get('/catalogue/:catNo/status', adminAuth, async (req, res) => {
         in_gallo:      false,
         in_cms2024:    false,
         in_streamer:   false,
+        in_mam:        false,
         in_metadata:   false,
         gallo_id:      null,
         cms2024_id:    null,
         streamer_id:   null,
+        mam_id:        null,
         metadata_isrc: null,
       }
       allRows.push(row)
@@ -4176,11 +4195,13 @@ router.get('/catalogue/:catNo/status', adminAuth, async (req, res) => {
       gallo:    gallo.count,
       cms2024:  cms2024.count,
       streamer: streamer.count,
+      mam:      mam.count,
       metadata: metadata.count,
     },
     gallo,
     cms2024,
     streamer,
+    mam,
     metadata,
     matrix:       matrixArr,
   })

@@ -817,7 +817,7 @@
           <input id="dbSyncCat" type="text" placeholder="Catalogue number, e.g. CDGURB 104"
             onkeydown="if(event.key==='Enter')checkDbSyncStatus()"
             style="flex:1;min-width:240px;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
-          <button class="btn btn-gold" id="dbSyncCheckBtn" onclick="checkDbSyncStatus()">Check all 3 DBs</button>
+          <button class="btn btn-gold" id="dbSyncCheckBtn" onclick="checkDbSyncStatus()">Check all 4 DBs</button>
           <button class="btn btn-ghost" id="dbSyncReplicateBtn" onclick="dbSyncReplicate()" style="display:none">Replicate missing from CMS 2024</button>
           <button class="btn btn-ghost" id="dbSyncG2SStatusBtn" onclick="dbSyncGalloToStreamer(true)" style="display:none">⤴ Gallo → MadStreamer</button>
           <label id="dbSyncG2SStatusAudioWrap" style="display:none;font-size:0.78rem;color:var(--muted);align-self:center">
@@ -838,6 +838,7 @@
                 <th style="padding:8px;text-align:center">Gallo</th>
                 <th style="padding:8px;text-align:center">CMS 2024</th>
                 <th style="padding:8px;text-align:center">Streamer</th>
+                <th style="padding:8px;text-align:center" title="Music Arena Master">MAM</th>
                 <th style="padding:8px;text-align:center" title="Gallo_Metadata_Extract.xlsx — used to backfill missing ISRCs via fuzzy title match">Metadata</th>
               </tr>
             </thead>
@@ -6391,7 +6392,7 @@ async function checkDbSyncStatus() {
 
   btn.disabled = true; btn.textContent = '⟳ Checking…'
   status.style.color = 'var(--muted)'
-  status.textContent = 'Querying Gallo Catalogue, CMS 2024, MadStreamer…'
+  status.textContent = 'Querying Gallo Catalogue, CMS 2024, MadStreamer, Music Arena Master…'
 
   try {
     const res  = await api(`/api/ingest/catalogue/${encodeURIComponent(cat)}/status`)
@@ -6407,7 +6408,7 @@ async function checkDbSyncStatus() {
     status.textContent = '✗ Network error: ' + e.message
     status.style.color = 'var(--red)'
   } finally {
-    btn.disabled = false; btn.textContent = 'Check all 3 DBs'
+    btn.disabled = false; btn.textContent = 'Check all 4 DBs'
   }
 }
 
@@ -6432,6 +6433,7 @@ function renderDbSyncStatus(data) {
     chip('Gallo',     c.gallo    || 0, data.gallo?.error),
     chip('CMS 2024',  c.cms2024  || 0, data.cms2024?.error),
     chip('Streamer',  c.streamer || 0, data.streamer?.error),
+    chip('MAM',       c.mam      || 0, data.mam?.error),
     chip('Metadata',  c.metadata || 0, data.metadata?.error),
     // Re-issue rename: cache album found through the barcode, not this catalogue
     (data.metadata?.via && data.metadata.via.startsWith('barcode'))
@@ -6456,9 +6458,10 @@ function renderDbSyncStatus(data) {
       <td style="padding:6px 8px;text-align:center">${tick(row.in_gallo)}</td>
       <td style="padding:6px 8px;text-align:center">${tick(row.in_cms2024)}</td>
       <td style="padding:6px 8px;text-align:center">${tick(row.in_streamer)}</td>
+      <td style="padding:6px 8px;text-align:center">${tick(row.in_mam)}</td>
       <td style="padding:6px 8px;text-align:center" title="${row.metadata_isrc ? 'ISRC: ' + esc(row.metadata_isrc) : ''}">${tick(row.in_metadata)}</td>
     </tr>`
-  }).join('') || '<tr><td colspan="8" style="padding:14px;color:var(--muted);text-align:center">No tracks found in any DB for this catalogue.</td></tr>'
+  }).join('') || '<tr><td colspan="9" style="padding:14px;color:var(--muted);text-align:center">No tracks found in any DB for this catalogue.</td></tr>'
   matrixWrap.style.display = 'block'
 
   // Show the replicate button only if CMS 2024 has tracks and Gallo/Streamer is missing
@@ -6596,7 +6599,7 @@ async function dbSyncGalloToStreamer(fromStatus = false) {
     }
 
     lines.push(`✓ Gallo → MadStreamer complete${audio ? '' : ' (metadata only — audio unchecked)'}`)
-    if (fromStatus) lines.push('Click "Check all 3 DBs" to refresh the ticks — this log stays put so any per-track error above remains readable.')
+    if (fromStatus) lines.push('Click "Check all 4 DBs" to refresh the ticks — this log stays put so any per-track error above remains readable.')
     status.style.color = 'var(--green)'
   } catch (e) {
     lines.push(`✗ Failed: ${e.message}`)
