@@ -107,6 +107,44 @@ router.get('/track-search', adminAuth, async (req, res) => {
   }
 })
 
+/**
+ * Replace an existing banner's image.
+ *
+ * Needed because the headline is usually BAKED INTO the artwork (the payload
+ * says textBaked), so a typo in the visible text cannot be fixed by editing the
+ * Title field — that is only the screen-reader label. Without this, correcting a
+ * misspelt banner meant deleting and rebuilding it, losing its dates and order.
+ *
+ * Same order as create, for the same reason: the image is uploaded and confirmed
+ * BEFORE the URL is written to FileMaker, so the CDN can never cache a 403
+ * against a URL that has no object behind it yet. The new key is timestamped, so
+ * the replacement is a URL nothing has ever cached — no purge needed.
+ */
+router.post('/:recordId/image', adminAuth, upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'no image received' })
+
+    const shape = await inspectHeroImage(req.file.buffer)
+    if (!shape.ok && String(req.body?.force) !== 'true') {
+      return res.status(422).json({ error: shape.reason, shape, canForce: true })
+    }
+
+    const up = await uploadHeroBanner(req.file.buffer, req.file.originalname, req.file.mimetype)
+    try {
+      await updateHeroBanner(req.params.recordId, { imageUrl: up.url })
+    } catch (e) {
+      return res.status(502).json({ error: `Image uploaded to ${up.key}, but pointing the banner at it failed: ${e.message}. The old image is still showing.` })
+    }
+    // The superseded image is left in place on purpose — it is a few hundred KB
+    // and anything still holding the old URL keeps rendering.
+    console.log(`[hero] replaced image on ${req.params.recordId} → ${up.key}`)
+    res.json({ ok: true, imageUrl: up.url, key: up.key, shape })
+  } catch (e) {
+    console.error('[hero] image replace failed:', e.message)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 router.patch('/:recordId', adminAuth, async (req, res) => {
   try {
     await updateHeroBanner(req.params.recordId, req.body || {})

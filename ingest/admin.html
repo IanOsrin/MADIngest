@@ -7316,6 +7316,124 @@ async function hbCreate() {
   }
 }
 
+/* ── Hero banner: why a banner is not on the site, and how to change it ──────
+   Two banners were "not showing" and it read as a bug: Lucky Dube's window had
+   ended, and Simphiwe Dana's END date was BEFORE its start, so it could never
+   appear at all. The site was behaving correctly and silently. Say it here. */
+let _hbRows = [];
+
+function hbToIso(d) {                       // "09/16/2026" (FM) -> "2026-09-16"
+  const m = String(d || '').trim().match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  return m ? `${m[3]}-${m[1]}-${m[2]}` : '';
+}
+function hbWhyHidden(b) {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const s = hbToIso(b.startDate), e = hbToIso(b.endDate);
+  const sd = s ? new Date(s + 'T00:00:00') : null;
+  const ed = e ? new Date(e + 'T00:00:00') : null;
+  const say = (t) => `<div style="color:var(--red);font-size:11px;margin-top:3px">⚠ ${t}</div>`;
+  if (!b.active) return `<div class="muted" style="font-size:11px;margin-top:3px">Not active — tick Active to show it.</div>`;
+  if (sd && ed && ed < sd) return say('Not on the site: the end date is BEFORE the start date, so its window never opens. Edit the dates.');
+  if (ed && ed < today)    return say(`Not on the site: finished ${gfEsc(b.endDate)}. Edit "Show until" to bring it back.`);
+  if (sd && sd > today)    return `<div style="color:var(--gold);font-size:11px;margin-top:3px">Scheduled — starts ${gfEsc(b.startDate)}.</div>`;
+  return '';
+}
+
+function hbEdit(recordId) {
+  const row = document.getElementById('hbEditRow-' + recordId);
+  if (!row) return;
+  if (row.style.display !== 'none') { row.style.display = 'none'; return; }
+  const b = _hbRows.find(x => String(x.recordId) === String(recordId)) || {};
+  row.style.display = '';
+  row.firstElementChild.innerHTML = `
+    <div style="padding:12px;display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div>
+        <label class="muted" style="font-size:12px">Title (screen-reader label, not the words on the image)</label>
+        <input id="hbeTitle-${recordId}" value="${gfEsc(b.title || '')}" style="width:100%;margin-bottom:8px">
+        <label class="muted" style="font-size:12px">Eyebrow</label>
+        <input id="hbeEyebrow-${recordId}" value="${gfEsc(b.eyebrow || '')}" style="width:100%;margin-bottom:8px">
+        <div style="display:flex;gap:8px">
+          <div style="flex:1"><label class="muted" style="font-size:12px">Show from</label>
+            <input id="hbeStart-${recordId}" type="date" value="${hbToIso(b.startDate)}" style="width:100%"></div>
+          <div style="flex:1"><label class="muted" style="font-size:12px">Show until</label>
+            <input id="hbeEnd-${recordId}" type="date" value="${hbToIso(b.endDate)}" style="width:100%"></div>
+        </div>
+        <div class="muted" style="font-size:11px;margin-top:4px">Clear both to show it indefinitely.</div>
+      </div>
+      <div>
+        <label class="muted" style="font-size:12px">Opens</label>
+        <select id="hbeTargetType-${recordId}" style="width:100%;margin-bottom:8px">
+          ${['track','album','external','playlist'].map(t =>
+            `<option value="${t}"${(b.targetType || '') === t ? ' selected' : ''}>${t}</option>`).join('')}
+        </select>
+        <label class="muted" style="font-size:12px">Target (recordId, or URL for external)</label>
+        <input id="hbeTargetId-${recordId}" value="${gfEsc(b.targetId || '')}" style="width:100%;margin-bottom:8px">
+        <label class="muted" style="font-size:12px">Button text</label>
+        <input id="hbeCta-${recordId}" value="${gfEsc(b.ctaLabel || '')}" style="width:100%">
+      </div>
+      <div style="grid-column:1/-1;border-top:1px solid var(--border);padding-top:10px">
+        <label class="muted" style="font-size:12px">
+          Replace the image — use this to fix a spelling mistake in the artwork, since the
+          words are part of the picture. Keeps the dates, order and target. 2000&times;475.
+        </label>
+        <input type="file" id="hbeFile-${recordId}" accept="image/jpeg,image/png" style="width:100%;margin-top:4px">
+      </div>
+      <div style="grid-column:1/-1;display:flex;gap:10px;align-items:center">
+        <button class="btn btn-gold" onclick="hbSaveEdit('${recordId}')">Save changes</button>
+        <button class="btn btn-ghost" onclick="hbEdit('${recordId}')">Cancel</button>
+        <span id="hbeStatus-${recordId}" class="muted" style="font-size:12px"></span>
+      </div>
+    </div>`;
+}
+
+async function hbSaveEdit(recordId) {
+  const g = (n) => document.getElementById(`hbe${n}-${recordId}`);
+  const st = g('Status');
+  const file = g('File').files[0];
+  st.innerHTML = 'Saving…';
+  try {
+    // The image goes FIRST. If it fails we must not have already told the
+    // operator everything saved — the picture is the part people look at.
+    if (file) {
+      st.innerHTML = 'Uploading image…';
+      const fd = new FormData(); fd.append('image', file);
+      let r = await fetch(`/api/hero/${encodeURIComponent(recordId)}/image`, {
+        method: 'POST', headers: { Authorization: `Bearer ${adminToken}` }, body: fd });
+      let j = await r.json();
+      if (r.status === 422 && j.canForce) {
+        if (!confirm(`${j.error}\n\nUpload it anyway? A wrong ratio crops the sides on the live site.`)) {
+          st.innerHTML = '<span style="color:#e66">Cancelled — nothing changed.</span>'; return;
+        }
+        fd.append('force', 'true');
+        r = await fetch(`/api/hero/${encodeURIComponent(recordId)}/image`, {
+          method: 'POST', headers: { Authorization: `Bearer ${adminToken}` }, body: fd });
+        j = await r.json();
+      }
+      if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    }
+    st.innerHTML = 'Saving details…';
+    const patch = {
+      eyebrow:    g('Eyebrow').value.trim(),
+      startDate:  g('Start').value,
+      endDate:    g('End').value,
+      targetType: g('TargetType').value,
+      targetId:   g('TargetId').value.trim(),
+      ctaLabel:   g('Cta').value.trim(),
+    };
+    // An empty box must not wipe the title — it is the screen-reader label and
+    // the only text identifying the banner in this list.
+    const title = g('Title').value.trim();
+    if (title) patch.title = title;
+
+    const ok = await hbPatch(recordId, patch);
+    if (ok !== true) throw new Error(ok);
+    st.innerHTML = '<span style="color:var(--green)">✓ Saved — live within a minute</span>';
+    hbLoad();
+  } catch (e) {
+    st.innerHTML = `<span style="color:#e66">${gfEsc(e.message)}</span>`;
+  }
+}
+
 async function hbLoad() {
   const body = document.getElementById('hbBody'), st = document.getElementById('hbListStatus');
   st.textContent = 'Loading…'; body.innerHTML = '';
@@ -7328,6 +7446,7 @@ async function hbLoad() {
     st.textContent = rows.length
       ? `${rows.filter(b => b.active).length} active of ${rows.length}`
       : 'No banners yet — the site falls back to new-release artwork.';
+    _hbRows = rows;
     body.innerHTML = rows.map(b => `
       <tr${b.active ? '' : ' style="opacity:.5"'}>
         <td style="width:220px"><img src="${gfEsc(b.imageUrl)}" style="width:210px;border-radius:5px;display:block"
@@ -7336,6 +7455,7 @@ async function hbLoad() {
           <strong>${gfEsc(b.title)}</strong>
           ${b.eyebrow ? `<div class="muted" style="font-size:11px">${gfEsc(b.eyebrow)}</div>` : ''}
           ${b.startDate || b.endDate ? `<div class="muted" style="font-size:11px">${gfEsc(b.startDate || '…')} → ${gfEsc(b.endDate || '…')}</div>` : ''}
+          ${hbWhyHidden(b)}
         </td>
         <td style="text-align:center">
           <input type="number" value="${gfEsc(b.sortOrder)}" style="width:56px"
@@ -7350,14 +7470,19 @@ async function hbLoad() {
           <input type="checkbox" ${b.active ? 'checked' : ''}
                  onchange="hbPatch('${gfEsc(b.recordId)}', { active: this.checked })">
         </td>
-        <td><button class="btn btn-ghost" style="font-size:12px"
+        <td style="white-space:nowrap">
+          <button class="btn btn-ghost" style="font-size:12px" onclick="hbEdit('${gfEsc(b.recordId)}')">Edit</button>
+          <button class="btn btn-ghost" style="font-size:12px"
               onclick="hbDelete('${gfEsc(b.recordId)}', '${gfEsc(b.title)}')">Delete</button></td>
-      </tr>`).join('');
+      </tr>
+      <tr id="hbEditRow-${gfEsc(b.recordId)}" style="display:none"><td colspan="6" style="background:var(--bg)"></td></tr>`).join('');
   } catch (e) {
     st.innerHTML = `<span style="color:#e66">Could not load: ${gfEsc(e.message)}</span>`;
   }
 }
 
+// Returns true on success and RETHROWS nothing — but the inline editor needs to
+// know, so a failure is reported back rather than only painted on the list.
 async function hbPatch(recordId, patch) {
   const st = document.getElementById('hbListStatus');
   try {
@@ -7369,8 +7494,10 @@ async function hbPatch(recordId, patch) {
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
     st.innerHTML = '<span style="color:var(--green)">\u2713 Saved — live within a minute</span>';
+    return true;
   } catch (e) {
     st.innerHTML = `<span style="color:#e66">Save failed: ${gfEsc(e.message)}</span>`;
+    return e.message || 'save failed';
   }
 }
 
