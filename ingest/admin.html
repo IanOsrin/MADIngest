@@ -1162,9 +1162,16 @@
         </div>
 
         <div id="plsArtistRow" style="display:flex;gap:8px;align-items:center;margin-bottom:14px">
-          <input id="plsQuery" type="text" placeholder="Artist name, e.g. Lucky Dube"
+          <input id="plsQuery" type="text" placeholder="Artist or song title, e.g. Lucky Dube or Remember Me"
             onkeydown="if(event.key==='Enter'){event.preventDefault();plsSearch()}"
             style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
+          <select id="plsScope" onchange="if($('plsQuery').value.trim().length>=2)plsSearch()"
+            title="Which field to match on"
+            style="background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 10px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
+            <option value="any">Artist or title</option>
+            <option value="artist">Artist only</option>
+            <option value="title">Title only</option>
+          </select>
           <button class="btn btn-gold" onclick="plsSearch()">Search Streamer</button>
           <button class="btn btn-ghost" onclick="plsClearSearch()" title="Clear the search results">✕ Clear</button>
           <span id="plsCount" style="font-size:0.78rem;color:var(--muted)"></span>
@@ -2939,12 +2946,14 @@ async function plsSearch() {
   _plsChecked.clear()
   $('plsCount').textContent  = ''
   $('plsResults').innerHTML  = '<div class="loading-state"><span class="spin">⟳</span> Searching streamer…</div>'
+  const scope = $('plsScope')?.value || 'any'
   try {
-    const res  = await api(`/api/ingest/madstreamer/playlist-songs?q=${encodeURIComponent(q)}`)
+    const res  = await api(`/api/ingest/madstreamer/playlist-songs?q=${encodeURIComponent(q)}&scope=${encodeURIComponent(scope)}`)
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || 'Search failed')
     _plsSongs = data.songs || []
     $('plsCount').textContent = `${_plsSongs.length} song(s)`
+      + (scope === 'title' ? ' by title' : scope === 'artist' ? ' by artist' : '')
     plsRenderResults()
   } catch (err) {
     $('plsResults').innerHTML = `<div class="empty-state" style="color:var(--red)">Error: ${esc(err.message)}</div>`

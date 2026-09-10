@@ -25,7 +25,7 @@ import { uploadImport, uploadArtworkImport, presignImport, presignArtworkImport,
          artworkKeyForGmvi, listArtworkKeysForGmvi, headAnyKey, urlForKey, uploadAnyKey,
          writeArtworkDerivatives } from '../lib/s3-imports.js'
 import { createGalloRecord, createTapeFileRecord, updateGalloRecord, runGalloScript, runScriptOnRecord, pingGallo, findGalloRecordsByCatalogue, searchGalloRecords, fetchContainerData, getGalloTrack, getGalloLayoutFields, getGalloLayoutFieldSet, reloadGalloLayoutFields, getRecentGalloCreates, clearRecentGalloCreates } from '../lib/fm-gallo.js'
-import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, searchMadStreamerRecords, findArtistBio, upsertArtistBio, listArtistBios, findPlaylistArt, upsertPlaylistArt, listPlaylistArt, deletePlaylistArt, PLAYLIST_CATEGORIES, findStreamerSongsByArtist, findStreamerSongsByGenre, listPublicPlaylists, findSongsByPlaylist, setPublicPlaylist, getStreamerSongAudioUrl, findArtworkByCatalogue, createArtworkRecord, setTapeFileArtworkUrl, setPublicPlaylistOrder, _config as madStreamerConfig } from '../lib/madstreamer.js'
+import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, searchMadStreamerRecords, findArtistBio, upsertArtistBio, listArtistBios, findPlaylistArt, upsertPlaylistArt, listPlaylistArt, deletePlaylistArt, PLAYLIST_CATEGORIES, findStreamerSongs, findStreamerSongsByGenre, listPublicPlaylists, findSongsByPlaylist, setPublicPlaylist, getStreamerSongAudioUrl, findArtworkByCatalogue, createArtworkRecord, setTapeFileArtworkUrl, setPublicPlaylistOrder, _config as madStreamerConfig } from '../lib/madstreamer.js'
 import { CANONICAL_GENRES } from '../lib/genre-taxonomy.js'
 import { mergeSourceTracks, selectSources } from '../lib/search-merge.js'
 import { checkDataHealth } from '../lib/data-health.js'
@@ -3020,7 +3020,8 @@ router.post('/madstreamer/playlist-art', adminAuth, uploadPlaylistImage.single('
 
 /**
  * Public Playlists (PublicPlaylist tag on MadStreamer API_Album_Songs). Playlists tab.
- * GET  /madstreamer/playlist-songs?q=              → artist search across streamer tracks
+ * GET  /madstreamer/playlist-songs?q=&scope=       → search streamer tracks by artist
+ *                                                    AND title (scope=artist|title narrows)
  * GET  /madstreamer/public-playlists               → distinct playlist names + track counts
  * GET  /madstreamer/public-playlists/tracks?name=  → songs currently tagged with that name
  * POST /madstreamer/public-playlists/assign        → { recordIds:[], playlistName } tags each
@@ -3030,10 +3031,12 @@ router.post('/madstreamer/playlist-art', adminAuth, uploadPlaylistImage.single('
  */
 router.get('/madstreamer/playlist-songs', adminAuth, async (req, res) => {
   const q = String(req.query.q || '').trim()
+  // scope: 'artist' | 'title' | anything else = both (the default)
+  const scope = String(req.query.scope || 'any').trim().toLowerCase()
   if (q.length < 2) return res.status(400).json({ error: 'Search term must be at least 2 characters' })
   try {
-    const songs = await findStreamerSongsByArtist(q)
-    res.json({ ok: true, songs })
+    const songs = await findStreamerSongs(q, { scope })
+    res.json({ ok: true, scope, songs })
   } catch (err) {
     res.status(502).json({ error: err.message })
   }
