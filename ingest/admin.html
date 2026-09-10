@@ -3175,6 +3175,78 @@ function plsClearSearch() {
   $('plsAssignBar').style.display = 'none'
 }
 
+// ── Playlist running order (drag to reorder) ────────────────────────────────
+// The site sorts a public playlist by PublicPlaylistOrder whenever any track
+// carries it, so the order set here is what listeners actually hear. Nothing is
+// written until Save: dragging is local, so a mis-drop costs nothing and a
+// 25-track playlist after one move is a handful of FM writes, not 25.
+let _plsSavedOrder = []      // the order the playlist was opened in
+let _plsDragRow    = null
+
+function plsCurrentOrder() {
+  return [...document.querySelectorAll('#plsTracksBody tr')].map(tr => tr.dataset.rid)
+}
+function plsRenumber() {
+  document.querySelectorAll('#plsTracksBody tr').forEach((tr, i) => {
+    const cell = tr.querySelector('.pls-pos')
+    if (cell) cell.textContent = i + 1
+  })
+  const dirty = plsCurrentOrder().join() !== _plsSavedOrder.join()
+  const save = $('plsSaveOrderBtn'), cancel = $('plsCancelOrderBtn'), st = $('plsOrderStatus')
+  if (save)   save.style.display   = dirty ? '' : 'none'
+  if (cancel) cancel.style.display = dirty ? '' : 'none'
+  if (st && !dirty) st.textContent = ''
+  if (st && dirty)  st.textContent = 'Unsaved order'
+}
+
+function plsDragStart(e) {
+  _plsDragRow = e.currentTarget
+  e.dataTransfer.effectAllowed = 'move'
+  // Firefox refuses to start a drag unless something is written to the payload.
+  try { e.dataTransfer.setData('text/plain', _plsDragRow.dataset.rid) } catch (err) {}
+  _plsDragRow.style.opacity = '0.4'
+}
+function plsDragOver(e) {
+  e.preventDefault()
+  e.dataTransfer.dropEffect = 'move'
+  const row = e.currentTarget
+  if (!_plsDragRow || row === _plsDragRow) return
+  // Insert before or after depending on which half of the row we are over, so
+  // dragging downwards lands where the pointer is rather than one row short.
+  const box = row.getBoundingClientRect()
+  const after = (e.clientY - box.top) > box.height / 2
+  row.parentNode.insertBefore(_plsDragRow, after ? row.nextSibling : row)
+}
+function plsDrop(e) { e.preventDefault() }
+function plsDragEnd() {
+  if (_plsDragRow) _plsDragRow.style.opacity = ''
+  _plsDragRow = null
+  plsRenumber()
+}
+
+async function plsSaveOrder() {
+  const ids = plsCurrentOrder()
+  const btn = $('plsSaveOrderBtn'), st = $('plsOrderStatus')
+  btn.disabled = true; btn.textContent = '⟳ Saving…'
+  try {
+    const res = await api('/api/ingest/madstreamer/public-playlists/reorder', 'POST',
+      { name: _plsOpenName, recordIds: ids })
+    const d = await res.json()
+    if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`)
+    _plsSavedOrder = ids
+    st.innerHTML = `<span style="color:var(--green)">✓ Saved — ${d.written} changed</span>`
+    showToast(`Running order saved (${d.written} song${d.written === 1 ? '' : 's'} renumbered)`)
+    plsRenumber()
+  } catch (err) {
+    // The order on screen is NOT what is stored — say so rather than leaving a
+    // tick that implies it saved.
+    st.innerHTML = `<span style="color:var(--red)">${gfEsc(err.message)}</span>`
+    showToast(err.message, 'error')
+  } finally {
+    btn.disabled = false; btn.textContent = 'Save order'
+  }
+}
+
 async function plsOpenPlaylist(name) {
   _plsOpenName = name
   const wrap = $('plsTracksWrap')
@@ -3186,6 +3258,7 @@ async function plsOpenPlaylist(name) {
     if (!res.ok) throw new Error(data.error || 'Load failed')
     const songs = data.songs || []
     _plsOpenSongs = songs
+    _plsSavedOrder = songs.map(s => String(s.recordId))
     // Default the bulk-add dropdown to the playlist being viewed
     const sel = $('plsSelect')
     if (!sel.value && [...sel.options].some(o => o.value === name)) { sel.value = name; plsSelectChanged() }
@@ -3205,20 +3278,29 @@ async function plsOpenPlaylist(name) {
     if (!songs.length) {
       html += '<div class="empty-state" style="color:var(--muted)">Empty — the last song was removed.</div>'
     } else {
-      html += `<div class="table-wrap"><table>
-        <thead><tr><th style="width:40px"></th><th style="width:36px">#</th><th>Title</th><th>Artist</th><th>Album</th><th style="width:80px"></th></tr></thead><tbody>`
-      for (const s of songs) {
-        html += `<tr>
+      // The # column is the PLAYLIST position, not the track's place on its own
+      // album — that is what the running order means and what the site plays.
+      html += `<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap">
+        <span style="font-size:0.78rem;color:var(--muted)">Drag a row by its handle to set the running order.</span>
+        <span id="plsOrderStatus" style="font-size:0.78rem;color:var(--muted);margin-left:auto"></span>
+        <button class="btn btn-gold" id="plsSaveOrderBtn" style="font-size:0.78rem;display:none" onclick="plsSaveOrder()">Save order</button>
+        <button class="btn btn-ghost" id="plsCancelOrderBtn" style="font-size:0.78rem;display:none" onclick="plsOpenPlaylist(_plsOpenName)">Cancel</button>
+      </div>
+      <div class="table-wrap"><table id="plsTracksTable">
+        <thead><tr><th style="width:28px"></th><th style="width:40px"></th><th style="width:36px">#</th><th>Title</th><th>Artist</th><th>Album</th><th style="width:80px"></th></tr></thead><tbody id="plsTracksBody">`
+      songs.forEach((s, i) => {
+        html += `<tr draggable="true" data-rid="${esc(s.recordId)}" ondragstart="plsDragStart(event)" ondragover="plsDragOver(event)" ondrop="plsDrop(event)" ondragend="plsDragEnd(event)">
+          <td style="cursor:grab;color:var(--muted);text-align:center;user-select:none" title="Drag to reorder">⠿</td>
           <td><button class="btn btn-ghost" style="padding:1px 8px;font-size:0.8rem" ${s.has_audio ? '' : 'disabled'}
             onclick="plsAudition('${esc(s.recordId)}', this)">▶</button></td>
-          <td style="color:var(--muted);font-size:0.78rem">${s.sequence_no ?? ''}</td>
+          <td class="pls-pos" style="color:var(--muted);font-size:0.78rem">${i + 1}</td>
           <td>${esc(s.title || '—')}</td>
           <td>${esc(s.artist || '—')}</td>
           <td style="color:var(--muted)">${esc(s.album || '—')}</td>
           <td><button class="btn btn-ghost" style="font-size:0.74rem;color:var(--red);border-color:rgba(217,83,79,0.3)"
             onclick="plsRemove('${esc(s.recordId)}')">Remove</button></td>
         </tr>`
-      }
+      })
       html += '</tbody></table></div>'
     }
     wrap.innerHTML = html

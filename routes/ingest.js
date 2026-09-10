@@ -25,7 +25,7 @@ import { uploadImport, uploadArtworkImport, presignImport, presignArtworkImport,
          artworkKeyForGmvi, listArtworkKeysForGmvi, headAnyKey, urlForKey, uploadAnyKey,
          writeArtworkDerivatives } from '../lib/s3-imports.js'
 import { createGalloRecord, createTapeFileRecord, updateGalloRecord, runGalloScript, runScriptOnRecord, pingGallo, findGalloRecordsByCatalogue, searchGalloRecords, fetchContainerData, getGalloTrack, getGalloLayoutFields, getGalloLayoutFieldSet, reloadGalloLayoutFields, getRecentGalloCreates, clearRecentGalloCreates } from '../lib/fm-gallo.js'
-import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, searchMadStreamerRecords, findArtistBio, upsertArtistBio, listArtistBios, findPlaylistArt, upsertPlaylistArt, listPlaylistArt, deletePlaylistArt, PLAYLIST_CATEGORIES, findStreamerSongsByArtist, findStreamerSongsByGenre, listPublicPlaylists, findSongsByPlaylist, setPublicPlaylist, getStreamerSongAudioUrl, findArtworkByCatalogue, createArtworkRecord, setTapeFileArtworkUrl, _config as madStreamerConfig } from '../lib/madstreamer.js'
+import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, searchMadStreamerRecords, findArtistBio, upsertArtistBio, listArtistBios, findPlaylistArt, upsertPlaylistArt, listPlaylistArt, deletePlaylistArt, PLAYLIST_CATEGORIES, findStreamerSongsByArtist, findStreamerSongsByGenre, listPublicPlaylists, findSongsByPlaylist, setPublicPlaylist, getStreamerSongAudioUrl, findArtworkByCatalogue, createArtworkRecord, setTapeFileArtworkUrl, setPublicPlaylistOrder, _config as madStreamerConfig } from '../lib/madstreamer.js'
 import { CANONICAL_GENRES } from '../lib/genre-taxonomy.js'
 import { mergeSourceTracks, selectSources } from '../lib/search-merge.js'
 import { checkDataHealth } from '../lib/data-health.js'
@@ -3256,6 +3256,69 @@ router.post('/madstreamer/artwork/upload', adminAuth, uploadAlbumArtImage.single
       duplicateTapeRecords: repointed?.duplicates || null,
     })
   } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
+
+/**
+ * Set a public playlist's running order.
+ *
+ * Body: { name, recordIds: [...] } — the ids in their new order, first to last.
+ * Writes PublicPlaylistOrder = 1..N. The website already sorts playlist tracks
+ * by that field, so this is what listeners hear.
+ *
+ * Only records whose number actually CHANGES are written: re-saving an
+ * unchanged playlist costs nothing, and a 25-track playlist after one drag is
+ * usually a handful of writes rather than 25. Writes are serial with a pause —
+ * hammering the FM host in parallel is what froze logins across all three
+ * databases on 2026-08-18.
+ */
+router.post('/madstreamer/public-playlists/reorder', adminAuth, express.json(), async (req, res) => {
+  const name = String(req.body?.name || '').trim()
+  const ids  = Array.isArray(req.body?.recordIds) ? req.body.recordIds.map(String) : []
+  if (!name)       return res.status(400).json({ error: 'name required' })
+  if (!ids.length) return res.status(400).json({ error: 'recordIds required' })
+  if (new Set(ids).size !== ids.length) return res.status(400).json({ error: 'recordIds contains duplicates' })
+
+  try {
+    // Re-read the playlist so we only touch records that are really in it, and
+    // so a stale browser tab cannot renumber songs someone else has since moved.
+    const current = await findSongsByPlaylist(name)
+    const known = new Map(current.map(s => [String(s.recordId), s]))
+    const unknown = ids.filter(id => !known.has(id))
+    if (unknown.length) {
+      return res.status(409).json({
+        error: `${unknown.length} of those songs are no longer in "${name}" — reopen the playlist and try again.`,
+        unknown,
+      })
+    }
+    if (ids.length !== current.length) {
+      return res.status(409).json({
+        error: `The playlist has ${current.length} songs but ${ids.length} were sent — it changed since you opened it. Reopen and try again.`,
+      })
+    }
+
+    const changed = []
+    for (const [i, id] of ids.entries()) {
+      const want = i + 1
+      if (Number(known.get(id).playlist_order) !== want) changed.push({ id, want })
+    }
+    if (!changed.length) return res.json({ ok: true, written: 0, unchanged: ids.length })
+
+    let written = 0
+    const failed = []
+    for (const { id, want } of changed) {
+      try { await setPublicPlaylistOrder(id, want); written++ }
+      catch (e) { failed.push({ recordId: id, error: e.message }) }
+      await new Promise(r => setTimeout(r, 90))
+    }
+    console.log(`[Playlists] "${name}" reordered — ${written} of ${changed.length} record(s) written${failed.length ? `, ${failed.length} failed` : ''}`)
+    if (failed.length) {
+      return res.status(502).json({ error: `${failed.length} song(s) could not be saved — the order is now partly applied. Try again.`, written, failed })
+    }
+    res.json({ ok: true, written, unchanged: ids.length - written })
+  } catch (err) {
+    console.error('[Playlists] reorder failed:', err.message)
     res.status(502).json({ error: err.message })
   }
 })
