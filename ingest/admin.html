@@ -5250,10 +5250,10 @@ async function abUseVisionCover(path) {
 // then push the current Gallo cover to the S3 home the streamer reads.
 async function abPushCoverMad() {
   const status = $('abActionStatus')
-  status.textContent = '⟳ Reading Gallo cover…'
+  status.textContent = '⟳ Reading the album cover…'
   try {
     const coverRes = await api(`/api/ingest/album/cover?catalogue=${encodeURIComponent(_abAlbum.catalogue)}`)
-    if (!coverRes.ok) throw new Error('This album has no Gallo cover yet — upload one first')
+    if (!coverRes.ok) throw new Error('This album has no cover yet — upload one first')
     const blob = await coverRes.blob()
     status.textContent = '⟳ Ensuring MAD artwork record…'
     const ensRes  = await api('/api/ingest/madstreamer/artwork/ensure', 'POST', { catalogue_no: _abAlbum.catalogue, create: true })
@@ -5282,15 +5282,18 @@ async function abPushCoverMad() {
 async function abMakeMp3s() {
   const tracks = _abAlbum.tracks.filter(t => t.audio_url_ref || t.audio_container_url || t.s3_url)
   if (!tracks.length) { showToast('No tracks with audio to convert', 'error'); return }
-  if (!confirm(`Convert ${tracks.length} track(s) to MP3 for the streamer? Each conversion writes the File URL field on the Gallo record.`)) return
+  if (!confirm(`Convert ${tracks.length} track(s) to MP3 for the streamer? Each master is converted and uploaded to S3 as mp3/<Filename>.mp3.`)) return
   const status = $('abActionStatus')
   let ok = 0, failed = 0
   for (const [i, t] of tracks.entries()) {
     status.textContent = `⟳ MP3 ${i + 1}/${tracks.length}: ${t.title || t.fm_record_id}…`
     try {
-      const res  = await fetch(`/api/gallo/audio/${t.fm_record_id}/convert-mp3`)
+      // MAM route, not /api/gallo/audio/… — record ids are per-table in
+      // FileMaker, so a MAM id sent to the Gallo lookup lands on an unrelated
+      // Gallo track and "succeeds".
+      const res  = await api(`/api/ingest/album/track/${encodeURIComponent(t.fm_record_id)}/mp3`, 'POST')
       const data = await res.json()
-      if (data.ok) ok++
+      if (res.ok && data.ok) ok++
       else { failed++; console.warn('[album mp3]', t.title, data) }
     } catch { failed++ }
   }

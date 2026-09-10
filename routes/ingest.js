@@ -48,7 +48,8 @@ import {
   _config               as cms2024Config,
 } from '../lib/fm-cms2024.js'
 import { searchMamRecords, findMamTracksByCatalogue, getMamAlbumForEdit, findMamAlbumByCatalogue,
-         getMamLayoutFieldSet, updateMamRecord, updateMamSong, updateMamAlbum } from '../lib/fm-mam.js'
+         getMamLayoutFieldSet, updateMamRecord, updateMamSong, updateMamAlbum,
+         getMamFieldData } from '../lib/fm-mam.js'
 // The album tab creates in MAM as well as editing it.
 import { mamSession, findMamAlbum, makeIdAllocator, createMamAlbum, createMamSong, albumIdFor } from '../lib/fm-mam-write.js'
 import { wavBufferToMp3, ensureFfmpeg } from '../lib/audio-convert.js'
@@ -2144,6 +2145,58 @@ router.post('/album/cover', adminAuth, uploadCoverImage.single('image'), async (
   } catch (err) {
     await unlink(req.file?.path).catch(() => {})
     res.status(err.status || 502).json({ error: err.message })
+  }
+})
+
+// Convert one MAM track's master to the streamer MP3.
+//
+// The Gallo route this replaced (/api/gallo/audio/:recordId/convert-mp3) looks
+// the record up with getGalloFieldData, i.e. by GALLO's internal recordId.
+// FileMaker record ids are per-table, so once the album tab moved to MAM it was
+// handing MAM Songs ids to a Gallo lookup - which usually resolves to a real
+// but unrelated Gallo track, converts THAT, and reports success. Hence a MAM
+// route rather than a shared one: the id space is the thing that differs.
+router.post('/album/track/:recordId/mp3', adminAuth, async (req, res) => {
+  let step = 'record'
+  try {
+    const f = await getMamFieldData('Songs', req.params.recordId)
+    if (!f) return res.status(404).json({ error: 'No such MAM Songs record' })
+
+    step = 'filename'
+    // Filename names the S3 key (mp3/<Filename>.mp3), same convention as Gallo.
+    const base = String(f['Filename'] || '').trim().replace(/\.wav$/i, '')
+    if (!base) return res.status(422).json({ error: 'Filename is empty on this MAM record — it names the S3 key mp3/<Filename>.mp3' })
+
+    step = 'resolve'
+    const vision = String(f['Audio_Vision_URL'] || '').trim()
+    const s3     = String(f['Audio_S3_URL'] || '').trim()
+    if (!vision && !s3) return res.status(404).json({ error: 'No audio on this track — link it from Vision first' })
+
+    step = 'download'
+    let wavBuf
+    if (vision) {
+      const stat = await visionStat(vision).catch(() => null)
+      if (stat?.size && stat.size > 800e6) {
+        return res.status(413).json({ error: `Source is ${Math.round(stat.size / 1e6)}MB — over the conversion cap` })
+      }
+      const obj = await visionOpen(vision)
+      wavBuf = Buffer.from(await obj.Body.transformToByteArray())
+    } else {
+      const r = await fetch(s3)
+      if (!r.ok) return res.status(502).json({ error: `Source fetch failed: HTTP ${r.status}` })
+      wavBuf = Buffer.from(await r.arrayBuffer())
+    }
+
+    step = 'convert'
+    const mp3Buf = await wavBufferToMp3(wavBuf)
+
+    step = 'upload'
+    const { key, url } = await uploadMp3ByGcat(mp3Buf, base)
+    console.log(`[MAM mp3] ${req.params.recordId} ${base}: ${Math.round(wavBuf.length/1e6)}MB WAV → ${Math.round(mp3Buf.length/1e6)}MB MP3 → ${key}`)
+    res.json({ ok: true, s3_key: key, s3_url: url, base, source: vision || s3 })
+  } catch (err) {
+    console.error(`[MAM mp3] ${req.params.recordId} failed at ${step}:`, err.message)
+    res.status(502).json({ error: `${step}: ${err.message}` })
   }
 })
 
