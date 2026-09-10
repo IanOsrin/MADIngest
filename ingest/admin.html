@@ -1200,6 +1200,14 @@
         </p>
 
         <div id="accBuild" data-acc-default="closed">
+        <!-- Shown between naming a new playlist and the first songs going into
+             it. A playlist IS the tag on its songs, so until then it exists
+             only as an intention — this line is the only thing holding it. -->
+        <div id="plsBuildHint" hidden
+          style="margin-top:12px;padding:9px 12px;border:1px solid var(--gold);border-radius:7px;background:rgba(212,175,55,0.08);font-size:0.84rem;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span id="plsBuildHintText" style="flex:1"></span>
+          <button class="btn btn-ghost" style="font-size:0.74rem;padding:2px 10px" onclick="plsCancelNew()">Cancel</button>
+        </div>
         <div style="display:flex;gap:6px;margin-bottom:10px;margin-top:12px">
           <button class="btn btn-gold" id="plsModeArtist" onclick="plsSetMode('artist')" style="font-size:0.78rem">Search by Artist</button>
           <button class="btn btn-ghost" id="plsModeGenre"  onclick="plsSetMode('genre')"  style="font-size:0.78rem">Browse by Genre</button>
@@ -2876,6 +2884,7 @@ let _plsPlaylists    = []        // [{name, trackCount, …}] — for the reques
 let _plsAskOnTick    = true
 let _plsAskTarget    = ''        // playlist chosen in the requester (the active one)
 let _plsAskNewName   = ''        // name typed for a playlist being created
+let _plsMiniDismissed = false    // user closed the corner panel with the ✕
 
 function playlistsInit() {
   accInit()
@@ -3236,7 +3245,16 @@ function plsUpdateAssign() {
   $('plsAssignBtn').textContent = `Add ${n} selected → playlist`
   $('plsAssignBtn').disabled    = !n
   // Nothing ticked = a fresh run, so the requester speaks up again next time
-  if (!n) { _plsAskOnTick = true; plsMiniHide() }
+  if (!n) {
+    _plsAskOnTick = true
+    _plsMiniDismissed = false
+    plsMiniHide()
+    return
+  }
+  // The corner panel is the standing offer whenever a target is already settled
+  // — after "Add more first", or after naming a new playlist. It stays away only
+  // if the user actually dismissed it with the ✕.
+  if (!_plsAskOnTick && _plsAskTarget && !_plsMiniDismissed) plsMiniShow()
   else if (document.getElementById('plsAskMini')) plsMiniShow()   // keep the count live
 }
 
@@ -3272,6 +3290,14 @@ function plsAskLater() {
 
 function plsMiniHide() { document.getElementById('plsAskMini')?.remove() }
 
+// The ✕ — a deliberate dismissal, which must survive further ticking. Plain
+// plsMiniHide is for taking the panel down on our own account (expanding it,
+// finishing a batch), and that must NOT count as the user dismissing it.
+function plsMiniDismiss() {
+  _plsMiniDismissed = true
+  plsMiniHide()
+}
+
 // Back to the full requester (to change the target playlist)
 function plsMiniExpand() {
   plsMiniHide()
@@ -3300,7 +3326,7 @@ function plsMiniShow() {
         → ${target ? esc(target) : 'choose a playlist'}</button>
     </div>
     <button class="btn btn-gold" style="padding:5px 12px" onclick="plsMiniAdd()">Add now</button>
-    <button class="btn btn-ghost" style="padding:2px 8px" title="Dismiss" onclick="plsMiniHide()">✕</button>`
+    <button class="btn btn-ghost" style="padding:2px 8px" title="Dismiss" onclick="plsMiniDismiss()">✕</button>`
 }
 
 function plsMiniAdd() {
@@ -3440,15 +3466,94 @@ function plsSelectChanged() {
 }
 
 // "＋ New playlist" button — arms the create flow from the Existing section
+// ── New playlist: name it first, then go and fill it ────────────────────────
+// Naming used to come last — you searched, ticked, and only then said what the
+// thing was. Naming first matches how you actually think about it, and it means
+// every tick afterwards has somewhere obvious to go.
+
+function plsNewEsc(e) { if (e.key === 'Escape') plsNewClose() }
+
+function plsNewClose() {
+  document.removeEventListener('keydown', plsNewEsc)
+  document.getElementById('plsNewOverlay')?.remove()
+}
+
 function plsStartNew() {
-  if (!_plsSongs.length) {
-    showToast('Search for songs above and tick the ones you want — then name the playlist', 'error')
-    $('plsQuery').focus()
+  plsAskClose(); plsMiniHide(); plsNewClose()
+  const ov = document.createElement('div')
+  ov.id = 'plsNewOverlay'
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:400;display:flex;align-items:center;justify-content:center;padding:24px'
+  ov.onclick = e => { if (e.target === ov) plsNewClose() }
+  ov.innerHTML = `<div style="background:var(--bg-lift);border:1px solid var(--border);border-radius:10px;max-width:420px;width:100%">
+    <div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px">
+      <strong>New playlist</strong>
+      <button class="btn btn-ghost" style="margin-left:auto;padding:2px 10px" onclick="plsNewClose()">✕</button>
+    </div>
+    <div style="padding:16px 18px">
+      <div style="margin-bottom:10px;font-size:0.86rem">What is it called?</div>
+      <input id="plsNewName" type="text" placeholder="e.g. Nicky B" autocomplete="off"
+        oninput="document.getElementById('plsNewGo').disabled = !this.value.trim()"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();plsNewConfirm()}"
+        style="width:100%;background:var(--bg);border:1px solid var(--gold);border-radius:6px;padding:9px 11px;color:var(--text);font-family:inherit;font-size:0.92rem;outline:none">
+      <div style="margin-top:9px;font-size:0.78rem;color:var(--muted)">
+        Next you'll search for songs and tick the ones to put in it.
+        The playlist appears on the site once it has songs and a cover.
+      </div>
+    </div>
+    <div style="padding:12px 18px;border-top:1px solid var(--border);display:flex;gap:10px;justify-content:flex-end">
+      <button class="btn btn-ghost" onclick="plsNewClose()">Cancel</button>
+      <button class="btn btn-gold" id="plsNewGo" disabled onclick="plsNewConfirm()">Next: find songs</button>
+    </div>
+  </div>`
+  document.body.appendChild(ov)
+  document.addEventListener('keydown', plsNewEsc)
+  document.getElementById('plsNewName')?.focus()
+}
+
+function plsNewConfirm() {
+  const name = (document.getElementById('plsNewName')?.value || '').trim()
+  if (!name) { showToast('Give the playlist a name', 'error'); return }
+  // Tagging songs with an existing name would silently merge into it, so say so
+  const clash = _plsPlaylists.find(p => String(p.name).toLowerCase() === name.toLowerCase())
+  if (clash) {
+    showToast(`"${clash.name}" already exists — add to it from the list, or pick another name`, 'error')
     return
   }
-  // The requester is where a target gets chosen now, so open it on "new"
-  _plsAskTarget = '__new__'
-  plsAskOpen()
+  plsNewClose()
+  // Aim everything at the new name. It becomes a real playlist the moment the
+  // first song is tagged with it, so nothing is written yet.
+  const sel = $('plsSelect')
+  if (![...sel.options].some(o => o.value === name)) sel.add(new Option(name, name))
+  sel.value = name
+  plsSelectChanged()
+  _plsAskTarget  = name
+  _plsAskNewName = ''
+  _plsAskOnTick  = false        // the target is settled; don't ask again per tick
+  plsSetBuildHint(name)
+  accExpand('accBuild')
+  if (_plsChecked.size) { plsMiniShow(); return }   // songs already ticked: straight on
+  $('plsQuery').focus()
+  showToast(`“${name}” — now search for songs and tick them`)
+}
+
+function plsSetBuildHint(name) {
+  const bar = $('plsBuildHint')
+  if (!bar) return
+  bar.hidden = !name
+  if (name) {
+    $('plsBuildHintText').innerHTML =
+      `Building <strong>${esc(name)}</strong> — search below and tick songs to put in it.`
+  }
+}
+
+// Abandon the pending playlist. Nothing was written, so this only clears intent.
+function plsCancelNew() {
+  plsSetBuildHint('')
+  _plsAskTarget = ''
+  _plsAskOnTick = true
+  plsMiniHide()
+  $('plsSelect').value = ''
+  plsSelectChanged()
 }
 
 async function plsAssign(opts = {}) {
@@ -3503,6 +3608,7 @@ async function plsAssign(opts = {}) {
     $('plsSelect').value = name
     _plsAskTarget = name          // stays the active playlist for the next tick
     _plsAskOnTick = true          // batch done — ask again on the next selection
+    plsSetBuildHint('')           // it has songs now: a real playlist, not a pending one
     plsSelectChanged()
     // Open the playlist just added to — you want to see the songs land, and on
     // a new playlist this is the only thing that puts it on screen at all. If
@@ -3525,7 +3631,10 @@ function plsClearSearch() {
   plsAskDismiss()
   _plsSongs = []
   _plsChecked.clear()
-  _plsAskOnTick  = true
+  // A pending new playlist survives clearing the search — you are still
+  // building it, you just want different songs in front of you.
+  if (!$('plsBuildHint') || $('plsBuildHint').hidden) { _plsAskOnTick = true; _plsAskTarget = '' }
+  _plsMiniDismissed = false
   _plsAskNewName = ''
   $('plsQuery').value        = ''
   $('plsCount').textContent  = ''
