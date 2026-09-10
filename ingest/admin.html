@@ -377,15 +377,16 @@
 
     <!-- ── FM Submit tab ────────────────────────────────────── -->
 
-    <!-- ── Album tab — mini FileMaker page over Gallo Catalogue ── -->
+    <!-- ── Album tab — mini FileMaker page over Music Arena Master ── -->
     <div id="tab-album" class="tab-panel active">
       <div class="import-section">
         <h3>MAM — Albums</h3>
         <p style="font-size:0.82rem;color:var(--muted);margin-bottom:12px">
           Search by album title, artist, catalogue number, track or ISRC — pick an album to open
           its page: cover, album details and every song, all editable in place. Edits save
-          <strong>straight to Gallo Catalogue</strong> (album-level fields update every song of
-          the album). You can add tracks to an album, start a brand-new album, and replace the cover.
+          <strong>straight to Music Arena Master</strong> (album fields live on MAM's Albums
+          record, so an album edit is one write, not one per track). You can add tracks to an
+          album, start a brand-new album, and replace the cover.
         </p>
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
           <input id="abSearch" type="text" placeholder="Search albums…  (title, artist, catalogue, ISRC)"
@@ -4835,7 +4836,7 @@ async function runDdexImport() {
   }
 }
 
-// ── Album tab — mini FileMaker page over Gallo Catalogue ────────────────────
+// ── Album tab — mini FileMaker page over Music Arena Master ─────────────────
 // Search → album cards → album page (cover + header + songs), all editable in
 // place. Every save goes straight to Gallo via cheap single-record writes.
 let _abAlbum = null   // { catalogue, tracks, header }
@@ -5391,7 +5392,7 @@ function abNewAlbumForm() {
   const page = $('abPage')
   page.style.display = 'block'
   page.innerHTML = `<div style="border:1px solid var(--border);border-radius:8px;padding:14px;max-width:720px">
-    <strong>New album — Gallo Catalogue</strong>
+    <strong>New album — Music Arena Master</strong>
     <p style="font-size:0.78rem;color:var(--muted);margin:6px 0 12px">Creates the album's Tape Files Master record. Add songs afterwards on the album page.</p>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;margin-bottom:12px">
       ${[['catalogue', 'Catalogue number *'], ...AB_HEADER_FIELDS].map(([k, label]) => `

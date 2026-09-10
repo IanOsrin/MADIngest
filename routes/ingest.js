@@ -47,16 +47,19 @@ import {
   mapCms2024Record,
   _config               as cms2024Config,
 } from '../lib/fm-cms2024.js'
-import { searchMamRecords, findMamTracksByCatalogue } from '../lib/fm-mam.js'
+import { searchMamRecords, findMamTracksByCatalogue, getMamAlbumForEdit, findMamAlbumByCatalogue,
+         getMamLayoutFieldSet, updateMamRecord, updateMamSong, updateMamAlbum } from '../lib/fm-mam.js'
+// The album tab creates in MAM as well as editing it.
+import { mamSession, findMamAlbum, makeIdAllocator, createMamAlbum, createMamSong, albumIdFor } from '../lib/fm-mam-write.js'
 import { wavBufferToMp3, ensureFfmpeg } from '../lib/audio-convert.js'
 import { languageNameToCode } from '../lib/language-codes.js'
 import { generateDDEX382 } from '../lib/ddex-generate.js'
 import { buildDdexPackage, planDdex, validateDdexMeta, validateDdexAudio, renderDdexPackageXml } from '../lib/ddex-build.js'
 import AdmZip from 'adm-zip'
 import { loadMetadata, lookupByIsrc, lookupByCatalogue, lookupAlbumTracks, lookupByFilename, lookupByBarcodeAndSeq, lookupCataloguesByBarcode, searchMetadata, getStatus, getAllRows, appendRow as appendMetadataRow, mergeFromBuffer as mergeMetadataFromBuffer, extractHeaders as extractMetadataHeaders, mergeWithMapping as mergeMetadataWithMapping, updateRow as updateMetadataRow, updateRowsBulk as updateMetadataRowsBulk, deleteRow as deleteMetadataRow, replaceFromBuffer as replaceMetadataFromBuffer, CACHE_COLUMNS, ALBUM_FIELD_KEYS } from '../lib/metadata-cache.js'
-import { previewDbSync, applyDbSync, buildFieldData as buildDbSyncFieldData, galloMetadataFromRow } from '../lib/cache-db-sync.js'
+import { previewDbSync, applyDbSync, buildFieldData as buildDbSyncFieldData,
+         MAM_SONG_KEYS, MAM_ALBUM_KEYS } from '../lib/cache-db-sync.js'
 import { parseIngroovesBuffers, diffAgainstCache } from '../lib/ingrooves-sync.js'
-import { findArtworkByCatalogue as findGalloArtworkByCatalogue, createArtworkRecord as createGalloArtworkRecord, uploadArtworkImage as uploadGalloArtworkImage } from '../lib/fm-gallo.js'
 import { loadVisionIndex, filesForCatalogue, matchTracksToFiles, reindexAfterUpload } from '../lib/gallo-vision-link.js'
 import { visionStat, visionUploadFile, visionList } from '../lib/vision-drive.js'
 import { readVisionWavInfo, buildSoundInfoBlock } from '../lib/wav-info.js'
@@ -1646,12 +1649,12 @@ router.get('/metadata/album-fields', adminAuth, (req, res) => {
 // finds and single-record writes — never bulk scans.
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Search → albums. Groups searchGalloRecords hits by catalogue number.
+// Search → albums. Groups searchMamRecords hits by catalogue number.
 router.get('/album/search', adminAuth, async (req, res) => {
   const { q } = req.query
   if (!q || q.trim().length < 2) return res.json({ albums: [] })
   try {
-    const { tracks } = await searchGalloRecords(q.trim(), 150, 0)
+    const { tracks } = await searchMamRecords(q.trim(), { limit: 150 })
     const byCat = new Map()
     for (const t of tracks) {
       const cat = (t.catalogue_no || '').trim()
@@ -1668,126 +1671,180 @@ router.get('/album/search', adminAuth, async (req, res) => {
   }
 })
 
-// One album: every Gallo song record for the catalogue + artwork status.
+// One album: the MAM Albums record + every song of it, in track order.
+// Unlike Gallo there is no separate Artwork table - MAM carries Artwork_S3_URL
+// on the album itself, so "has a cover" is just that field being set.
 router.get('/album/detail', adminAuth, async (req, res) => {
   const cat = (req.query.catalogue || '').trim()
   if (!cat) return res.status(400).json({ error: 'catalogue required' })
   try {
-    const [tracks, artwork] = await Promise.all([
-      findGalloRecordsByCatalogue(cat),
-      findGalloArtworkByCatalogue(cat).catch(() => []),
-    ])
-    tracks.sort((a, b) => (a.sequence_no ?? 999) - (b.sequence_no ?? 999))
-    const art = artwork[0] || null
+    const found = await getMamAlbumForEdit(cat)
+    if (!found) return res.status(404).json({ error: `No album ${cat} in Music Arena Master` })
+    const af = found.album.fieldData || {}
     res.json({
-      ok: true, catalogue: cat, tracks,
-      artwork: art ? { recordId: art.recordId, hasImage: !!(art.fieldData?.Picture) } : null,
+      ok: true, catalogue: cat,
+      albumRecordId: found.album.recordId,
+      albumId: af['AlbumID'] || null,
+      tracks: found.tracks,
+      artwork: af['Artwork_S3_URL']
+        ? { recordId: found.album.recordId, hasImage: true, url: af['Artwork_S3_URL'] }
+        : null,
     })
   } catch (err) {
     res.status(502).json({ error: err.message })
   }
 })
 
-// Cover image — proxied out of the FM container (or S3 artwork URL).
+// Cover image. MAM stores the cover as a URL on the album (Artwork_S3_URL),
+// not as a container, so there is nothing to proxy - redirect to it.
 router.get('/album/cover', adminAuth, async (req, res) => {
   const cat = (req.query.catalogue || '').trim()
   if (!cat) return res.status(400).json({ error: 'catalogue required' })
   try {
-    const artwork = await findGalloArtworkByCatalogue(cat)
-    const container = artwork[0]?.fieldData?.Picture
-    if (container) {
-      const buf = await fetchContainerData(container)
-      res.setHeader('Content-Type', 'image/jpeg')
-      res.setHeader('Cache-Control', 'private, max-age=300')
-      return res.end(buf)
-    }
-    // fall back to any artwork URL on the songs
-    const tracks = await findGalloRecordsByCatalogue(cat)
-    const url = tracks.find(t => t.artwork_url)?.artwork_url
-    if (url) return res.redirect(url)
+    const album = await findMamAlbumByCatalogue(cat)
+    const url = album?.fieldData?.['Artwork_S3_URL']
+    if (url) return res.redirect(String(url))
     res.status(404).json({ error: 'no artwork' })
   } catch (err) {
     res.status(502).json({ error: err.message })
   }
 })
 
-// Edit one song record. Body: { fields: { track_name, genre, … } } — the
-// same internal keys the Cache Viewer uses; the shared builder turns them
-// into Gallo field names and the layout filter keeps what exists.
+// Edit one song record. Body: { fields: { track_name, genre, ... } } - the
+// same internal keys the Cache Viewer uses; the shared builder turns them into
+// MAM field names and the layout filter keeps what exists.
 router.patch('/album/track/:recordId', adminAuth, express.json(), async (req, res) => {
   const { fields } = req.body || {}
   if (!fields || !Object.keys(fields).length) return res.status(400).json({ error: 'fields required' })
   try {
-    const fieldData = buildDbSyncFieldData('gallo', fields, Object.keys(fields))
-    const known = await getGalloLayoutFieldSet().catch(() => null)
-    const payload = known
-      ? Object.fromEntries(Object.entries(fieldData).filter(([k]) => known.has(k)))
-      : fieldData
-    if (!Object.keys(payload).length) return res.status(400).json({ error: 'No writable Gallo fields in this edit' })
-    await updateGalloRecord(req.params.recordId, payload)
-    res.json({ ok: true, recordId: req.params.recordId, fields: Object.keys(payload) })
+    // Album-level keys are refused here rather than silently dropped: they live
+    // on the Albums record, and a caller sending one to a track means to change
+    // the album. /album/album-patch is the route for that.
+    const albumKeys = Object.keys(fields).filter(k => MAM_ALBUM_KEYS.includes(k))
+    if (albumKeys.length) {
+      return res.status(400).json({
+        error: `${albumKeys.join(', ')} ${albumKeys.length === 1 ? 'is an album field' : 'are album fields'} in MAM - use the album editor`,
+      })
+    }
+    const fieldData = buildDbSyncFieldData('mam', fields, Object.keys(fields))
+    const written = await updateMamSong(req.params.recordId, fieldData)
+    res.json({ ok: true, recordId: req.params.recordId, fields: written })
   } catch (err) {
     res.status(502).json({ error: err.message })
   }
 })
 
-// Album-level edit: apply the given fields to EVERY song record of the
-// catalogue (Gallo keeps album fields on each song row).
+// Album-level edit. Gallo kept album fields on every song row, so this was N
+// writes; MAM has a real Albums record, so an album field is ONE write. A mixed
+// payload still works - song-level keys fan out to the tracks as before.
 router.post('/album/album-patch', adminAuth, express.json(), async (req, res) => {
   const { catalogue, fields } = req.body || {}
   if (!catalogue || !fields || !Object.keys(fields).length) return res.status(400).json({ error: 'catalogue and fields required' })
   try {
-    const tracks = await findGalloRecordsByCatalogue(catalogue.trim())
-    if (!tracks.length) return res.status(404).json({ error: `No Gallo records for catalogue ${catalogue}` })
-    const fieldData = buildDbSyncFieldData('gallo', fields, Object.keys(fields))
-    const known = await getGalloLayoutFieldSet().catch(() => null)
-    const payload = known
-      ? Object.fromEntries(Object.entries(fieldData).filter(([k]) => known.has(k)))
-      : fieldData
-    if (!Object.keys(payload).length) return res.status(400).json({ error: 'No writable Gallo fields in this edit' })
+    const found = await getMamAlbumForEdit(catalogue.trim())
+    if (!found) return res.status(404).json({ error: `No album ${catalogue} in Music Arena Master` })
+
+    const keys      = Object.keys(fields)
+    const albumKeys = keys.filter(k => MAM_ALBUM_KEYS.includes(k))
+    const songKeys  = keys.filter(k => MAM_SONG_KEYS.includes(k))
+    if (!albumKeys.length && !songKeys.length) {
+      return res.status(400).json({ error: 'No writable MAM fields in this edit' })
+    }
+
+    let albumFields = []
+    if (albumKeys.length) {
+      albumFields = await updateMamAlbum(found.album.recordId, buildDbSyncFieldData('mam', fields, albumKeys))
+    }
+
     const results = []
-    for (const t of tracks) {
-      try { await updateGalloRecord(t.fm_record_id, payload); results.push({ recordId: t.fm_record_id, ok: true }) }
-      catch (err) { results.push({ recordId: t.fm_record_id, ok: false, error: err.message }) }
+    if (songKeys.length) {
+      const songData = buildDbSyncFieldData('mam', fields, songKeys)
+      for (const t of found.tracks) {
+        try { await updateMamSong(t.fm_record_id, songData); results.push({ recordId: t.fm_record_id, ok: true }) }
+        catch (err) { results.push({ recordId: t.fm_record_id, ok: false, error: err.message }) }
+      }
     }
     const failed = results.filter(r => !r.ok).length
-    res.json({ ok: true, updated: results.length - failed, failed, results })
+    res.json({
+      ok: true,
+      albumRecordId: found.album.recordId,
+      albumFields,
+      updated: results.length - failed, failed, results,
+    })
   } catch (err) {
     res.status(502).json({ error: err.message })
   }
 })
 
-// Add a song to an album (creates a Gallo record with the album context).
+// Add a song to an album. MAM joins songs to albums by AlbumID, so the album
+// must exist first - and MasterID / RecordingID come from the allocator rather
+// than being invented here, so the series stays contiguous with Fill MAM's.
 router.post('/album/track', adminAuth, express.json(), async (req, res) => {
   const { fields } = req.body || {}
-  if (!fields?.catalogue) return res.status(400).json({ error: 'fields.catalogue required' })
+  const cat = (fields?.catalogue || '').trim()
+  if (!cat) return res.status(400).json({ error: 'fields.catalogue required' })
+  let db = null
   try {
-    const created = await createGalloRecord(galloMetadataFromRow(fields))
-    res.status(201).json({ ok: true, recordId: created.fmRecordId })
+    db = await mamSession()
+    const album = await findMamAlbum(db, cat)
+    if (!album) return res.status(404).json({ error: `No album ${cat} in Music Arena Master - create the album first` })
+    const ids = await makeIdAllocator(db)
+    const created = await createMamSong(db, {
+      master_id:    ids.nextMaster(),
+      recording_id: ids.nextRecording(),
+      album_id:     album.fieldData?.['AlbumID'] ?? album['AlbumID'],
+      sources:      'GalloIngest',
+      catalogue_no: cat,
+      title:        fields.track_name,
+      artist:       fields.track_artist,
+      isrc:         fields.isrc,
+      sequence_no:  fields.seq,
+      duration:     fields.duration,
+      genre:        fields.genre,
+      sub_genre:    fields.sub_genre,
+      language:     fields.language,
+      composers:    fields.composer,
+      producers:    fields.producer,
+      publishers:   fields.publisher,
+      parental:     fields.parental,
+      c_line:       fields.c_line,
+      p_line:       fields.p_line,
+      rights_territories:    fields.rights_territories,
+      original_release_date: fields.original_release_date,
+    })
+    res.status(201).json({ ok: true, recordId: created?.recordId || created?.fmRecordId || null })
   } catch (err) {
-    res.status(502).json({ error: err.message })
-  }
+    res.status(err.status || 502).json({ error: err.message })
+  } finally { await db?.close?.() }
 })
 
-// New album: a Tape Files Master record (the album shell). Songs are then
-// added via POST /album/track.
+// New album: a MAM Albums record. Songs are then added via POST /album/track.
+// Refuses a catalogue MAM already holds - a second Albums row for one catalogue
+// orphans the songs of the first (see albumIdFor in lib/fm-mam-write.js).
 router.post('/album/new', adminAuth, express.json(), async (req, res) => {
   const { fields } = req.body || {}
   const cat = (fields?.catalogue || '').trim()
   if (!cat) return res.status(400).json({ error: 'fields.catalogue required' })
+  let db = null
   try {
-    const existing = await findGalloRecordsByCatalogue(cat)
-    if (existing.length) return res.status(409).json({ error: `Catalogue ${cat} already has ${existing.length} Gallo record(s)` })
-    const tape = await createTapeFileRecord({
-      album_artist: fields.album_artist, album: fields.album_title, catalogue_no: cat,
-      barcode: fields.barcode, release_date: fields.release_date,
-      original_release_date: fields.original_release_date, genre: fields.genre,
-      language: fields.language, label: fields.label, p_line: fields.p_line, c_line: fields.c_line,
+    db = await mamSession()
+    const existing = await findMamAlbum(db, cat)
+    if (existing) return res.status(409).json({ error: `Catalogue ${cat} already has an album in Music Arena Master` })
+    const created = await createMamAlbum(db, {
+      catalogue_no: cat,
+      album:        fields.album_title,
+      album_artist: fields.album_artist,
+      year:         fields.year,
+      release_date: fields.release_date,
+      barcode:      fields.barcode,
+      label:        fields.label,
+      genre:        fields.genre,
+      country:      fields.country,
     })
-    res.status(201).json({ ok: true, tape })
+    res.status(201).json({ ok: true, catalogue: cat, albumId: albumIdFor(cat), recordId: created?.recordId || null })
   } catch (err) {
-    res.status(502).json({ error: err.message })
-  }
+    res.status(err.status || 502).json({ error: err.message })
+  } finally { await db?.close?.() }
 })
 
 // ── Album tab: audio ─────────────────────────────────────────────────────────
@@ -1799,9 +1856,13 @@ router.post('/album/new', adminAuth, express.json(), async (req, res) => {
 // best-effort) on one record.
 async function _writeAudioRef(recordId, visionPath) {
   const nfc = String(visionPath).normalize('NFC')
-  const known = await getGalloLayoutFieldSet()
-  if (!known.has('Audio_URL')) throw new Error('Audio_URL field is not on the Gallo API layout')
-  const fieldData = { Audio_URL: nfc }
+  const known = await getMamLayoutFieldSet('Songs')
+  if (!known.has('Audio_Vision_URL')) throw new Error('Audio_Vision_URL field is not on the MAM Songs layout')
+  // Audio_Truth records WHERE the canonical master lives; MAM's own importer
+  // sets it alongside the URL, so linking here has to do the same or the row
+  // claims a Vision master without saying so.
+  const fieldData = { Audio_Vision_URL: nfc }
+  if (known.has('Audio_Truth')) fieldData['Audio_Truth'] = 'Vision'
   let details = null
   try {
     const read = await readVisionWavInfo(nfc)
@@ -1811,7 +1872,7 @@ async function _writeAudioRef(recordId, visionPath) {
       if (detailsField) { fieldData[detailsField] = block; details = detailsField }
     }
   } catch { /* details are best-effort */ }
-  await updateGalloRecord(recordId, fieldData)
+  await updateMamRecord('Songs', recordId, fieldData)
   return { recordId, path: nfc, detailsField: details }
 }
 
@@ -1820,7 +1881,8 @@ router.post('/album/link-audio/preview', adminAuth, express.json(), async (req, 
   const cat = (req.body?.catalogue || '').trim()
   if (!cat) return res.status(400).json({ error: 'catalogue required' })
   try {
-    const [tracks, index] = await Promise.all([findGalloRecordsByCatalogue(cat), loadVisionIndex()])
+    const [found, index] = await Promise.all([getMamAlbumForEdit(cat), loadVisionIndex()])
+    const tracks = found?.tracks || []
     if (!index) return res.status(503).json({ error: 'Vision index not built — run Reindex on the Vision tab first' })
     const files = filesForCatalogue(index, cat)
     const m = matchTracksToFiles(
@@ -1900,7 +1962,7 @@ router.post('/album/audio-upload', adminAuth, uploadTrackAudio.single('audio'), 
     // Destination folder: where this album's audio already lives — sibling
     // Audio_URLs first, then the Vision index — else a new Rendered Files
     // folder named by artist/album.
-    const tracks = await findGalloRecordsByCatalogue(cat)
+    const tracks = (await getMamAlbumForEdit(cat))?.tracks || []
     let folder = tracks.map(t => t.audio_url_ref).filter(Boolean)
       .map(p => p.replace(/\/[^/]+$/, ''))[0] || null
     if (!folder) {
@@ -1939,7 +2001,7 @@ router.post('/album/audio-upload', adminAuth, uploadTrackAudio.single('audio'), 
 // The album's Vision folder(s): where its audio already lives, per the
 // canonical Audio_URL refs first, then the index.
 async function _albumVisionFolders(cat) {
-  const tracks = await findGalloRecordsByCatalogue(cat)
+  const tracks = (await getMamAlbumForEdit(cat))?.tracks || []
   const folders = new Set(tracks.map(t => t.audio_url_ref).filter(Boolean).map(p => p.replace(/\/[^/]+$/, '')))
   if (!folders.size) {
     const index = await loadVisionIndex()
@@ -1995,8 +2057,28 @@ router.get('/album/vision-image', adminAuth, async (req, res) => {
   }
 })
 
-// Use a Vision image as the Gallo cover — read the bytes off the drive and
-// write them into the Artwork container (create the record if missing).
+// Set the album cover from a Vision image.
+//
+// Gallo kept covers in an Artwork table's container field; MAM holds a URL on
+// the album (Artwork_S3_URL). So this is an upload to S3 followed by a pointer
+// write, not a container write - and there is no artwork record to create.
+async function _setMamCover(cat, image, filename, contentType) {
+  const album = await findMamAlbumByCatalogue(cat)
+  if (!album) throw Object.assign(new Error(`No album ${cat} in Music Arena Master`), { status: 404 })
+  const previous = album.fieldData?.['Artwork_S3_URL'] || null
+  const up = await uploadArtworkImport(image, filename, {
+    catalogue_no: cat,
+    album:  album.fieldData?.['Album Title'],
+    artist: album.fieldData?.['Album Artist'],
+    contentType,
+  })
+  // The old object is deliberately NOT deleted: anything still holding the
+  // previous URL (a cached page, the mirror until its next sync) keeps working.
+  await updateMamAlbum(album.recordId, { 'Artwork_S3_URL': up.url })
+  return { recordId: album.recordId, key: up.key, url: up.url,
+           action: previous ? 'replaced' : 'created', supersededKept: previous }
+}
+
 router.post('/album/cover-from-vision', adminAuth, express.json(), async (req, res) => {
   const { catalogue, path: visionPath } = req.body || {}
   const cat = (catalogue || '').trim()
@@ -2009,19 +2091,11 @@ router.post('/album/cover-from-vision', adminAuth, express.json(), async (req, r
       : new Response(obj.Body).arrayBuffer()))
     const filename = visionPath.split('/').pop()
     const contentType = IMAGE_TYPES[(visionPath.match(IMAGE_EXT)?.[1] || 'jpg').toLowerCase()] || 'image/jpeg'
-    const existing = await findGalloArtworkByCatalogue(cat)
-    let result
-    if (existing[0]) {
-      result = await uploadGalloArtworkImage(existing[0].recordId, image, filename, contentType)
-      result.action = 'replaced'
-    } else {
-      result = await createGalloArtworkRecord({ catalogue_no: cat, image, filename, contentType })
-      result.action = 'created'
-    }
-    console.log(`[Album] Cover ${result.action} from Vision: ${cat} ← ${visionPath}`)
+    const result = await _setMamCover(cat, image, filename, contentType)
+    console.log(`[Album] Cover ${result.action} from Vision: ${cat} <- ${visionPath}`)
     res.json({ ok: true, ...result, source: visionPath })
   } catch (err) {
-    res.status(502).json({ error: err.message })
+    res.status(err.status || 502).json({ error: err.message })
   }
 })
 
@@ -2034,19 +2108,11 @@ router.post('/album/cover', adminAuth, uploadCoverImage.single('image'), async (
   try {
     const image = await readFile(req.file.path)
     await unlink(req.file.path).catch(() => {})
-    const existing = await findGalloArtworkByCatalogue(cat)
-    let result
-    if (existing[0]) {
-      result = await uploadGalloArtworkImage(existing[0].recordId, image, req.file.originalname, req.file.mimetype)
-      result.action = 'replaced'
-    } else {
-      result = await createGalloArtworkRecord({ catalogue_no: cat, image, filename: req.file.originalname, contentType: req.file.mimetype })
-      result.action = 'created'
-    }
+    const result = await _setMamCover(cat, image, req.file.originalname, req.file.mimetype)
     res.json({ ok: true, ...result })
   } catch (err) {
     await unlink(req.file?.path).catch(() => {})
-    res.status(502).json({ error: err.message })
+    res.status(err.status || 502).json({ error: err.message })
   }
 })
 
