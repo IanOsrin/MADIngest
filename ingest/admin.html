@@ -2804,6 +2804,7 @@ let _plsPlaylists    = []        // [{name, trackCount, …}] — for the reques
 // not twenty.
 let _plsAskOnTick    = true
 let _plsAskTarget    = ''        // playlist chosen in the requester (the active one)
+let _plsAskNewName   = ''        // name typed for a playlist being created
 
 function playlistsInit() { if (!_plsNamesLoaded) plsLoadPlaylists(false) }
 
@@ -3151,8 +3152,12 @@ function plsMiniShow() {
     el.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:390;background:var(--bg-lift);border:1px solid var(--gold);border-radius:9px;box-shadow:0 6px 20px rgba(0,0,0,0.45);padding:10px 12px;display:flex;align-items:center;gap:10px;font-size:0.84rem;max-width:340px'
     document.body.appendChild(el)
   }
-  const n      = _plsChecked.size
-  const target = (_plsAskTarget && _plsAskTarget !== '__new__') ? _plsAskTarget : ''
+  const n = _plsChecked.size
+  // A playlist still being created shows its typed name here too — the target
+  // is the target whether or not it exists in FileMaker yet.
+  const target = _plsAskTarget === '__new__'
+    ? (_plsAskNewName.trim() ? `${_plsAskNewName.trim()} (new)` : '')
+    : (_plsAskTarget || '')
   el.innerHTML = `<div style="flex:1;min-width:0">
       <div><strong>${n}</strong> song${n === 1 ? '' : 's'} selected</div>
       <button type="button" onclick="plsMiniExpand()" title="Change playlist"
@@ -3164,7 +3169,11 @@ function plsMiniShow() {
 }
 
 function plsMiniAdd() {
-  if (!_plsAskTarget) { plsMiniExpand(); return }
+  // No target yet (or a new playlist still unnamed) — open up so it can be set
+  if (!_plsAskTarget || (_plsAskTarget === '__new__' && !_plsAskNewName.trim())) {
+    plsMiniExpand()
+    return
+  }
   plsAskConfirm()
 }
 
@@ -3217,33 +3226,41 @@ function plsAskRender() {
     ? `<div style="margin-bottom:12px">Add <strong>${esc(one.title || '—')}</strong>${one.artist ? ` <span style="color:var(--muted)">— ${esc(one.artist)}</span>` : ''} to:</div>`
     : `<div style="margin-bottom:12px">Add <strong>${n} songs</strong> to:</div>`
 
-  // Active playlist — pinned above the list
-  if (_plsAskTarget && !isNew) {
-    const act = _plsPlaylists.find(p => p.name === _plsAskTarget)
-    html += `<div style="color:var(--muted);font-size:0.74rem;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:5px">Active playlist</div>
-      <button type="button" style="${rowCss(true)}" onclick="plsAskPick(${JSON.stringify(_plsAskTarget).replace(/"/g, '&quot;')})">
-        <span style="color:var(--gold)">●</span>
-        <span style="flex:1">${esc(_plsAskTarget)}</span>
-        <span style="color:var(--muted);font-size:0.78rem">${act ? `${act.trackCount} track${act.trackCount === 1 ? '' : 's'}` : 'new'}</span>
-      </button>
-      <div style="height:1px;background:var(--border);margin:10px 0"></div>`
-  }
+  const head = t => `<div style="color:var(--muted);font-size:0.74rem;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:5px">${t}</div>`
+  const rule = '<div style="height:1px;background:var(--border);margin:10px 0"></div>'
 
-  html += `<button type="button" style="${rowCss(isNew)}" onclick="plsAskPick('__new__')">
-      <span>＋</span><span style="flex:1">New playlist…</span></button>`
+  // The top slot ALWAYS holds the playlist this batch is going into — including
+  // the one being created. A new playlist is the thing you are most focused on,
+  // so it belongs above the list, not tucked in among the existing ones.
   if (isNew) {
-    html += `<input id="plsAskName" type="text" placeholder="Playlist name…"
-      onkeydown="if(event.key==='Enter'){event.preventDefault();plsAskConfirm()}"
-      style="width:100%;margin:2px 0 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px 10px;color:var(--text);font-family:inherit;font-size:0.86rem;outline:none">`
+    html += head('New playlist')
+      + `<input id="plsAskName" type="text" placeholder="Name the playlist…" value="${esc(_plsAskNewName)}"
+          oninput="_plsAskNewName = this.value; document.getElementById('plsAskGo').disabled = !this.value.trim()"
+          onkeydown="if(event.key==='Enter'){event.preventDefault();plsAskConfirm()}"
+          style="width:100%;background:var(--bg);border:1px solid var(--gold);border-radius:6px;padding:9px 10px;color:var(--text);font-family:inherit;font-size:0.9rem;outline:none">`
+      + rule
+  } else if (_plsAskTarget) {
+    const act = _plsPlaylists.find(p => p.name === _plsAskTarget)
+    html += head('Active playlist')
+      + `<button type="button" style="${rowCss(true)}" onclick="plsAskPick(${JSON.stringify(_plsAskTarget).replace(/"/g, '&quot;')})">
+          <span style="color:var(--gold)">●</span>
+          <span style="flex:1">${esc(_plsAskTarget)}</span>
+          <span style="color:var(--muted);font-size:0.78rem">${act ? `${act.trackCount} track${act.trackCount === 1 ? '' : 's'}` : 'new'}</span>
+        </button>`
+      + rule
   }
 
-  if (others.length) {
-    html += `<div style="color:var(--muted);font-size:0.74rem;text-transform:uppercase;letter-spacing:0.05em;margin:12px 0 5px">Playlists</div>`
-    html += others.map(p => `<button type="button" style="${rowCss(false)}" onclick="plsAskPick(${JSON.stringify(p.name).replace(/"/g, '&quot;')})">
-        <span style="flex:1">${esc(p.name)}</span>
-        <span style="color:var(--muted);font-size:0.78rem">${p.trackCount} track${p.trackCount === 1 ? '' : 's'}</span>
-      </button>`).join('')
+  if (others.length || !isNew) {
+    html += head(isNew ? 'Or add to an existing playlist' : 'Playlists')
   }
+  if (!isNew) {
+    html += `<button type="button" style="${rowCss(false)}" onclick="plsAskPick('__new__')">
+        <span>＋</span><span style="flex:1">New playlist…</span></button>`
+  }
+  html += others.map(p => `<button type="button" style="${rowCss(false)}" onclick="plsAskPick(${JSON.stringify(p.name).replace(/"/g, '&quot;')})">
+      <span style="flex:1">${esc(p.name)}</span>
+      <span style="color:var(--muted);font-size:0.78rem">${p.trackCount} track${p.trackCount === 1 ? '' : 's'}</span>
+    </button>`).join('')
 
   const moving = picked.filter(s => s.playlist && s.playlist !== _plsAskTarget).length
   if (moving && _plsAskTarget && !isNew) {
@@ -3251,14 +3268,19 @@ function plsAskRender() {
   }
 
   body.innerHTML = html
-  if (isNew) document.getElementById('plsAskName')?.focus()
+  if (isNew) {
+    const inp = document.getElementById('plsAskName')
+    if (inp) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length) }
+  }
   const go = document.getElementById('plsAskGo')
-  if (go) go.disabled = !_plsAskTarget
+  if (go) go.disabled = isNew ? !_plsAskNewName.trim() : !_plsAskTarget
 }
 
 async function plsAskConfirm() {
   const isNew = _plsAskTarget === '__new__'
-  const name  = isNew ? (document.getElementById('plsAskName')?.value || '').trim() : _plsAskTarget
+  const name  = isNew
+    ? ((document.getElementById('plsAskName')?.value ?? _plsAskNewName) || '').trim()
+    : _plsAskTarget
   if (!name) {
     showToast(isNew ? 'Enter a name for the new playlist' : 'Pick a playlist', 'error')
     return
@@ -3270,7 +3292,8 @@ async function plsAskConfirm() {
   }
   sel.value = name
   plsSelectChanged()
-  _plsAskTarget = name
+  _plsAskTarget  = name
+  _plsAskNewName = ''
   plsAskDismiss()
   await plsAssign({ skipConfirm: true })
 }
@@ -3359,7 +3382,8 @@ function plsClearSearch() {
   plsAskDismiss()
   _plsSongs = []
   _plsChecked.clear()
-  _plsAskOnTick = true
+  _plsAskOnTick  = true
+  _plsAskNewName = ''
   $('plsQuery').value        = ''
   $('plsCount').textContent  = ''
   $('plsResults').innerHTML  = ''
