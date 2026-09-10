@@ -1205,10 +1205,13 @@
           <button class="btn btn-gold" style="font-size:0.78rem;margin-left:auto" onclick="plsStartNew()">＋ New playlist</button>
           <button class="btn btn-ghost" style="font-size:0.78rem" onclick="plsLoadPlaylists(true)">↺ Refresh</button>
         </div>
+        <!-- The open playlist sits ABOVE the list: it is the thing being worked
+             on, and having to scroll past every other playlist to reach it was
+             the whole irritation. -->
+        <div id="plsTracksWrap" style="display:none;margin-top:12px;padding:14px;border:1px solid var(--gold);border-radius:9px;background:var(--bg-lift)"></div>
         <div id="plsListWrap" style="margin-top:12px">
           <div class="loading-state"><span class="spin">⟳</span> Loading…</div>
         </div>
-        <div id="plsTracksWrap" style="display:none;margin-top:14px"></div>
       </div>
     </div>
 
@@ -3463,6 +3466,9 @@ async function plsSaveOrder() {
 }
 
 async function plsOpenPlaylist(name) {
+  // Only a genuine open scrolls — the in-place refreshes after a remove, a
+  // rename or a saved order must leave the page where the user left it.
+  const opening = _plsOpenName !== name
   _plsOpenName = name
   const wrap = $('plsTracksWrap')
   wrap.style.display = 'block'
@@ -3519,6 +3525,7 @@ async function plsOpenPlaylist(name) {
       html += '</tbody></table></div>'
     }
     wrap.innerHTML = html
+    if (opening) wrap.scrollIntoView({ behavior: 'smooth', block: 'start' })
   } catch (err) {
     wrap.innerHTML = `<div class="empty-state" style="color:var(--red)">Error: ${esc(err.message)}</div>`
   }
