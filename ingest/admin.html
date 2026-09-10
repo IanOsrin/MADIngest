@@ -2796,6 +2796,14 @@ let _plsPlayingBtn   = null
 let _plsOpenName     = null      // playlist open in the manage view
 let _plsOpenSongs    = []        // its tracks (for rename / clear-all)
 let _plsAddSongs     = []        // results of the in-playlist "Add songs" search
+let _plsPlaylists    = []        // [{name, trackCount, …}] — for the requester list
+// The requester: ticking a song asks where it should go, so the target is chosen
+// where the eye already is instead of at a bar further down the page. It asks on
+// the FIRST tick of a run; "Keep selecting" silences it until the batch is added
+// (or the selection is cleared), so building a 20-song playlist is one question,
+// not twenty.
+let _plsAskOnTick    = true
+let _plsAskTarget    = ''        // playlist chosen in the requester (the active one)
 
 function playlistsInit() { if (!_plsNamesLoaded) plsLoadPlaylists(false) }
 
@@ -2858,6 +2866,7 @@ async function plsLoadPlaylists(force) {
     if (!res.ok) throw new Error(data.error || 'Load failed')
     const playlists = data.playlists || []
     _plsNamesLoaded = true
+    _plsPlaylists   = playlists
     const sel  = $('plsSelect')
     const prev = sel.value
     sel.innerHTML = '<option value="">Add to playlist…</option>' +
@@ -3069,11 +3078,13 @@ function plsTickArtist(ix, on) {
   const details = document.querySelectorAll('#plsResults details.pls-artist')[ix]
   if (details) details.querySelectorAll('input[data-rid]').forEach(cb => { if (!cb.disabled) cb.checked = on })
   plsUpdateAssign()
+  if (on) plsMaybeAsk()
 }
 
 function plsTick(recordId, on) {
   if (on) _plsChecked.add(recordId); else _plsChecked.delete(recordId)
   plsUpdateAssign()
+  if (on) plsMaybeAsk()
 }
 
 function plsToggleAll(on) {
@@ -3081,12 +3092,187 @@ function plsToggleAll(on) {
   if (on) for (const s of _plsSongs) if (s.has_audio) _plsChecked.add(s.recordId)
   document.querySelectorAll('#plsResults input[data-rid]').forEach(cb => { if (!cb.disabled) cb.checked = on })
   plsUpdateAssign()
+  if (on) plsMaybeAsk(); else _plsAskOnTick = true
 }
 
 function plsUpdateAssign() {
   const n = _plsChecked.size
   $('plsAssignBtn').textContent = `Add ${n} selected → playlist`
   $('plsAssignBtn').disabled    = !n
+  // Nothing ticked = a fresh run, so the requester speaks up again next time
+  if (!n) { _plsAskOnTick = true; plsMiniHide() }
+  else if (document.getElementById('plsAskMini')) plsMiniShow()   // keep the count live
+}
+
+// ── The requester ───────────────────────────────────────────────────────────
+// Fired on the first tick of a selection run. Two answers: add this straight
+// away, or keep selecting (which silences it for the rest of the batch).
+
+function plsMaybeAsk() {
+  if (!_plsAskOnTick) return
+  if (document.getElementById('plsAskOverlay')) return
+  plsAskOpen()
+}
+
+function plsAskEsc(e) { if (e.key === 'Escape') plsAskLater() }
+
+function plsAskClose() {
+  document.removeEventListener('keydown', plsAskEsc)
+  document.getElementById('plsAskOverlay')?.remove()
+}
+
+// Both surfaces down — used when the batch is finished or the search is cleared
+function plsAskDismiss() { plsAskClose(); plsMiniHide() }
+
+// "Add more first" — the requester doesn't vanish, it shrinks to a corner panel
+// that keeps the running count and the target in view while you carry on
+// ticking, so Add now is always one click away and never off-screen.
+function plsAskLater() {
+  _plsAskOnTick = false
+  plsAskClose()
+  $('plsAssignBar').style.display = 'flex'
+  plsMiniShow()
+}
+
+function plsMiniHide() { document.getElementById('plsAskMini')?.remove() }
+
+// Back to the full requester (to change the target playlist)
+function plsMiniExpand() {
+  plsMiniHide()
+  plsAskOpen()
+}
+
+function plsMiniShow() {
+  if (!_plsChecked.size) { plsMiniHide(); return }
+  let el = document.getElementById('plsAskMini')
+  if (!el) {
+    el = document.createElement('div')
+    el.id = 'plsAskMini'
+    el.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:390;background:var(--bg-lift);border:1px solid var(--gold);border-radius:9px;box-shadow:0 6px 20px rgba(0,0,0,0.45);padding:10px 12px;display:flex;align-items:center;gap:10px;font-size:0.84rem;max-width:340px'
+    document.body.appendChild(el)
+  }
+  const n      = _plsChecked.size
+  const target = (_plsAskTarget && _plsAskTarget !== '__new__') ? _plsAskTarget : ''
+  el.innerHTML = `<div style="flex:1;min-width:0">
+      <div><strong>${n}</strong> song${n === 1 ? '' : 's'} selected</div>
+      <button type="button" onclick="plsMiniExpand()" title="Change playlist"
+        style="background:none;border:none;padding:0;color:var(--muted);font-family:inherit;font-size:0.78rem;cursor:pointer;text-decoration:underline;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px;display:block">
+        → ${target ? esc(target) : 'choose a playlist'}</button>
+    </div>
+    <button class="btn btn-gold" style="padding:5px 12px" onclick="plsMiniAdd()">Add now</button>
+    <button class="btn btn-ghost" style="padding:2px 8px" title="Dismiss" onclick="plsMiniHide()">✕</button>`
+}
+
+function plsMiniAdd() {
+  if (!_plsAskTarget) { plsMiniExpand(); return }
+  plsAskConfirm()
+}
+
+function plsAskPick(name) {
+  _plsAskTarget = name
+  plsAskRender()
+}
+
+function plsAskOpen() {
+  const active = _plsAskTarget || ($('plsSelect').value && $('plsSelect').value !== '__new__'
+    ? $('plsSelect').value
+    : (_plsOpenName || ''))
+  _plsAskTarget = active
+  plsMiniHide()                       // the full requester replaces the corner panel
+  const ov = document.createElement('div')
+  ov.id = 'plsAskOverlay'
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:400;display:flex;align-items:center;justify-content:center;padding:24px'
+  ov.onclick = e => { if (e.target === ov) plsAskLater() }
+  ov.innerHTML = `<div style="background:var(--bg-lift);border:1px solid var(--border);border-radius:10px;max-width:460px;width:100%;max-height:82vh;display:flex;flex-direction:column">
+    <div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px">
+      <strong>Add to playlist</strong>
+      <button class="btn btn-ghost" style="margin-left:auto;padding:2px 10px" onclick="plsAskLater()">✕</button>
+    </div>
+    <div id="plsAskBody" style="padding:14px 18px;overflow:auto;font-size:0.86rem"></div>
+    <div style="padding:12px 18px;border-top:1px solid var(--border);display:flex;gap:10px;justify-content:flex-end">
+      <button class="btn btn-ghost" onclick="plsAskLater()">Add more first</button>
+      <button class="btn btn-gold" id="plsAskGo" onclick="plsAskConfirm()">Add now</button>
+    </div>
+  </div>`
+  document.body.appendChild(ov)
+  document.addEventListener('keydown', plsAskEsc)
+  plsAskRender()
+}
+
+function plsAskRender() {
+  const body = document.getElementById('plsAskBody')
+  if (!body) return
+  const n       = _plsChecked.size
+  const picked  = _plsSongs.filter(s => _plsChecked.has(s.recordId))
+  const one     = n === 1 ? picked[0] : null
+  const isNew   = _plsAskTarget === '__new__'
+  // The active playlist sits above the list, on its own — it is the answer most
+  // of the time, and it should never be something you have to hunt for.
+  const others  = _plsPlaylists.filter(p => p.name !== _plsAskTarget)
+  const rowCss  = sel => `display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:8px 10px;margin-bottom:5px;
+    border:1px solid ${sel ? 'var(--gold)' : 'var(--border)'};border-radius:6px;cursor:pointer;font-family:inherit;font-size:0.86rem;
+    background:${sel ? 'rgba(212,175,55,0.12)' : 'var(--bg)'};color:var(--text)`
+
+  let html = one
+    ? `<div style="margin-bottom:12px">Add <strong>${esc(one.title || '—')}</strong>${one.artist ? ` <span style="color:var(--muted)">— ${esc(one.artist)}</span>` : ''} to:</div>`
+    : `<div style="margin-bottom:12px">Add <strong>${n} songs</strong> to:</div>`
+
+  // Active playlist — pinned above the list
+  if (_plsAskTarget && !isNew) {
+    const act = _plsPlaylists.find(p => p.name === _plsAskTarget)
+    html += `<div style="color:var(--muted);font-size:0.74rem;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:5px">Active playlist</div>
+      <button type="button" style="${rowCss(true)}" onclick="plsAskPick(${JSON.stringify(_plsAskTarget).replace(/"/g, '&quot;')})">
+        <span style="color:var(--gold)">●</span>
+        <span style="flex:1">${esc(_plsAskTarget)}</span>
+        <span style="color:var(--muted);font-size:0.78rem">${act ? `${act.trackCount} track${act.trackCount === 1 ? '' : 's'}` : 'new'}</span>
+      </button>
+      <div style="height:1px;background:var(--border);margin:10px 0"></div>`
+  }
+
+  html += `<button type="button" style="${rowCss(isNew)}" onclick="plsAskPick('__new__')">
+      <span>＋</span><span style="flex:1">New playlist…</span></button>`
+  if (isNew) {
+    html += `<input id="plsAskName" type="text" placeholder="Playlist name…"
+      onkeydown="if(event.key==='Enter'){event.preventDefault();plsAskConfirm()}"
+      style="width:100%;margin:2px 0 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px 10px;color:var(--text);font-family:inherit;font-size:0.86rem;outline:none">`
+  }
+
+  if (others.length) {
+    html += `<div style="color:var(--muted);font-size:0.74rem;text-transform:uppercase;letter-spacing:0.05em;margin:12px 0 5px">Playlists</div>`
+    html += others.map(p => `<button type="button" style="${rowCss(false)}" onclick="plsAskPick(${JSON.stringify(p.name).replace(/"/g, '&quot;')})">
+        <span style="flex:1">${esc(p.name)}</span>
+        <span style="color:var(--muted);font-size:0.78rem">${p.trackCount} track${p.trackCount === 1 ? '' : 's'}</span>
+      </button>`).join('')
+  }
+
+  const moving = picked.filter(s => s.playlist && s.playlist !== _plsAskTarget).length
+  if (moving && _plsAskTarget && !isNew) {
+    html += `<div style="color:var(--amber);margin-top:10px;font-size:0.82rem">⚠ ${moving} of these is already in another playlist and will be MOVED.</div>`
+  }
+
+  body.innerHTML = html
+  if (isNew) document.getElementById('plsAskName')?.focus()
+  const go = document.getElementById('plsAskGo')
+  if (go) go.disabled = !_plsAskTarget
+}
+
+async function plsAskConfirm() {
+  const isNew = _plsAskTarget === '__new__'
+  const name  = isNew ? (document.getElementById('plsAskName')?.value || '').trim() : _plsAskTarget
+  if (!name) {
+    showToast(isNew ? 'Enter a name for the new playlist' : 'Pick a playlist', 'error')
+    return
+  }
+  // Point the assign bar at the same target so it stays in step
+  const sel = $('plsSelect')
+  if (![...sel.options].some(o => o.value === name)) {
+    sel.add(new Option(name, name))
+  }
+  sel.value = name
+  plsSelectChanged()
+  _plsAskTarget = name
+  plsAskDismiss()
+  await plsAssign({ skipConfirm: true })
 }
 
 function plsSelectChanged() {
@@ -3107,7 +3293,7 @@ function plsStartNew() {
   $('plsAssignBar').scrollIntoView({ behavior: 'smooth', block: 'center' })
 }
 
-async function plsAssign() {
+async function plsAssign(opts = {}) {
   const sel  = $('plsSelect').value
   const name = sel === '__new__' ? $('plsName').value.trim() : sel
   if (!name) {
@@ -3123,7 +3309,8 @@ async function plsAssign() {
   const moving = _plsSongs.filter(s => _plsChecked.has(s.recordId) && s.playlist && s.playlist !== name)
   let msg = `Tag ${_plsChecked.size} song(s) as "${name}"?`
   if (moving.length) msg += `\n\n${moving.length} of them are already in another playlist and will be MOVED.`
-  if (!confirm(msg)) return
+  // The requester already asked (and showed the move warning) — don't ask twice
+  if (!opts.skipConfirm && !confirm(msg)) return
 
   const btn    = $('plsAssignBtn')
   const status = $('plsAssignStatus')
@@ -3153,6 +3340,8 @@ async function plsAssign() {
     // Keep the dropdown on the playlist just used (a new one now has an option)
     $('plsName').value = ''
     $('plsSelect').value = name
+    _plsAskTarget = name          // stays the active playlist for the next tick
+    _plsAskOnTick = true          // batch done — ask again on the next selection
     plsSelectChanged()
     if (_plsOpenName) plsOpenPlaylist(_plsOpenName)
   } catch (err) {
@@ -3167,8 +3356,10 @@ async function plsAssign() {
 
 function plsClearSearch() {
   plsStopAudition()
+  plsAskDismiss()
   _plsSongs = []
   _plsChecked.clear()
+  _plsAskOnTick = true
   $('plsQuery').value        = ''
   $('plsCount').textContent  = ''
   $('plsResults').innerHTML  = ''
