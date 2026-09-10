@@ -1652,9 +1652,11 @@ router.get('/metadata/album-fields', adminAuth, (req, res) => {
 // Search → albums. Groups searchMamRecords hits by catalogue number.
 router.get('/album/search', adminAuth, async (req, res) => {
   const { q } = req.query
+  // scope: 'artist' | 'title' | anything else = every searchable field
+  const scope = String(req.query.scope || 'any').trim().toLowerCase()
   if (!q || q.trim().length < 2) return res.json({ albums: [] })
   try {
-    const { tracks } = await searchMamRecords(q.trim(), { limit: 150 })
+    const { tracks } = await searchMamRecords(q.trim(), { limit: 150, scope })
     const byCat = new Map()
     for (const t of tracks) {
       const cat = (t.catalogue_no || '').trim()
@@ -1665,7 +1667,7 @@ router.get('/album/search', adminAuth, async (req, res) => {
       a.album_title  ||= t.album_title
       a.album_artist ||= t.album_artist || t.artist_name
     }
-    res.json({ albums: [...byCat.values()].sort((a, b) => (a.album_title || '').localeCompare(b.album_title || '')) })
+    res.json({ scope, albums: [...byCat.values()].sort((a, b) => (a.album_title || '').localeCompare(b.album_title || '')) })
   } catch (err) {
     res.status(502).json({ error: err.message })
   }

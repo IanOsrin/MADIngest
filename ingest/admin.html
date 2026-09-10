@@ -392,6 +392,13 @@
           <input id="abSearch" type="text" placeholder="Search albums…  (title, artist, catalogue, ISRC)"
             onkeydown="if(event.key==='Enter')abDoSearch()"
             style="flex:1;min-width:260px;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:8px 12px;color:var(--text);font-family:inherit;font-size:0.9rem;outline:none">
+          <select id="abScope" onchange="if($('abSearch').value.trim().length>=2)abDoSearch()"
+            title="Which fields to match on"
+            style="background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:8px 10px;color:var(--text);font-family:inherit;font-size:0.9rem;outline:none">
+            <option value="any">All fields</option>
+            <option value="artist">Artist only</option>
+            <option value="title">Title only</option>
+          </select>
           <button class="btn btn-ghost" onclick="abDoSearch()">Search</button>
           <button class="btn btn-ghost" onclick="abNewAlbumForm()">＋ New album</button>
           <span id="abStatus" style="font-size:0.8rem;color:var(--muted)"></span>
@@ -4864,13 +4871,15 @@ const AB_TRACK_COLS = [
 async function abDoSearch() {
   const q = $('abSearch').value.trim()
   if (q.length < 2) { showToast('Type at least 2 characters', 'error'); return }
-  $('abStatus').textContent = '⟳ Searching Gallo…'
+  const scope = $('abScope')?.value || 'any'
+  $('abStatus').textContent = '⟳ Searching MAM…'
   $('abPage').style.display = 'none'
   try {
-    const res  = await api(`/api/ingest/album/search?q=${encodeURIComponent(q)}`)
+    const res  = await api(`/api/ingest/album/search?q=${encodeURIComponent(q)}&scope=${encodeURIComponent(scope)}`)
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
     $('abStatus').textContent = `${data.albums.length} album(s)`
+      + (scope === 'title' ? ' by title' : scope === 'artist' ? ' by artist' : '')
     const box = $('abResults')
     box.style.display = 'grid'
     box.innerHTML = data.albums.map(a => `
