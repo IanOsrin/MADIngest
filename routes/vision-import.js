@@ -208,12 +208,27 @@ async function buildPlan({ folder, folders, catalogue, artist, album, target = '
   // only those files take part, and title matching runs on the track segment
   // AFTER the catalogue (the Artist_Album_CAT prefix would otherwise cause
   // cross-album title collisions).
-  const normCat = catalogue.toLowerCase().replace(/[^a-z0-9]+/g, '')
-  const titlePartAfterCat = (name) => {
+  const squashKey = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '')
+  const normCat = squashKey(catalogue)
+  const normAlb = squashKey(album)
+  // Pull the TITLE out of an underscore-structured filename by taking the
+  // segments after a known anchor — the catalogue OR the album. The GalloImports
+  // dumps name files Artist_Album_CAT_Track.wav; the CCA-MAD submissions name
+  // them Artist_Album_Title.wav (no catalogue in the WAV — only the sleeve .jpg
+  // carries it, e.g. GMJVEP 90215). In BOTH the Artist_Album_ prefix must be
+  // stripped, or the album name — which sits in every filename — collides with
+  // any track titled after the album. GMJVEP 90215 "Shona Man" grabbed the
+  // longest "…Shona Man…" file (the Todii (Live) master) and orphaned Todii
+  // (Ian, 2026-09-10). Anchoring on the album (present as a segment in every
+  // file) fixes it; the whole name is kept when neither anchor is a segment, so
+  // folder-per-album layouts with plain track filenames are untouched.
+  const afterAnchor = (name, key) => {
+    if (!key) return null
     const segs = name.replace(AUDIO_RE, '').split('_')
-    const i = segs.findIndex(s => s.toLowerCase().replace(/[^a-z0-9]+/g, '') === normCat)
-    return i >= 0 && i < segs.length - 1 ? segs.slice(i + 1).join('_') : name
+    const i = segs.findIndex(s => squashKey(s) === key)
+    return i >= 0 && i < segs.length - 1 ? segs.slice(i + 1).join('_') : null
   }
+  const titlePartAfterCat = (name) => afterAnchor(name, normCat) ?? afterAnchor(name, normAlb) ?? name
   const files = []
   const folderCounts = []
   for (const dirGiven of folderList) {
@@ -289,7 +304,11 @@ async function buildPlan({ folder, folders, catalogue, artist, album, target = '
       : []
     const use = catFiles.length ? catFiles : audio
     folderCounts.push({ folder: dir, audioFiles: use.length, totalAudio: audio.length, filteredByCatalogue: !!catFiles.length })
-    for (const f of use) files.push({ name: f.name, size: f.size, folder: dir, matchName: catFiles.length ? titlePartAfterCat(f.name) : f.name })
+    // Always resolve the title segment — titlePartAfterCat keeps the whole name
+    // when neither the catalogue nor the album is an underscore segment, so
+    // plain track filenames (folder-per-album) are unchanged, while
+    // Artist_Album_Title submissions get their prefix stripped.
+    for (const f of use) files.push({ name: f.name, size: f.size, folder: dir, matchName: titlePartAfterCat(f.name) })
   }
   if (!files.length) fail(404, `No audio files found in ${folderList.join(' + ')}`)
 
