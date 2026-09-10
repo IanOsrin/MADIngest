@@ -246,6 +246,19 @@
     .toast-error   { background: rgba(217,83,79,0.9);  color: #fff; }
     @keyframes slideIn { from { transform: translateX(40px); opacity: 0; } to { transform: none; opacity: 1; } }
 
+    /* Accordions. [hidden] needs !important because several panel bodies carry
+       an inline display, which would otherwise win over the UA rule. */
+    [hidden] { display: none !important; }
+    .acc-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .acc-btn {
+      background: none; border: none; padding: 0 2px; margin: 0; cursor: pointer;
+      color: var(--muted); font-family: inherit; font-size: 0.9rem; line-height: 1;
+      transition: color 0.15s;
+    }
+    .acc-btn:hover { color: var(--gold); }
+    .acc-title { cursor: pointer; user-select: none; }
+    .acc-title:hover { color: var(--gold); }
+
     /* Playlists tab: the open playlist rides in a sticky column on the right,
        so the search results, the tick boxes and the playlist you are filling
        are all on screen at once. The column only exists while one is open —
@@ -1172,16 +1185,22 @@
      <div id="plsLayout">
       <div id="plsMain">
       <div class="import-section" style="margin-bottom:24px">
-        <h3>Build a Public Playlist</h3>
-        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
-          Search the streamer catalogue by artist, tick songs, then tag them into a public playlist
+        <div class="acc-head">
+          <button class="acc-btn" data-acc="accBuild" aria-expanded="true" title="Collapse / expand"></button>
+          <h3 style="margin:0" class="acc-title" onclick="accToggle('accBuild')">Build a Public Playlist</h3>
+          <button class="acc-btn" data-acc="accHelp" aria-expanded="false" style="margin-left:auto;font-size:0.76rem"
+            title="Show / hide the explanation">? help</button>
+        </div>
+        <p id="accHelp" data-acc-default="closed" style="font-size:0.82rem;color:var(--muted);margin:10px 0 14px">
+          Search the streamer catalogue by artist or title, tick songs, then tag them into a public playlist
           (writes <code>PublicPlaylist</code> on MadStreamer's <code>API_Album_Songs</code>).
           A song can be in <strong>one</strong> public playlist at a time — tagging moves it.
           Covers are uploaded in the <strong>Playlist Art</strong> tab under the same name.
           The live site reads the Postgres mirror, so changes appear there after the next metadata sync.
         </p>
 
-        <div style="display:flex;gap:6px;margin-bottom:10px">
+        <div id="accBuild">
+        <div style="display:flex;gap:6px;margin-bottom:10px;margin-top:12px">
           <button class="btn btn-gold" id="plsModeArtist" onclick="plsSetMode('artist')" style="font-size:0.78rem">Search by Artist</button>
           <button class="btn btn-ghost" id="plsModeGenre"  onclick="plsSetMode('genre')"  style="font-size:0.78rem">Browse by Genre</button>
         </div>
@@ -1237,16 +1256,20 @@
           </div><!-- /plsAssignControls -->
           <span id="plsAssignStatus" style="font-size:0.82rem;color:var(--muted)"></span>
         </div>
+        </div><!-- /accBuild -->
       </div>
 
       <div class="import-section">
-        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:4px">
-          <h3 style="margin:0">Existing Public Playlists</h3>
+        <div class="acc-head" style="margin-bottom:4px">
+          <button class="acc-btn" data-acc="accList" aria-expanded="true" title="Collapse / expand"></button>
+          <h3 style="margin:0" class="acc-title" onclick="accToggle('accList')">Existing Public Playlists</h3>
           <button class="btn btn-gold" style="font-size:0.78rem;margin-left:auto" onclick="plsStartNew()">＋ New playlist</button>
           <button class="btn btn-ghost" style="font-size:0.78rem" onclick="plsLoadPlaylists(true)">↺ Refresh</button>
         </div>
-        <div id="plsListWrap" style="margin-top:12px">
-          <div class="loading-state"><span class="spin">⟳</span> Loading…</div>
+        <div id="accList">
+          <div id="plsListWrap" style="margin-top:12px">
+            <div class="loading-state"><span class="spin">⟳</span> Loading…</div>
+          </div>
         </div>
       </div>
       </div><!-- /plsMain -->
@@ -2854,7 +2877,57 @@ let _plsAskOnTick    = true
 let _plsAskTarget    = ''        // playlist chosen in the requester (the active one)
 let _plsAskNewName   = ''        // name typed for a playlist being created
 
-function playlistsInit() { if (!_plsNamesLoaded) plsLoadPlaylists(false) }
+function playlistsInit() {
+  accInit()
+  if (!_plsNamesLoaded) plsLoadPlaylists(false)
+}
+
+// ── Accordions ──────────────────────────────────────────────────────────────
+// A section is a [data-acc="id"] button plus an element with that id as its
+// body. State is per browser: how you leave the tab is how you find it, so the
+// parts you never use stay folded away instead of being re-collapsed each
+// visit. data-acc-default="closed" on the body starts it folded.
+const ACC_KEY = 'galloPlaylistAccordions'
+
+function accRead() {
+  try { return JSON.parse(localStorage.getItem(ACC_KEY) || '{}') } catch { return {} }
+}
+
+function accApply(id, open) {
+  const body = document.getElementById(id)
+  if (!body) return
+  body.hidden = !open
+  for (const btn of document.querySelectorAll(`[data-acc="${id}"]`)) {
+    // A button with its own label (e.g. "? help") keeps it; a bare one is the
+    // chevron. Capture the label ONCE — checking for undefined, not for falsy,
+    // or the second pass would adopt the chevron we just wrote as the label.
+    if (btn.dataset.accLabel === undefined) btn.dataset.accLabel = btn.textContent.trim()
+    btn.textContent = btn.dataset.accLabel || (open ? '▾' : '▸')
+    btn.setAttribute('aria-expanded', String(open))
+    btn.style.color = open ? '' : 'var(--gold)'
+  }
+}
+
+function accToggle(id) {
+  const body = document.getElementById(id)
+  if (!body) return
+  const open = body.hidden          // hidden now → this opens it
+  accApply(id, open)
+  const s = accRead()
+  s[id] = open
+  try { localStorage.setItem(ACC_KEY, JSON.stringify(s)) } catch { /* private mode */ }
+}
+
+function accInit() {
+  const s = accRead()
+  for (const btn of document.querySelectorAll('[data-acc]')) {
+    const id   = btn.dataset.acc
+    const body = document.getElementById(id)
+    if (!body) continue
+    if (!btn.onclick) btn.onclick = () => accToggle(id)
+    accApply(id, id in s ? !!s[id] : body.dataset.accDefault !== 'closed')
+  }
+}
 
 /**
  * Delete a playlist's art record from the Playlists tab.
@@ -3534,19 +3607,27 @@ async function plsOpenPlaylist(name) {
     // Default the bulk-add dropdown to the playlist being viewed
     const sel = $('plsSelect')
     if (!sel.value && [...sel.options].some(o => o.value === name)) { sel.value = name; plsSelectChanged() }
-    let html = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
-      <h4 style="margin:0;font-size:0.95rem">${esc(name)} <span style="color:var(--muted);font-weight:400">· ${songs.length} song(s)</span></h4>
+    let html = `<div class="acc-head" style="margin-bottom:8px">
+      <button class="acc-btn" data-acc="accOpen" aria-expanded="true" title="Collapse / expand"></button>
+      <h4 style="margin:0;font-size:0.95rem" class="acc-title" onclick="accToggle('accOpen')">${esc(name)} <span style="color:var(--muted);font-weight:400">· ${songs.length} song(s)</span></h4>
       <button class="btn btn-ghost" style="font-size:0.76rem;margin-left:auto" onclick="plsRename()">✎ Rename</button>
       <button class="btn btn-ghost" style="font-size:0.76rem;color:var(--red);border-color:rgba(217,83,79,0.3)" onclick="plsClearPlaylist()">🗑 Clear playlist</button>
       <button class="btn btn-ghost" style="font-size:0.76rem" onclick="plsClosePlaylist()">✕ Close</button>
     </div>
-    <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
-      <input id="plsAddQuery" type="text" placeholder="＋ Add songs — search artist or title…"
-        onkeydown="if(event.key==='Enter'){event.preventDefault();plsAddSearch()}"
-        style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:6px 11px;color:var(--text);font-family:inherit;font-size:0.84rem;outline:none">
-      <button class="btn btn-ghost" style="font-size:0.78rem" onclick="plsAddSearch()">Search</button>
+    <div id="accOpen">
+    <div class="acc-head" style="margin-bottom:8px">
+      <button class="acc-btn" data-acc="accAdd" aria-expanded="true" title="Collapse / expand"></button>
+      <span class="acc-title" style="font-size:0.82rem;color:var(--muted)" onclick="accToggle('accAdd')">Add songs</span>
     </div>
-    <div id="plsAddResults" style="margin-bottom:12px"></div>`
+    <div id="accAdd">
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+        <input id="plsAddQuery" type="text" placeholder="＋ Add songs — search artist or title…"
+          onkeydown="if(event.key==='Enter'){event.preventDefault();plsAddSearch()}"
+          style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:6px 11px;color:var(--text);font-family:inherit;font-size:0.84rem;outline:none">
+        <button class="btn btn-ghost" style="font-size:0.78rem" onclick="plsAddSearch()">Search</button>
+      </div>
+      <div id="plsAddResults" style="margin-bottom:12px"></div>
+    </div>`
     if (!songs.length) {
       html += '<div class="empty-state" style="color:var(--muted)">Empty — the last song was removed.</div>'
     } else {
@@ -3575,7 +3656,9 @@ async function plsOpenPlaylist(name) {
       })
       html += '</tbody></table></div>'
     }
+    html += '</div><!-- /accOpen -->'
     wrap.innerHTML = html
+    accInit()                       // the panel's accordions are freshly built
     // Sticky column = already on screen; only the stacked layout needs a scroll
     const stacked = getComputedStyle($('plsSideWrap')).position !== 'sticky'
     if (opening && stacked) wrap.scrollIntoView({ behavior: 'smooth', block: 'start' })
