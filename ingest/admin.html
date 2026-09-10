@@ -245,6 +245,29 @@
     .toast-warning { background: rgba(240,168,50,0.9); color: #0d0904; }
     .toast-error   { background: rgba(217,83,79,0.9);  color: #fff; }
     @keyframes slideIn { from { transform: translateX(40px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+    /* Playlists tab: the open playlist rides in a sticky column on the right,
+       so the search results, the tick boxes and the playlist you are filling
+       are all on screen at once. The column only exists while one is open —
+       otherwise the tab is full width as before. */
+    #plsLayout      { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; align-items: start; }
+    #plsLayout.pls-open { grid-template-columns: minmax(0, 1fr) 480px; }
+    #plsSideWrap    { display: none; }
+    #plsLayout.pls-open #plsSideWrap {
+      display: block; position: sticky; top: 14px;
+      max-height: calc(100vh - 28px); overflow-y: auto;
+    }
+    /* Album is the first thing to go at this width — title and artist identify
+       the track well enough, and the full table returns when it stacks. */
+    #plsSideWrap #plsTracksTable th:nth-child(6),
+    #plsSideWrap #plsTracksTable td:nth-child(6) { display: none; }
+
+    @media (max-width: 1180px) {
+      #plsLayout.pls-open { grid-template-columns: minmax(0, 1fr); }
+      #plsLayout.pls-open #plsSideWrap { position: static; max-height: none; overflow-y: visible; }
+      #plsSideWrap #plsTracksTable th:nth-child(6),
+      #plsSideWrap #plsTracksTable td:nth-child(6) { display: table-cell; }
+    }
   </style>
 </head>
 <body>
@@ -1146,6 +1169,8 @@
     </div>
 
     <div id="tab-playlists" class="tab-panel">
+     <div id="plsLayout">
+      <div id="plsMain">
       <div class="import-section" style="margin-bottom:24px">
         <h3>Build a Public Playlist</h3>
         <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
@@ -1193,6 +1218,13 @@
         <div id="plsResults"></div>
 
         <div id="plsAssignBar" style="display:none;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap">
+          <!-- The dropdown / name / Add button are how this worked BEFORE the
+               requester: they picked the same target the requester now picks
+               where you are actually looking, so on screen they were a second
+               set of controls for a job already done. They stay in the DOM as
+               the state the assign call reads — hidden, not deleted — and only
+               the result line shows. -->
+          <div id="plsAssignControls" style="display:none">
           <select id="plsSelect" onchange="plsSelectChanged()"
             style="min-width:220px;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
             <option value="">Add to playlist…</option>
@@ -1202,6 +1234,7 @@
             onkeydown="if(event.key==='Enter'){event.preventDefault();plsAssign()}"
             style="display:none;flex:1;min-width:180px;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
           <button class="btn btn-gold" id="plsAssignBtn" onclick="plsAssign()" disabled>Add 0 selected</button>
+          </div><!-- /plsAssignControls -->
           <span id="plsAssignStatus" style="font-size:0.82rem;color:var(--muted)"></span>
         </div>
       </div>
@@ -1212,14 +1245,19 @@
           <button class="btn btn-gold" style="font-size:0.78rem;margin-left:auto" onclick="plsStartNew()">＋ New playlist</button>
           <button class="btn btn-ghost" style="font-size:0.78rem" onclick="plsLoadPlaylists(true)">↺ Refresh</button>
         </div>
-        <!-- The open playlist sits ABOVE the list: it is the thing being worked
-             on, and having to scroll past every other playlist to reach it was
-             the whole irritation. -->
-        <div id="plsTracksWrap" style="display:none;margin-top:12px;padding:14px;border:1px solid var(--gold);border-radius:9px;background:var(--bg-lift)"></div>
         <div id="plsListWrap" style="margin-top:12px">
           <div class="loading-state"><span class="spin">⟳</span> Loading…</div>
         </div>
       </div>
+      </div><!-- /plsMain -->
+
+      <!-- The open playlist rides here: a sticky box on the right, alongside
+           the search results you are ticking into it. Below 1180px the grid
+           collapses and this drops underneath, full width. -->
+      <aside id="plsSideWrap">
+        <div id="plsTracksWrap" style="display:none;padding:14px;border:1px solid var(--gold);border-radius:9px;background:var(--bg-lift)"></div>
+      </aside>
+     </div><!-- /plsLayout -->
     </div>
 
     <!-- Playlist Artwork -->
@@ -3323,17 +3361,17 @@ function plsStartNew() {
     $('plsQuery').focus()
     return
   }
-  $('plsSelect').value = '__new__'
-  plsSelectChanged()
-  $('plsAssignBar').scrollIntoView({ behavior: 'smooth', block: 'center' })
+  // The requester is where a target gets chosen now, so open it on "new"
+  _plsAskTarget = '__new__'
+  plsAskOpen()
 }
 
 async function plsAssign(opts = {}) {
   const sel  = $('plsSelect').value
   const name = sel === '__new__' ? $('plsName').value.trim() : sel
   if (!name) {
-    showToast(sel === '__new__' ? 'Enter a name for the new playlist' : 'Pick a playlist from the dropdown', 'error')
-    ;(sel === '__new__' ? $('plsName') : $('plsSelect')).focus()
+    // No target — put the requester up rather than point at hidden controls
+    plsAskOpen()
     return
   }
   if (!_plsChecked.size) {
@@ -3350,7 +3388,10 @@ async function plsAssign(opts = {}) {
   const btn    = $('plsAssignBtn')
   const status = $('plsAssignStatus')
   btn.disabled = true; btn.textContent = '⟳ Tagging…'
-  status.textContent = ''; status.style.color = 'var(--muted)'
+  // The button is hidden now, so progress has to live on the status line
+  status.textContent = `⟳ Tagging ${_plsChecked.size} song(s) as “${name}”…`
+  status.style.color = 'var(--muted)'
+  $('plsAssignBar').style.display = 'flex'
   try {
     const res  = await api('/api/ingest/madstreamer/public-playlists/assign', 'POST',
       { recordIds: [..._plsChecked], playlistName: name })
@@ -3480,6 +3521,7 @@ async function plsOpenPlaylist(name) {
   const opening = _plsOpenName !== name
   _plsOpenName = name
   const wrap = $('plsTracksWrap')
+  $('plsLayout').classList.add('pls-open')     // opens the right-hand column
   wrap.style.display = 'block'
   wrap.innerHTML = '<div class="loading-state"><span class="spin">⟳</span> Loading…</div>'
   try {
@@ -3534,7 +3576,9 @@ async function plsOpenPlaylist(name) {
       html += '</tbody></table></div>'
     }
     wrap.innerHTML = html
-    if (opening) wrap.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    // Sticky column = already on screen; only the stacked layout needs a scroll
+    const stacked = getComputedStyle($('plsSideWrap')).position !== 'sticky'
+    if (opening && stacked) wrap.scrollIntoView({ behavior: 'smooth', block: 'start' })
   } catch (err) {
     wrap.innerHTML = `<div class="empty-state" style="color:var(--red)">Error: ${esc(err.message)}</div>`
   }
@@ -3547,6 +3591,7 @@ function plsClosePlaylist() {
   plsStopAudition()
   $('plsTracksWrap').style.display = 'none'
   $('plsTracksWrap').innerHTML = ''
+  $('plsLayout').classList.remove('pls-open')   // back to full width
 }
 
 async function plsAddSearch() {
