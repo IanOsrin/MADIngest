@@ -2922,6 +2922,14 @@ function accToggle(id) {
   try { localStorage.setItem(ACC_KEY, JSON.stringify(s)) } catch { /* private mode */ }
 }
 
+// Force a section open (and remember it). Used when something the user just did
+// has to be visible — auto-opening a playlist they have folded shut otherwise
+// shows them a collapsed header and looks like nothing happened.
+function accExpand(id) {
+  const body = document.getElementById(id)
+  if (body && body.hidden) accToggle(id)
+}
+
 function accInit() {
   const s = accRead()
   for (const btn of document.querySelectorAll('[data-acc]')) {
@@ -3496,7 +3504,12 @@ async function plsAssign(opts = {}) {
     _plsAskTarget = name          // stays the active playlist for the next tick
     _plsAskOnTick = true          // batch done — ask again on the next selection
     plsSelectChanged()
-    if (_plsOpenName) plsOpenPlaylist(_plsOpenName)
+    // Open the playlist just added to — you want to see the songs land, and on
+    // a new playlist this is the only thing that puts it on screen at all. If
+    // a DIFFERENT one was open it gets replaced: the one you just filled is
+    // the one you are working on.
+    await plsOpenPlaylist(name)
+    accExpand('accOpen')
   } catch (err) {
     status.textContent = `✗ ${err.message}`
     status.style.color = 'var(--red)'
