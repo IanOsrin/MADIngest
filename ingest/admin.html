@@ -4893,11 +4893,21 @@ async function abDoSearch() {
 async function abLoadCover(el, cat) {
   try {
     const res = await api(`/api/ingest/album/cover?catalogue=${encodeURIComponent(cat)}`)
-    if (!res.ok) return
+    // A missing cover is ordinary (404); anything else is a fault worth seeing.
+    // This used to swallow everything, which is how a broken cover route looked
+    // exactly like an album that simply has no artwork.
+    if (!res.ok) {
+      if (res.status !== 404) console.warn(`[Album] cover ${cat}: HTTP ${res.status}`,
+        await res.text().catch(() => ''))
+      return
+    }
     const blob = await res.blob()
-    if (!blob.type.startsWith('image')) return
+    if (!blob.type.startsWith('image')) {
+      console.warn(`[Album] cover ${cat}: expected an image, got ${blob.type || 'nothing'}`)
+      return
+    }
     el.innerHTML = `<img src="${URL.createObjectURL(blob)}" style="width:100%;height:100%;object-fit:cover">`
-  } catch { /* no cover — leave the ♪ */ }
+  } catch (err) { console.warn(`[Album] cover ${cat}:`, err.message) }
 }
 
 async function abOpenAlbum(catalogue) {

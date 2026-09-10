@@ -1686,8 +1686,11 @@ router.get('/album/detail', adminAuth, async (req, res) => {
       albumRecordId: found.album.recordId,
       albumId: af['AlbumID'] || null,
       tracks: found.tracks,
-      artwork: af['Artwork_S3_URL']
-        ? { recordId: found.album.recordId, hasImage: true, url: af['Artwork_S3_URL'] }
+      artwork: (af['Artwork_S3_URL'] || af['Artwork_Vision_URL'])
+        ? { recordId: found.album.recordId, hasImage: true,
+            url: af['Artwork_S3_URL'] || null,
+            visionPath: af['Artwork_Vision_URL'] || null,
+            source: af['Artwork_S3_URL'] ? 's3' : 'vision' }
         : null,
     })
   } catch (err) {
@@ -1695,15 +1698,41 @@ router.get('/album/detail', adminAuth, async (req, res) => {
   }
 })
 
-// Cover image. MAM stores the cover as a URL on the album (Artwork_S3_URL),
-// not as a container, so there is nothing to proxy - redirect to it.
+// Cover image.
+//
+// This PROXIES the bytes rather than redirecting: the tab fetches it with a
+// Bearer header and reads res.blob(), because <img> cannot carry the header.
+// A 302 to S3 drops the auth and needs CORS, so it silently yields no cover.
+//
+// Two places hold a MAM cover. Fill MAM writes Artwork_Vision_URL (the path on
+// the Vision drive); covers set from this tab land in S3 as Artwork_S3_URL.
+// S3 wins when both are set - it is the newer of the two - and Vision is the
+// fallback, which is what most albums actually have.
 router.get('/album/cover', adminAuth, async (req, res) => {
   const cat = (req.query.catalogue || '').trim()
   if (!cat) return res.status(400).json({ error: 'catalogue required' })
   try {
     const album = await findMamAlbumByCatalogue(cat)
-    const url = album?.fieldData?.['Artwork_S3_URL']
-    if (url) return res.redirect(String(url))
+    if (!album) return res.status(404).json({ error: `No album ${cat} in Music Arena Master` })
+    const af = album.fieldData || {}
+    const s3 = String(af['Artwork_S3_URL'] || '').trim()
+    if (s3) {
+      const r = await fetch(s3)
+      if (!r.ok) return res.status(502).json({ error: `artwork fetch failed: HTTP ${r.status}` })
+      res.setHeader('Content-Type', r.headers.get('content-type') || 'image/jpeg')
+      res.setHeader('Cache-Control', 'private, max-age=300')
+      return res.end(Buffer.from(await r.arrayBuffer()))
+    }
+    const vision = String(af['Artwork_Vision_URL'] || '').trim()
+    if (vision) {
+      const obj = await visionOpen(vision)
+      const buf = Buffer.from(await (obj.Body.transformToByteArray
+        ? obj.Body.transformToByteArray()
+        : new Response(obj.Body).arrayBuffer()))
+      res.setHeader('Content-Type', IMAGE_TYPES[(vision.match(IMAGE_EXT)?.[1] || 'jpg').toLowerCase()] || 'image/jpeg')
+      res.setHeader('Cache-Control', 'private, max-age=300')
+      return res.end(buf)
+    }
     res.status(404).json({ error: 'no artwork' })
   } catch (err) {
     res.status(502).json({ error: err.message })
