@@ -1199,7 +1199,7 @@
           The live site reads the Postgres mirror, so changes appear there after the next metadata sync.
         </p>
 
-        <div id="accBuild">
+        <div id="accBuild" data-acc-default="closed">
         <div style="display:flex;gap:6px;margin-bottom:10px;margin-top:12px">
           <button class="btn btn-gold" id="plsModeArtist" onclick="plsSetMode('artist')" style="font-size:0.78rem">Search by Artist</button>
           <button class="btn btn-ghost" id="plsModeGenre"  onclick="plsSetMode('genre')"  style="font-size:0.78rem">Browse by Genre</button>
@@ -1266,7 +1266,7 @@
           <button class="btn btn-gold" style="font-size:0.78rem;margin-left:auto" onclick="plsStartNew()">＋ New playlist</button>
           <button class="btn btn-ghost" style="font-size:0.78rem" onclick="plsLoadPlaylists(true)">↺ Refresh</button>
         </div>
-        <div id="accList">
+        <div id="accList" data-acc-default="closed">
           <div id="plsListWrap" style="margin-top:12px">
             <div class="loading-state"><span class="spin">⟳</span> Loading…</div>
           </div>
@@ -2887,7 +2887,11 @@ function playlistsInit() {
 // body. State is per browser: how you leave the tab is how you find it, so the
 // parts you never use stay folded away instead of being re-collapsed each
 // visit. data-acc-default="closed" on the body starts it folded.
-const ACC_KEY = 'galloPlaylistAccordions'
+// v2: the sections default CLOSED now, and state saved under the old key was
+// written when they defaulted open — keeping it would mask the new defaults on
+// exactly the browsers that had already used the tab. A new key starts everyone
+// from the clean, folded state once; choices made from here still stick.
+const ACC_KEY = 'galloPlaylistAccordions.v2'
 
 function accRead() {
   try { return JSON.parse(localStorage.getItem(ACC_KEY) || '{}') } catch { return {} }
@@ -3619,7 +3623,7 @@ async function plsOpenPlaylist(name) {
       <button class="acc-btn" data-acc="accAdd" aria-expanded="true" title="Collapse / expand"></button>
       <span class="acc-title" style="font-size:0.82rem;color:var(--muted)" onclick="accToggle('accAdd')">Add songs</span>
     </div>
-    <div id="accAdd">
+    <div id="accAdd" data-acc-default="closed">
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
         <input id="plsAddQuery" type="text" placeholder="＋ Add songs — search artist or title…"
           onkeydown="if(event.key==='Enter'){event.preventDefault();plsAddSearch()}"
