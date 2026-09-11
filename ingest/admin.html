@@ -4994,8 +4994,10 @@ function abRenderPage() {
       <button class="btn btn-ghost" onclick="abLinkAudio()">🔗 Link audio from Vision</button>
       <button class="btn btn-ghost" onclick="abMakeMp3s()">♫ Make streamer MP3s</button>
       <button class="btn btn-ghost" onclick="abPushCoverMad()">⇪ Push cover to MAD</button>
+      <button class="btn btn-ghost" onclick="abCachePlan()">⌕ Compare with metadata</button>
       <span id="abActionStatus" style="font-size:0.8rem;color:var(--muted);align-self:center"></span>
     </div>
+    <div id="abCachePanel" style="display:none;margin-top:10px"></div>
     <div id="abLinkPanel" style="display:none;margin-top:10px"></div>
     <div id="abAddTrack" style="display:none;margin-top:10px"></div>
     <audio id="abPlayer" style="display:none"></audio>`
@@ -5112,6 +5114,167 @@ async function abUploadAudio(ti, file) {
     showToast(`Audio linked: ${data.path.split('/').pop()}${data.detailsField ? ' (+Audio details)' : ''}`)
   } catch (err) {
     status.textContent = ''
+    showToast(err.message, 'error')
+  }
+}
+
+// ── Compare with the metadata cache ─────────────────────────────────────────
+// The cache (Ingrooves extract + the Alex ISRC register) was never one of MAM's
+// sources, so albums merged in as Sources=cat routinely lack ISRC, barcode and
+// publisher that the cache has. This panel shows, for the open album:
+//   · blanks the cache can fill          — safe, applied together
+//   · fields where the two DISAGREE      — one tick each, never automatic
+//   · songs the cache has and MAM lacks  — one Add each
+// Nothing is written until a button here is pressed.
+
+let _abPlan = null
+
+async function abCachePlan() {
+  const panel  = $('abCachePanel')
+  const status = $('abActionStatus')
+  panel.style.display = 'block'
+  panel.innerHTML = '<div class="loading-state"><span class="spin">⟳</span> Comparing with the metadata cache…</div>'
+  status.textContent = ''
+  try {
+    const res  = await api('/api/mam/cache-fill/preview', 'POST', { catalogue: _abAlbum.catalogue })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    _abPlan = data.plan
+    abCacheRender()
+  } catch (err) {
+    panel.innerHTML = `<div style="color:var(--red);font-size:0.84rem">✗ ${esc(err.message)}</div>`
+  }
+}
+
+function abCacheRender() {
+  const p = _abPlan
+  const panel = $('abCachePanel')
+  if (!p) { panel.style.display = 'none'; return }
+
+  const head = (t, n) => `<div style="font-weight:600;margin:12px 0 6px;font-size:0.86rem">${t}` +
+    (n ? ` <span style="color:var(--muted);font-weight:400">· ${n}</span>` : '') + `</div>`
+  const row  = (inner) => `<div style="padding:5px 0;border-bottom:1px solid var(--border);font-size:0.82rem">${inner}</div>`
+
+  let html = `<div style="border:1px solid var(--gold);border-radius:9px;padding:14px;background:var(--bg-lift)">
+    <div class="acc-head" style="margin-bottom:4px">
+      <strong>Metadata cache — ${esc(p.catalogue)}</strong>
+      <span style="color:var(--muted);font-size:0.78rem">${p.cacheRows} cache row(s) · ${p.songs} MAM track(s)</span>
+      <button class="btn btn-ghost" style="margin-left:auto;font-size:0.76rem" onclick="$('abCachePanel').style.display='none'">✕ Close</button>
+    </div>`
+
+  if (p.note) html += `<div style="color:var(--amber);font-size:0.82rem;margin:8px 0">${esc(p.note)}</div>`
+
+  // ── Blanks the cache can fill ──
+  const trackFills = (p.tracks || []).filter(t => t.fillCount)
+  if (p.album.fillCount || trackFills.length) {
+    html += head('Blanks the cache can fill', `${p.totalFills} field(s)`)
+    if (p.album.fillCount) {
+      html += row(`<strong>Album</strong> — ${Object.entries(p.album.fills)
+        .map(([k, v]) => `${esc(k)}: <span style="color:var(--gold)">${esc(v)}</span>`).join(' · ')}`)
+    }
+    for (const t of trackFills) {
+      html += row(`<strong>#${t.seq || '?'} ${esc(t.title)}</strong> — ${Object.entries(t.fills)
+        .map(([k, v]) => `${esc(k)}: <span style="color:var(--gold)">${esc(v)}</span>`).join(' · ')}`)
+    }
+    html += `<button class="btn btn-gold" style="margin-top:10px;font-size:0.8rem" onclick="abCacheApply(false)">Fill ${p.totalFills} blank(s)</button>`
+  } else if (!p.note) {
+    html += `<div style="color:var(--muted);font-size:0.82rem;margin-top:8px">No blanks the cache can fill.</div>`
+  }
+
+  // ── Disagreements — one tick each ──
+  const conflictRows = []
+  for (const [f, v] of Object.entries(p.album.conflicts || {})) conflictRows.push({ key: 'album', label: 'Album', field: f, ...v })
+  for (const t of (p.tracks || [])) {
+    for (const [f, v] of Object.entries(t.conflicts || {})) {
+      conflictRows.push({ key: t.recordId, label: `#${t.seq || '?'} ${t.title}`, field: f, ...v })
+    }
+  }
+  if (conflictRows.length) {
+    html += head('MAM and the cache disagree', `${conflictRows.length} field(s) — tick only what you want replaced`)
+    html += `<div style="color:var(--muted);font-size:0.78rem;margin-bottom:6px">
+      Nothing here changes unless you tick it. The cache is a good source, not an authority.</div>`
+    for (const c of conflictRows) {
+      html += row(`<label style="display:flex;gap:8px;align-items:baseline;cursor:pointer">
+        <input type="checkbox" class="ab-conflict" data-key="${esc(c.key)}" data-field="${esc(c.field)}">
+        <span style="flex:1"><strong>${esc(c.label)}</strong> · ${esc(c.field)}<br>
+          <span style="color:var(--muted)">MAM:</span> ${esc(c.mam)}
+          <span style="color:var(--muted)">→ cache:</span> <span style="color:var(--gold)">${esc(c.cache)}</span></span>
+      </label>`)
+    }
+    html += `<button class="btn btn-ghost" style="margin-top:10px;font-size:0.8rem" onclick="abCacheApply(true)">Replace ticked field(s)</button>`
+  }
+
+  // ── Songs the cache has and MAM does not ──
+  if ((p.missingSongs || []).length) {
+    html += head('In the cache, missing from MAM', `${p.missingSongs.length} song(s)`)
+    for (const m of p.missingSongs) {
+      html += row(`<div style="display:flex;gap:10px;align-items:center">
+        <span style="flex:1"><strong>${esc(m.title)}</strong>
+          <span style="color:var(--muted)">${m.artist ? '· ' + esc(m.artist) : ''}${m.isrc ? ' · ' + esc(m.isrc) : ''}</span></span>
+        <button class="btn btn-gold" style="font-size:0.76rem;padding:2px 10px"
+          onclick="abCacheAddSong(${JSON.stringify(m.title).replace(/"/g, '&quot;')}, this)">＋ Add to MAM</button>
+      </div>`)
+    }
+  }
+
+  // ── Near-miss titles ──
+  if ((p.suggestions || []).length) {
+    html += head('Near-miss titles', 'not applied — spelling drift, or a different song')
+    for (const g of p.suggestions) {
+      html += row(`<strong>#${g.seq || '?'} ${esc(g.title)}</strong>
+        <span style="color:var(--muted)">↔ cache "${esc(g.matched)}" (${Math.round(g.score * 100)}% match)</span>`)
+    }
+  }
+
+  html += `<div id="abCacheStatus" style="margin-top:10px;font-size:0.82rem;color:var(--muted)"></div></div>`
+  panel.innerHTML = html
+}
+
+// skipFills=true applies ONLY the ticked disagreements, so "Fill blanks" and
+// "Replace ticked" stay two separate, deliberate actions.
+async function abCacheApply(conflictsOnly) {
+  const stat = $('abCacheStatus')
+  const acceptConflicts = {}
+  for (const cb of document.querySelectorAll('#abCachePanel .ab-conflict')) {
+    if (!cb.checked) continue
+    ;(acceptConflicts[cb.dataset.key] ??= []).push(cb.dataset.field)
+  }
+  if (conflictsOnly && !Object.keys(acceptConflicts).length) {
+    stat.textContent = 'Tick at least one field to replace.'
+    return
+  }
+  stat.textContent = '⟳ Writing to Music Arena Master…'
+  try {
+    const res  = await api('/api/mam/cache-fill/apply', 'POST', {
+      catalogue: _abAlbum.catalogue, acceptConflicts, skipFills: !!conflictsOnly })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    showToast(`${data.fieldsWritten} filled, ${data.fieldsOverwritten} replaced across ${data.tracksUpdated} track(s)`)
+    if (data.failures?.length) {
+      console.warn('[cache-fill] failures', data.failures)
+      showToast(`${data.failures.length} write(s) failed — see console`, 'error')
+    }
+    await abOpenAlbum(_abAlbum.catalogue)   // the table must show what just changed
+    await abCachePlan()                      // and the panel must re-plan, not go stale
+  } catch (err) {
+    stat.innerHTML = `<span style="color:var(--red)">✗ ${esc(err.message)}</span>`
+  }
+}
+
+async function abCacheAddSong(title, btn) {
+  btn.disabled = true
+  btn.textContent = '⟳ Adding…'
+  try {
+    const res  = await api('/api/mam/cache-fill/add-song', 'POST',
+      { catalogue: _abAlbum.catalogue, title })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    showToast(`"${data.title}" added to ${data.catalogue}`)
+    await abOpenAlbum(_abAlbum.catalogue)
+    await abCachePlan()
+  } catch (err) {
+    btn.disabled = false
+    btn.textContent = '＋ Add to MAM'
     showToast(err.message, 'error')
   }
 }
