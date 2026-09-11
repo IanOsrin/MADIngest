@@ -4922,6 +4922,7 @@ async function abLoadCover(el, cat) {
 }
 
 async function abOpenAlbum(catalogue) {
+  if (_abAlbum?.catalogue !== catalogue) _abCacheCat = ''   // a variant choice belongs to one album
   $('abStatus').textContent = `⟳ Loading ${catalogue}…`
   try {
     const res  = await api(`/api/ingest/album/detail?catalogue=${encodeURIComponent(catalogue)}`)
@@ -5130,6 +5131,12 @@ async function abUploadAudio(ti, file) {
 // Nothing is written until a button here is pressed.
 
 let _abPlan = null
+let _abCacheCat = ''   // a variant catalogue the USER chose to read from
+
+function abCacheUseVariant(cat) {
+  _abCacheCat = cat
+  abCachePlan()
+}
 
 async function abCachePlan() {
   const panel  = $('abCachePanel')
@@ -5138,7 +5145,8 @@ async function abCachePlan() {
   panel.innerHTML = '<div class="loading-state"><span class="spin">⟳</span> Comparing with the metadata cache…</div>'
   status.textContent = ''
   try {
-    const res  = await api('/api/mam/cache-fill/preview', 'POST', { catalogue: _abAlbum.catalogue })
+    const res  = await api('/api/mam/cache-fill/preview', 'POST',
+      { catalogue: _abAlbum.catalogue, cacheCatalogue: _abCacheCat })
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
     _abPlan = data.plan
@@ -5165,6 +5173,35 @@ function abCacheRender() {
     </div>`
 
   if (p.note) html += `<div style="color:var(--amber);font-size:0.82rem;margin:8px 0">${esc(p.note)}</div>`
+
+  // Reading from a variant the user picked — say so, and offer the way back.
+  if (p.readCatalogue && p.readCatalogue !== p.catalogue) {
+    html += `<div style="font-size:0.82rem;margin:8px 0;padding:8px 10px;border:1px solid var(--gold);border-radius:6px">
+      Reading cache rows from <strong>${esc(p.readCatalogue)}</strong>, not ${esc(p.catalogue)}.
+      <button class="btn btn-ghost" style="font-size:0.74rem;padding:1px 8px;margin-left:8px"
+        onclick="abCacheUseVariant('')">Use ${esc(p.catalogue)} instead</button></div>`
+  }
+
+  // Candidate catalogues — shown, never adopted. The album title is the whole
+  // point: CDGMP 1004 → GMP 1004D is the same record, CDGMP 1823 → GMP 1823 is
+  // not, and only the title tells them apart.
+  if ((p.catalogueSuggestions || []).length) {
+    html += `<div style="font-weight:600;margin:12px 0 6px;font-size:0.86rem">Similar catalogue numbers in the cache</div>
+      <div style="color:var(--muted);font-size:0.78rem;margin-bottom:6px">
+        Check the album title matches before using one — a shared number does not make it the same record.</div>`
+    for (const v of p.catalogueSuggestions) {
+      const same = (v.albumTitle || '').trim().toLowerCase() === (p.album.title || '').trim().toLowerCase()
+      html += `<div style="padding:5px 0;border-bottom:1px solid var(--border);font-size:0.82rem;display:flex;gap:10px;align-items:center">
+        <span style="flex:1"><strong>${esc(v.catalogue)}</strong> — ${esc(v.albumTitle || '(no title)')}
+          ${v.artist ? `<span style="color:var(--muted)">· ${esc(v.artist)}</span>` : ''}
+          <span style="color:var(--muted)">· ${v.trackCount} track(s)</span>
+          ${same ? '<span style="color:var(--green)"> · title matches</span>'
+                 : '<span style="color:var(--amber)"> · DIFFERENT title</span>'}</span>
+        <button class="btn btn-ghost" style="font-size:0.76rem;padding:2px 10px"
+          onclick="abCacheUseVariant(${JSON.stringify(v.catalogue).replace(/"/g, '&quot;')})">Use this</button>
+      </div>`
+    }
+  }
 
   // ── Blanks the cache can fill ──
   const trackFills = (p.tracks || []).filter(t => t.fillCount)
@@ -5248,7 +5285,8 @@ async function abCacheApply(conflictsOnly) {
   stat.textContent = '⟳ Writing to Music Arena Master…'
   try {
     const res  = await api('/api/mam/cache-fill/apply', 'POST', {
-      catalogue: _abAlbum.catalogue, acceptConflicts, skipFills: !!conflictsOnly })
+      catalogue: _abAlbum.catalogue, acceptConflicts, skipFills: !!conflictsOnly,
+      cacheCatalogue: _abCacheCat })
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
     showToast(`${data.fieldsWritten} filled, ${data.fieldsOverwritten} replaced across ${data.tracksUpdated} track(s)`)
@@ -5268,7 +5306,7 @@ async function abCacheAddSong(title, btn) {
   btn.textContent = '⟳ Adding…'
   try {
     const res  = await api('/api/mam/cache-fill/add-song', 'POST',
-      { catalogue: _abAlbum.catalogue, title })
+      { catalogue: _abAlbum.catalogue, title, cacheCatalogue: _abCacheCat })
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
     showToast(`"${data.title}" added to ${data.catalogue}`)

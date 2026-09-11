@@ -15,7 +15,8 @@ const router = Router()
 
 router.post('/cache-fill/preview', adminAuth, express.json(), async (req, res) => {
   try {
-    res.json({ ok: true, plan: await planCacheFill(String(req.body?.catalogue || '')) })
+    res.json({ ok: true, plan: await planCacheFill(String(req.body?.catalogue || ''),
+      { cacheCatalogue: String(req.body?.cacheCatalogue || '') }) })
   } catch (e) { res.status(e.status || 500).json({ error: e.message }) }
 })
 
@@ -29,6 +30,7 @@ router.post('/cache-fill/apply', adminAuth, express.json(), async (req, res) => 
       acceptConflicts:   (req.body?.acceptConflicts && typeof req.body.acceptConflicts === 'object')
                            ? req.body.acceptConflicts : {},
       skipFills:         req.body?.skipFills === true,
+      cacheCatalogue:    String(req.body?.cacheCatalogue || ''),
     })
     console.log(`[mam-cache-fill] ${out.catalogue}: ${out.fieldsWritten} filled, ` +
                 `${out.fieldsOverwritten} overwritten across ` +
@@ -42,7 +44,8 @@ router.post('/cache-fill/apply', adminAuth, express.json(), async (req, res) => 
 // double click or a stale panel cannot duplicate a track.
 router.post('/cache-fill/add-song', adminAuth, express.json(), async (req, res) => {
   try {
-    const out = await addMissingSong(String(req.body?.catalogue || ''), String(req.body?.title || ''))
+    const out = await addMissingSong(String(req.body?.catalogue || ''), String(req.body?.title || ''),
+      { cacheCatalogue: String(req.body?.cacheCatalogue || '') })
     console.log(`[mam-cache-fill] ${out.catalogue}: created "${out.title}" (${out.recordId})`)
     res.json(out)
   } catch (e) { res.status(e.status || 500).json({ error: e.message }) }
