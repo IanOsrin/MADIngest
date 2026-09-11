@@ -2400,6 +2400,11 @@ async function healthDrill(code) {
     _healthRows = d.rows; _healthCode = code; _healthHasMore = !!d.hasMore
     if (!d.rows.length) { box.innerHTML = '<div class="empty-state" style="color:var(--muted)">Nothing to show.</div>'; return }
     const cols = d.columns
+    _healthFix = d.fixFields || []
+    // A row can only be corrected if it carries a record id. The album-level
+    // checks group by catalogue instead, and expand to their tracks.
+    const perRecord = cols.includes('fm_record_id')
+    const catCol    = cols.find(c => /^cat/i.test(c))
     box.innerHTML = `
       <div style="display:flex;gap:10px;align-items:baseline;margin-bottom:8px;flex-wrap:wrap">
         <h3 style="margin:0">${esc(d.label)}</h3>
@@ -2408,10 +2413,100 @@ async function healthDrill(code) {
         <button class="btn btn-gold" onclick="healthExport(this)">⬇ Excel</button>
         <button class="btn" onclick="$('healthDrill').innerHTML=''">Close</button>
       </div>
+      ${_healthFix.length ? `<div style="font-size:0.8rem;color:var(--muted);margin-bottom:8px;padding:7px 10px;border:1px solid var(--border);border-radius:6px">
+        ✎ ${_healthFix.map(esc).join(' and ')} ${_healthFix.length > 1 ? 'are' : 'is'} editable here — click a value, type, press Enter.
+        Saves to <strong>MadStreamer</strong>. These counts come from the nightly mirror, so they will not drop until the next sync.
+      </div>` : ''}
+      ${!perRecord && catCol ? `<div style="font-size:0.8rem;color:var(--muted);margin-bottom:8px">
+        This check flags a whole catalogue — click one to open its tracks and edit them.</div>` : ''}
       <div class="table-wrap" style="max-height:520px;overflow:auto"><table>
         <thead><tr>${cols.map(c => `<th>${esc(c.replace(/_/g, ' '))}</th>`).join('')}</tr></thead>
-        <tbody>${d.rows.map(r => `<tr>${cols.map(c =>
-          `<td style="font-size:0.8rem${/id|isrc|upc|cat|seq/i.test(c) ? ';font-family:monospace;font-size:0.75rem' : ''}">${esc(r[c] ?? '')}</td>`).join('')}</tr>`).join('')}</tbody>
+        <tbody>${d.rows.map((r, ri) => `<tr>${cols.map(c =>
+          healthCellHtml(r, c, ri, perRecord, catCol)).join('')}</tr>`).join('')}</tbody>
+      </table></div>
+      <div id="healthCatDrill" style="margin-top:12px"></div>`
+  } catch (err) {
+    box.innerHTML = `<div class="empty-state" style="color:var(--red)">${esc(err.message)}</div>`
+  }
+}
+
+let _healthFix = []     // fields this check allows editing
+
+/**
+ * One drill-in cell. Editable when the check declares the field fixable and the
+ * row carries a record id; a catalogue cell on an album-level check becomes the
+ * link that expands its tracks.
+ */
+function healthCellHtml(r, col, ri, perRecord, catCol) {
+  const mono = /id|isrc|upc|cat|seq/i.test(col) ? ';font-family:monospace;font-size:0.75rem' : ''
+  const val  = r[col] ?? ''
+
+  // Album-level check: the catalogue is the way in to the tracks.
+  if (!perRecord && col === catCol && val) {
+    return `<td style="font-size:0.8rem${mono}">
+      <button type="button" style="background:none;border:none;padding:0;color:var(--gold);cursor:pointer;font:inherit;text-decoration:underline"
+        onclick="healthOpenCatalogue(${JSON.stringify(String(val)).replace(/"/g, '&quot;')})">${esc(val)}</button></td>`
+  }
+
+  // The column aliases are lowercase ("isrc"); fixFields are FileMaker's names.
+  const field = _healthFix.find(f => f.toLowerCase().replace(/[^a-z]/g, '') === String(col).toLowerCase().replace(/[^a-z]/g, ''))
+  if (!perRecord || !field || !r.fm_record_id) {
+    return `<td style="font-size:0.8rem${mono}">${esc(val)}</td>`
+  }
+  return `<td style="font-size:0.8rem${mono};padding:0">
+    <input value="${esc(val)}" data-rec="${esc(r.fm_record_id)}" data-field="${esc(field)}" data-was="${esc(val)}"
+      onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}"
+      onblur="healthSaveCell(this)"
+      style="width:100%;box-sizing:border-box;background:transparent;border:1px solid transparent;border-radius:4px;padding:4px 6px;color:inherit;font:inherit"
+      onfocus="this.style.borderColor='var(--gold)';this.style.background='var(--bg)'"
+      placeholder="—"></td>`
+}
+
+/** Save one corrected field to MadStreamer. No-ops when nothing changed. */
+async function healthSaveCell(input) {
+  input.style.borderColor = 'transparent'
+  input.style.background  = 'transparent'
+  const value = input.value.trim()
+  if (value === (input.dataset.was ?? '')) return          // untouched
+  input.disabled = true
+  try {
+    const res = await api('/api/ingest/health/record', 'PATCH', {
+      check: _healthCode, recordId: input.dataset.rec, field: input.dataset.field, value })
+    const d = await res.json()
+    if (!d.ok) throw new Error(d.reason || `HTTP ${res.status}`)
+    input.dataset.was = value
+    input.style.borderColor = 'var(--green)'
+    setTimeout(() => { input.style.borderColor = 'transparent' }, 1200)
+    showToast(`${d.field} saved — ${d.note}`)
+  } catch (err) {
+    input.value = input.dataset.was ?? ''                  // put the old value back
+    input.style.borderColor = 'var(--red)'
+    showToast(err.message, 'error')
+  } finally {
+    input.disabled = false
+  }
+}
+
+/** Expand one flagged catalogue into its tracks, editable the same way. */
+async function healthOpenCatalogue(cat) {
+  const box = $('healthCatDrill')
+  box.innerHTML = '<div class="loading-state"><span class="spin">⟳</span> Loading tracks…</div>'
+  try {
+    const res = await api(`/api/ingest/health/catalogue?cat=${encodeURIComponent(cat)}`)
+    const d   = await res.json()
+    if (!d.ok) throw new Error(d.reason || 'lookup failed')
+    if (!d.rows.length) { box.innerHTML = '<div class="empty-state" style="color:var(--muted)">No tracks found.</div>'; return }
+    const cols = d.columns
+    box.innerHTML = `
+      <div style="display:flex;gap:10px;align-items:baseline;margin-bottom:6px">
+        <strong style="font-size:0.9rem">${esc(d.catalogue)} — ${d.rows.length} track(s)</strong>
+        <span style="flex:1"></span>
+        <button class="btn btn-ghost" style="font-size:0.76rem" onclick="$('healthCatDrill').innerHTML=''">Close</button>
+      </div>
+      <div class="table-wrap" style="max-height:420px;overflow:auto"><table>
+        <thead><tr>${cols.map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead>
+        <tbody>${d.rows.map((r, ri) => `<tr>${cols.map(c =>
+          healthCellHtml(r, c, ri, true, null)).join('')}</tr>`).join('')}</tbody>
       </table></div>`
   } catch (err) {
     box.innerHTML = `<div class="empty-state" style="color:var(--red)">${esc(err.message)}</div>`
