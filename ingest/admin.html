@@ -5283,11 +5283,47 @@ function abCacheRender() {
 
   // ── Near-miss titles ──
   if ((p.suggestions || []).length) {
-    html += head('Near-miss titles', 'not applied — spelling drift, or a different song')
-    for (const g of p.suggestions) {
-      html += row(`<strong>#${g.seq || '?'} ${esc(g.title)}</strong>
-        <span style="color:var(--muted)">↔ cache "${esc(g.matched)}" (${Math.round(g.score * 100)}% match)</span>`)
+    // Titles the matcher could not pair exactly. Tick one and its cache row is
+    // treated as the match — the blanks it would fill are listed so the choice
+    // is made on what actually changes, not on the percentage alone.
+    // Nothing is pre-ticked. Every other box in this panel starts off, and a
+    // mixed default is how someone clicks Apply and writes more than they
+    // meant. "Tick all 80%+" is there for the common case instead.
+    const strong = p.suggestions.filter(g => g.score >= 0.80).length
+    html += head('Near-miss titles',
+      `${p.suggestions.length} — tick to treat one as the match` +
+      (strong ? ` · ${strong} at 80%+` : ''))
+    if (strong) {
+      html += `<button class="btn btn-ghost" style="font-size:0.76rem;margin-bottom:6px"
+        onclick="abCacheTickStrong()">Tick all ${strong} at 80%+</button>`
     }
+    for (const g of p.suggestions) {
+      const pct  = Math.round(g.score * 100)
+      const good = g.score >= 0.80
+      const what = g.fillCount
+        ? Object.entries(g.fills).map(([k, v]) => `${esc(k)}: <span style="color:var(--gold)">${esc(v)}</span>`).join(' · ')
+        : '<span style="color:var(--muted)">nothing to fill — already complete</span>'
+      html += row(`<label style="display:flex;gap:8px;align-items:baseline;cursor:pointer">
+        <input type="checkbox" class="ab-suggest" data-rec="${esc(g.recordId)}" data-score="${pct}">
+        <span style="flex:1">
+          <strong>#${g.seq || '?'} ${esc(g.title)}</strong>
+          <span style="color:var(--muted)">↔ cache "${esc(g.matched)}"</span>
+          <span style="color:${good ? 'var(--green)' : 'var(--amber)'}">${pct}% match</span><br>
+          <span style="font-size:0.78rem">${what}</span>
+        </span></label>`)
+    }
+    html += `<button class="btn btn-gold" style="margin-top:10px;font-size:0.8rem" onclick="abCacheApply(false)">Apply fills including ticked matches</button>`
+  }
+
+  // One action for the whole panel: the blanks, plus whatever is ticked. The
+  // per-section buttons stay for doing one kind of change on its own.
+  const anything = p.totalFills || (p.suggestions || []).length || (p.totalConflicts || 0)
+  if (anything) {
+    html += `<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <button class="btn btn-gold" style="font-size:0.82rem" onclick="abCacheApplyAll()">⇪ Apply everything ticked</button>
+      <span style="font-size:0.78rem;color:var(--muted)">
+        ${p.totalFills} blank(s) + whatever you have ticked above. Blanks are always safe; ticked items overwrite or re-match.</span>
+    </div>`
   }
 
   html += `<div id="abCacheStatus" style="margin-top:10px;font-size:0.82rem;color:var(--muted)"></div></div>`
@@ -5296,6 +5332,35 @@ function abCacheRender() {
 
 // skipFills=true applies ONLY the ticked disagreements, so "Fill blanks" and
 // "Replace ticked" stay two separate, deliberate actions.
+// Apply the whole panel in one pass: blanks, approved near-miss matches and
+// approved overwrites together. abCacheApply already sends all three — this
+// just names the count first, because a single button that does everything
+// should say what "everything" currently amounts to.
+async function abCacheApplyAll() {
+  const ticked = [...document.querySelectorAll('#abCachePanel .ab-suggest')].filter(cb => cb.checked).length
+  const over   = [...document.querySelectorAll('#abCachePanel .ab-conflict')].filter(cb => cb.checked).length
+  const fills  = _abPlan?.totalFills || 0
+  if (!fills && !ticked && !over) {
+    $('abCacheStatus').textContent = 'Nothing to apply — tick a near-miss or a disagreement first.'
+    return
+  }
+  const parts = [
+    fills  ? `fill ${fills} blank(s)` : null,
+    ticked ? `accept ${ticked} near-miss match(es)` : null,
+    over   ? `REPLACE ${over} existing value(s)` : null,
+  ].filter(Boolean)
+  if (!confirm(`Apply to ${_abPlan.catalogue}?\n\n  · ${parts.join('\n  · ')}\n\nWrites to Music Arena Master.`)) return
+  await abCacheApply(false)
+}
+
+// One click for the common case: spelling drift scores high, so 80%+ is
+// usually every match worth taking. Still a deliberate act, not a default.
+function abCacheTickStrong() {
+  for (const cb of document.querySelectorAll('#abCachePanel .ab-suggest')) {
+    if (Number(cb.dataset.score) >= 80) cb.checked = true
+  }
+}
+
 async function abCacheApply(conflictsOnly) {
   const stat = $('abCacheStatus')
   const acceptConflicts = {}
@@ -5303,6 +5368,10 @@ async function abCacheApply(conflictsOnly) {
     if (!cb.checked) continue
     ;(acceptConflicts[cb.dataset.key] ??= []).push(cb.dataset.field)
   }
+  // Near-miss title matches the user has approved. Without these the server
+  // fills only exact-title tracks, which is what the panel did before.
+  const accept = [...document.querySelectorAll('#abCachePanel .ab-suggest')]
+    .filter(cb => cb.checked).map(cb => cb.dataset.rec)
   if (conflictsOnly && !Object.keys(acceptConflicts).length) {
     stat.textContent = 'Tick at least one field to replace.'
     return
@@ -5310,7 +5379,7 @@ async function abCacheApply(conflictsOnly) {
   stat.textContent = '⟳ Writing to Music Arena Master…'
   try {
     const res  = await api('/api/mam/cache-fill/apply', 'POST', {
-      catalogue: _abAlbum.catalogue, acceptConflicts, skipFills: !!conflictsOnly,
+      catalogue: _abAlbum.catalogue, acceptConflicts, accept, skipFills: !!conflictsOnly,
       cacheCatalogue: _abCacheCat })
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
