@@ -4998,6 +4998,7 @@ function abRenderPage() {
       <button class="btn btn-ghost" onclick="abMakeMp3s()">♫ Make streamer MP3s</button>
       <button class="btn btn-ghost" onclick="abPushCoverMad()">⇪ Push cover to MAD</button>
       <button class="btn btn-ghost" onclick="abCachePlan()">⌕ Compare with metadata</button>
+      <button class="btn btn-ghost" onclick="abRefresh()" title="Re-read this album from Music Arena Master">↻ Refresh</button>
       <span id="abActionStatus" style="font-size:0.8rem;color:var(--muted);align-self:center"></span>
     </div>
     <div id="abCachePanel" style="display:none;margin-top:10px"></div>
@@ -5136,6 +5137,26 @@ let _abCacheCat = ''   // a variant catalogue the USER chose to read from
 function abCacheUseVariant(cat) {
   _abCacheCat = cat
   abCachePlan()
+}
+
+// Re-read the open album from MAM. Nothing is cached on the server — every
+// /album/detail call opens a fresh FileMaker session — so a stale panel is
+// only ever this page still showing what it fetched when the album was opened.
+// Edits made directly in FileMaker need this; edits made here already re-open.
+async function abRefresh() {
+  if (!_abAlbum?.catalogue) return
+  const status = $('abActionStatus')
+  status.textContent = '⟳ Re-reading from MAM…'
+  try {
+    await abOpenAlbum(_abAlbum.catalogue)
+    // Keep the metadata panel honest too, rather than leaving a plan built
+    // against tracks that may no longer exist.
+    if ($('abCachePanel').style.display === 'block') await abCachePlan()
+    status.textContent = ''
+  } catch (err) {
+    status.textContent = ''
+    showToast(err.message, 'error')
+  }
 }
 
 async function abCachePlan() {
