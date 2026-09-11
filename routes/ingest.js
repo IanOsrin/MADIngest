@@ -2148,6 +2148,56 @@ router.post('/album/cover', adminAuth, uploadCoverImage.single('image'), async (
   }
 })
 
+// Stream one MAM track's audio, for the album tab's ▶ button.
+//
+// Same reason the MP3 route exists separately: /api/gallo/audio/:recordId
+// resolves by GALLO's internal recordId, and since the album tab moved to MAM
+// those ids belong to MAM's Songs table. A MAM id sent there finds nothing —
+// or, worse, an unrelated Gallo record, and plays the wrong song.
+//
+// Range-aware, because a browser seeking in a long WAV sends one and a 200
+// with the whole body breaks the scrubber.
+router.get('/album/track/:recordId/audio', async (req, res) => {
+  // Query-token auth, like /madstreamer/audition: an <audio> element cannot
+  // send an Authorization header, so adminAuth would 401 every playback.
+  const token = (req.query.token || req.headers.authorization?.replace('Bearer ', '') || '').trim()
+  if (!token || token !== process.env.INGEST_ADMIN_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+  try {
+    const f = await getMamFieldData('Songs', req.params.recordId)
+    if (!f) return res.status(404).json({ error: 'No such MAM Songs record' })
+
+    const vision = String(f['Audio_Vision_URL'] || '').trim()
+    const s3     = String(f['Audio_S3_URL'] || '').trim()
+    if (!vision && !s3) {
+      return res.status(404).json({ error: 'No audio on this track — link it from Vision first' })
+    }
+
+    // An S3/legacy URL is served by a host with its own valid cert; hand the
+    // client straight there rather than proxying the bytes.
+    if (!vision) return res.redirect(302, s3)
+
+    const range = req.headers.range
+    const obj = await visionOpen(vision, range)
+    const filename = decodeURIComponent(vision.split('?')[0].split('/').pop() || 'audio')
+    const ext = (filename.match(/\.([a-z0-9]+)$/i)?.[1] || '').toLowerCase()
+    res.setHeader('Content-Type', { wav:'audio/wav', mp3:'audio/mpeg', flac:'audio/flac',
+                                    m4a:'audio/mp4', aac:'audio/aac', aif:'audio/aiff',
+                                    aiff:'audio/aiff' }[ext] || 'application/octet-stream')
+    res.setHeader('Accept-Ranges', 'bytes')
+    if (obj.ContentLength != null) res.setHeader('Content-Length', String(obj.ContentLength))
+    if (range && obj.ContentRange) { res.status(206); res.setHeader('Content-Range', obj.ContentRange) }
+
+    const { Readable } = await import('node:stream')
+    Readable.fromWeb(obj.Body.transformToWebStream ? obj.Body.transformToWebStream() : obj.Body).pipe(res)
+  } catch (err) {
+    console.error(`[MAM audio] ${req.params.recordId}:`, err.message)
+    if (!res.headersSent) res.status(502).json({ error: err.message })
+    else res.destroy()
+  }
+})
+
 // Convert one MAM track's master to the streamer MP3.
 //
 // The Gallo route this replaced (/api/gallo/audio/:recordId/convert-mp3) looks

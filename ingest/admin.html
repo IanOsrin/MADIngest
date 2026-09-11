@@ -5089,7 +5089,11 @@ async function abVfLink(ti, path) {
 function abPlay(ti, btn) {
   const t = _abAlbum.tracks[ti]
   const player = $('abPlayer')
-  const src = `/api/gallo/audio/${t.fm_record_id}`
+  // MAM route, not /api/gallo/audio/… — FileMaker record ids are per-table, so
+  // a MAM Songs id sent to the Gallo resolver finds nothing, or an unrelated
+  // Gallo track and plays the wrong song. Token on the query string because an
+  // <audio> element cannot send an Authorization header.
+  const src = `/api/ingest/album/track/${encodeURIComponent(t.fm_record_id)}/audio?token=${encodeURIComponent(adminToken)}`
   if (!player.paused && player.dataset.rec === String(t.fm_record_id)) { player.pause(); btn.textContent = '▶'; return }
   document.querySelectorAll('#abTrackBody button').forEach(b => { if (b.textContent === '⏸') b.textContent = '▶' })
   player.src = src
