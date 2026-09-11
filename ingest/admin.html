@@ -656,6 +656,8 @@
           <input id="xvGlobal" type="text" placeholder="Search all columns…" oninput="xvGlobalChanged(this.value)"
             style="flex:1;min-width:200px;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:6px 11px;color:var(--text);font-family:inherit;font-size:0.84rem;outline:none">
           <button class="btn btn-ghost" style="font-size:0.78rem" onclick="xvClearFilters()">✕ Clear filters</button>
+          <button class="btn btn-ghost" id="xvDeleteFoundBtn" style="font-size:0.78rem;color:var(--red);border-color:rgba(217,83,79,0.35)"
+            onclick="xvDeleteFoundSet()">🗑 Delete found set</button>
           <span id="xvCount" style="font-size:0.78rem;color:var(--muted)"></span>
         </div>
 
@@ -6754,6 +6756,84 @@ async function xvReplaceChosen(file) {
   } finally {
     btn.firstChild.textContent = origLabel
     btn.style.pointerEvents = ''
+  }
+}
+
+// ── Delete the found set ────────────────────────────────────────────────────
+// Removes every row the current search/filters have narrowed to — not just the
+// 500 on screen. The cache persists straight to S3, so a backup spreadsheet is
+// written FIRST and the delete is abandoned if that fails: re-importing it is
+// the only way back.
+
+/** Build the backup and hand it to the browser. Throws if it cannot. */
+async function xvBackupRows(rows, filename) {
+  const wb = new ExcelJS.Workbook()
+  const ws = wb.addWorksheet('Deleted')
+  const keys = Object.keys(_xvCols)
+  ws.addRow(keys.map(k => _xvCols[k]))
+  for (const r of rows) ws.addRow(keys.map(k => r[k] ?? null))
+  const buf = await wb.xlsx.writeBuffer()
+  const url = URL.createObjectURL(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }))
+  const a = document.createElement('a')
+  a.href = url; a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+async function xvDeleteFoundSet() {
+  const btn = $('xvDeleteFoundBtn')
+  const found = xvFilteredRows()          // the WHOLE found set, not the visible page
+  const total = _xvSheet?.rows?.length || 0
+
+  if (!found.length) { showToast('Nothing found to delete — search or filter first', 'error'); return }
+  if (!_xvCols)      { showToast('Cache columns unknown — reload the viewer', 'error'); return }
+
+  // Deleting everything is almost always a mis-set filter rather than an
+  // intention; the Replace button is the real route to emptying the cache.
+  if (found.length === total) {
+    showToast(`That is the ENTIRE cache (${total.toLocaleString()} rows) — narrow the search first`, 'error')
+    return
+  }
+
+  const sample = found.slice(0, 5).map(r => '  · ' + r.c.slice(0, 4).filter(Boolean).join(' — ')).join('\n')
+  const ok = confirm(
+    `Delete ${found.length.toLocaleString()} of ${total.toLocaleString()} cache rows?\n\n` +
+    `${sample}${found.length > 5 ? `\n  …and ${(found.length - 5).toLocaleString()} more` : ''}\n\n` +
+    `A backup spreadsheet downloads first. Re-importing it is the only undo.`)
+  if (!ok) return
+
+  btn.disabled = true
+  const label = btn.textContent
+  try {
+    // Backup BEFORE the delete. If this throws, nothing has been removed.
+    btn.textContent = '⟳ Saving backup…'
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
+    await xvBackupRows(found.map(r => _xvRaw[r.i]), `Cache_deleted_${stamp}.xlsx`)
+
+    btn.textContent = `⟳ Deleting ${found.length}…`
+    // expect pins each row to what the viewer showed, so a cache edited by
+    // someone else in the meantime is refused rather than mis-deleted.
+    const expect = {}
+    for (const r of found) {
+      const raw = _xvRaw[r.i] || {}
+      expect[String(r.i)] = {
+        isrc:       raw.isrc       ?? '',
+        catalogue:  raw.catalogue  ?? '',
+        track_name: raw.track_name ?? '',
+      }
+    }
+    const res  = await api('/api/ingest/metadata/rows-delete', 'POST', {
+      indices: found.map(r => r.i), expect, expectCount: found.length })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+
+    showToast(`${data.deleted.toLocaleString()} row(s) deleted — ${data.count.toLocaleString()} remain. Backup saved.`)
+    await xvLoadCache()      // every index after a deleted row has shifted — reload, never patch
+  } catch (err) {
+    showToast(err.message, 'error')
+  } finally {
+    btn.disabled = false
+    btn.textContent = label
   }
 }
 

@@ -57,7 +57,7 @@ import { languageNameToCode } from '../lib/language-codes.js'
 import { generateDDEX382 } from '../lib/ddex-generate.js'
 import { buildDdexPackage, planDdex, validateDdexMeta, validateDdexAudio, renderDdexPackageXml } from '../lib/ddex-build.js'
 import AdmZip from 'adm-zip'
-import { loadMetadata, lookupByIsrc, lookupByCatalogue, lookupAlbumTracks, lookupByFilename, lookupByBarcodeAndSeq, lookupCataloguesByBarcode, searchMetadata, getStatus, getAllRows, appendRow as appendMetadataRow, mergeFromBuffer as mergeMetadataFromBuffer, extractHeaders as extractMetadataHeaders, mergeWithMapping as mergeMetadataWithMapping, updateRow as updateMetadataRow, updateRowsBulk as updateMetadataRowsBulk, deleteRow as deleteMetadataRow, replaceFromBuffer as replaceMetadataFromBuffer, CACHE_COLUMNS, ALBUM_FIELD_KEYS } from '../lib/metadata-cache.js'
+import { loadMetadata, lookupByIsrc, lookupByCatalogue, lookupAlbumTracks, lookupByFilename, lookupByBarcodeAndSeq, lookupCataloguesByBarcode, searchMetadata, getStatus, getAllRows, appendRow as appendMetadataRow, mergeFromBuffer as mergeMetadataFromBuffer, extractHeaders as extractMetadataHeaders, mergeWithMapping as mergeMetadataWithMapping, updateRow as updateMetadataRow, updateRowsBulk as updateMetadataRowsBulk, deleteRow as deleteMetadataRow, deleteRows as deleteMetadataRows, replaceFromBuffer as replaceMetadataFromBuffer, CACHE_COLUMNS, ALBUM_FIELD_KEYS } from '../lib/metadata-cache.js'
 import { previewDbSync, applyDbSync, buildFieldData as buildDbSyncFieldData,
          MAM_SONG_KEYS, MAM_ALBUM_KEYS } from '../lib/cache-db-sync.js'
 import { parseIngroovesBuffers, diffAgainstCache } from '../lib/ingrooves-sync.js'
@@ -2314,6 +2314,35 @@ router.post('/metadata/db-sync/apply', adminAuth, express.json({ limit: '5mb' })
   } catch (err) {
     console.error('[db-sync apply]', err)
     res.status(502).json({ error: err.message })
+  }
+})
+
+// Delete a FOUND SET — the rows a Cache Viewer search has narrowed to.
+//
+// Two deliberate frictions, because this removes many rows from a 70k-row
+// store that persists straight to S3:
+//   · the caller must send the count it showed the user (expectCount). If the
+//     cache has changed underneath, the numbers disagree and nothing is
+//     deleted — better than removing a set nobody actually reviewed.
+//   · the deleted rows come back in the response so the viewer can offer them
+//     as a spreadsheet. Re-importing that file is the only undo there is.
+router.post('/metadata/rows-delete', adminAuth, express.json({ limit: '5mb' }), async (req, res) => {
+  const indices = Array.isArray(req.body?.indices) ? req.body.indices : []
+  const expect  = (req.body?.expect && typeof req.body.expect === 'object') ? req.body.expect : {}
+  const expectCount = Number(req.body?.expectCount)
+
+  if (!indices.length) return res.status(400).json({ error: 'indices required' })
+  if (!Number.isInteger(expectCount) || expectCount !== indices.length) {
+    return res.status(400).json({
+      error: `expectCount (${req.body?.expectCount}) does not match the ${indices.length} row(s) sent — reload the Cache Viewer and search again`,
+    })
+  }
+  try {
+    const result = await deleteMetadataRows(indices, expect)
+    console.log(`[Metadata] Found-set delete: ${result.deleted} row(s) removed (${result.count} remain)`)
+    res.json(result)
+  } catch (err) {
+    res.status(409).json({ error: err.message })
   }
 })
 
