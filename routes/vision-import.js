@@ -84,7 +84,16 @@ function trackNumFromName(name) {
 
 function matchTracksToFiles(rows, files) {
   const fileKey  = (f) => `${f.folder}/${f.name}`
-  const fileNorm = (f) => normTitle(f.matchName || f.name) // matchName = title segment in flat folders
+  // Drop a leading track number ("01 Beautiful Me" -> "Beautiful Me") for TITLE
+  // comparison only. Without it, a plain-numbered file never matches exactly, so
+  // a short title that is a substring of a longer track's name grabs the longer
+  // file under the longest-first containment tiebreak: BCCDJV 005 "Beautiful Me"
+  // stole "05 There's a Beautiful Me in Everyon.wav" and orphaned track 5 (Ian,
+  // 2026-09-11). Only 1–2 digits followed by a separator AND a title are peeled,
+  // so "1999" or "7" alone are left intact. The raw name still feeds the
+  // track-number pass below, so numbered-only files keep matching by position.
+  const stripLeadNum = (s) => String(s).replace(/^\s*\d{1,2}[\s._-]+(?=\S)/, '')
+  const fileNorm = (f) => normTitle(stripLeadNum(f.matchName || f.name)) // matchName = title segment in flat folders
   // Space-insensitive form for containment. A WAV named "I-SURPRISE" normalises
   // to "i surprise" while the title "iSurprise" normalises to "isurprise" — the
   // lone space defeats a literal substring test, so a track that only differs in
