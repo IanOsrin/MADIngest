@@ -10,6 +10,7 @@ import { Router } from 'express'
 import express from 'express'
 import { adminAuth } from '../lib/admin-auth.js'
 import { planCacheFill, applyCacheFill, addMissingSong } from '../lib/mam-cache-fill.js'
+import { syncMamEdit, planAlbumSync, applyAlbumSync } from '../lib/mam-streamer-sync.js'
 
 const router = Router()
 
@@ -35,8 +36,38 @@ router.post('/cache-fill/apply', adminAuth, express.json(), async (req, res) => 
     console.log(`[mam-cache-fill] ${out.catalogue}: ${out.fieldsWritten} filled, ` +
                 `${out.fieldsOverwritten} overwritten across ` +
                 `${out.tracksUpdated} track(s)${out.albumUpdated ? ' + album' : ''}`)
-    res.json({ ok: true, ...out })
+    // Push what was just filled on to MADStreamer. Album fields reach every
+    // track; otherwise only the songs that changed.
+    const songIds = Object.keys(out.written.songs)
+    const mamFields = [...new Set([...out.written.album, ...Object.values(out.written.songs).flat()])]
+    const streamer = mamFields.length
+      ? await syncMamEdit({ catalogue: out.plan?.album?.catalogue || out.catalogue, mamFields,
+                            songRecordIds: out.written.album.length ? null : songIds })
+      : { ok: true, skipped: 'nothing was written to MAM' }
+    res.json({ ok: true, ...out, streamer })
   } catch (e) { res.status(e.status || 500).json({ error: e.message }) }
+})
+
+// Compare a whole MAM album with MADStreamer. Writes nothing.
+router.post('/streamer-sync/preview', adminAuth, express.json(), async (req, res) => {
+  try {
+    const plan = await planAlbumSync(String(req.body?.catalogue || '').trim())
+    if (!plan.ok) return res.status(404).json({ error: plan.reason })
+    res.json({ ok: true, plan })
+  } catch (e) { res.status(e.status || 502).json({ error: e.message }) }
+})
+
+// Push the differences shown in the preview, minus any fields unticked there.
+// Blank MAM values are never pushed from here — "not filled in" is not "delete".
+router.post('/streamer-sync/apply', adminAuth, express.json(), async (req, res) => {
+  try {
+    const out = await applyAlbumSync(String(req.body?.catalogue || '').trim(), {
+      skipFields: Array.isArray(req.body?.skipFields) ? req.body.skipFields.map(String) : [],
+    })
+    if (!out.ok) return res.status(404).json({ error: out.reason })
+    console.log(`[mam-streamer-sync] ${out.catalogue}: ${out.written} record(s) written, ${out.failed} failed`)
+    res.json(out)
+  } catch (e) { res.status(e.status || 502).json({ error: e.message }) }
 })
 
 // Create one song the cache has and MAM does not. By TITLE, one at a time:

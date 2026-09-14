@@ -2093,7 +2093,8 @@ async function mcfApply() {
     if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
     $('mcfStatus').innerHTML = `<span style="color:var(--gold)">${j.fieldsWritten} field(s) written across ` +
       `${j.tracksUpdated} track(s)${j.albumUpdated ? ' + album' : ''}` +
-      `${j.failures.length ? ` · <span style="color:var(--red)">${j.failures.length} failed</span>` : ''}</span>`
+      `${j.failures.length ? ` · <span style="color:var(--red)">${j.failures.length} failed</span>` : ''}` +
+      `${j.streamer ? ' · ' + gfEsc(abStreamerSide(j.streamer).text) : ''}</span>`
     await mcfPreview()   // re-read so what is left is what is genuinely still missing
   } catch (e) {
     $('mcfStatus').innerHTML = `<span style="color:var(--red)">${gfEsc(e.message)}</span>`
@@ -5093,10 +5094,12 @@ function abRenderPage() {
       <button class="btn btn-ghost" onclick="abMakeMp3s()">♫ Make streamer MP3s</button>
       <button class="btn btn-ghost" onclick="abPushCoverMad()">⇪ Push cover to MAD</button>
       <button class="btn btn-ghost" onclick="abCachePlan()">⌕ Compare with metadata</button>
+      <button class="btn btn-ghost" onclick="abStreamerSyncPreview()" title="Compare this album with MadStreamer and push MAM's values">⇄ Sync to MadStreamer</button>
       <button class="btn btn-ghost" onclick="abRefresh()" title="Re-read this album from Music Arena Master">↻ Refresh</button>
       <span id="abActionStatus" style="font-size:0.8rem;color:var(--muted);align-self:center"></span>
     </div>
     <div id="abCachePanel" style="display:none;margin-top:10px"></div>
+    <div id="abSyncPanel" style="display:none;margin-top:10px"></div>
     <div id="abLinkPanel" style="display:none;margin-top:10px"></div>
     <div id="abAddTrack" style="display:none;margin-top:10px"></div>
     <audio id="abPlayer" style="display:none"></audio>`
@@ -5478,7 +5481,7 @@ async function abCacheApply(conflictsOnly) {
       cacheCatalogue: _abCacheCat })
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
-    showToast(`${data.fieldsWritten} filled, ${data.fieldsOverwritten} replaced across ${data.tracksUpdated} track(s)`)
+    abSavedToast(`${data.fieldsWritten} filled, ${data.fieldsOverwritten} replaced across ${data.tracksUpdated} track(s)`, data.streamer)
     if (data.failures?.length) {
       console.warn('[cache-fill] failures', data.failures)
       showToast(`${data.failures.length} write(s) failed — see console`, 'error')
@@ -5640,6 +5643,107 @@ async function abUseVisionCover(path) {
   }
 }
 
+// The MadStreamer half of a MAM save. Every MAM tab write also updates the
+// matching MADStreamer track(s) (same catalogue + Filename); this turns the
+// server's report into "MadStreamer ✓ / ✗ …" for the toast.
+function abStreamerSide(s) {
+  if (!s) return { ok: true, text: '' }
+  if (s.skipped) return { ok: true, text: `MadStreamer — ${s.skipped}` }
+  if (!s.ok) {
+    const why = s.reason || (s.errors || []).join('; ') || `${s.failed} write(s) failed`
+    return { ok: false, text: `MadStreamer ✗ ${why}` }
+  }
+  const miss = (s.unmatched || []).length
+  const wrote = s.written ? '✓' : '✓ (already the same)'
+  return { ok: !miss, text: `MadStreamer ${wrote}${miss ? ` — ${miss} track(s) not matched (no Filename / not on MadStreamer)` : ''}` }
+}
+function abSavedToast(prefix, streamer, mamFailed = false) {
+  const side = abStreamerSide(streamer)
+  showToast(`${prefix} — MAM ${mamFailed ? '✗' : '✓'}${side.text ? ' · ' + side.text : ''}`,
+    side.ok && !mamFailed ? 'success' : 'error')
+}
+
+const AB_SYNC_STATUS = {
+  'no-filename':        'no Filename in MAM — cannot be matched',
+  'not-on-madstreamer': 'no MadStreamer track with this Filename',
+  'ambiguous':          'Filename appears on more than one MadStreamer track',
+}
+
+// Whole-album compare → tick fields → push. Blank MAM values are never pushed
+// from here; single edits in the table already sync as they are saved.
+async function abStreamerSyncPreview() {
+  const box = $('abSyncPanel')
+  box.style.display = 'block'
+  box.innerHTML = '<div style="color:var(--muted);font-size:0.85rem">⟳ Comparing with MadStreamer…</div>'
+  try {
+    const res = await api('/api/mam/streamer-sync/preview', 'POST', { catalogue: _abAlbum.catalogue })
+    const d = await res.json()
+    if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`)
+    abStreamerSyncRender(d.plan)
+  } catch (err) {
+    box.innerHTML = `<div style="color:var(--red);font-size:0.85rem">✗ ${esc(err.message)}</div>`
+  }
+}
+
+function abStreamerSyncRender(p) {
+  const box = $('abSyncPanel')
+  const frame = inner => `<div style="border:1px solid var(--border);border-radius:8px;padding:12px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <strong>⇄ MAM → MadStreamer · ${esc(p.catalogue)}</strong>
+      <button class="btn btn-ghost" onclick="$('abSyncPanel').style.display='none'">✕</button></div>${inner}</div>`
+  if (!p.onMadStreamer) { box.innerHTML = frame('<div style="color:var(--muted)">This album is not on MadStreamer yet — publish it first.</div>'); return }
+
+  const byField = {}
+  for (const t of p.tracks) for (const c of t.changes) (byField[c.field] ??= []).push({ who: t.title, ...c })
+  for (const c of p.tape?.changes || []) (byField[c.field] ??= []).push({ who: 'Album record', ...c })
+  const fields = Object.keys(byField)
+  const unmatched = p.tracks.filter(t => AB_SYNC_STATUS[t.status])
+
+  const fieldRows = fields.map(f => {
+    const list = byField[f]
+    const ex = list.slice(0, 4).map(c =>
+      `<div style="margin-left:22px;color:var(--muted)">${esc(c.who)}: <s>${esc(c.from || '(blank)')}</s> → <span style="color:var(--text)">${esc(c.to)}</span></div>`).join('')
+    return `<div style="margin:6px 0"><label style="cursor:pointer"><input type="checkbox" class="ab-sync-field" data-field="${esc(f)}" checked>
+      <strong>${esc(f)}</strong> <span style="color:var(--muted)">(${list.length})</span></label>${ex}
+      ${list.length > 4 ? `<div style="margin-left:22px;color:var(--muted)">…and ${list.length - 4} more</div>` : ''}</div>`
+  }).join('')
+
+  box.innerHTML = frame(`
+    <div style="font-size:0.82rem;color:var(--muted);margin-bottom:8px">
+      ${p.counts.inStep} track(s) already the same · ${p.counts.withChanges} with differences${p.tape?.changes.length ? ' · album record differs' : ''}.
+      Tracks are matched on Filename only. Untick any field you don't want pushed.</div>
+    ${fields.length ? `<div style="font-size:0.82rem;max-height:340px;overflow:auto">${fieldRows}</div>` :
+      '<div style="color:var(--gold)">✓ MadStreamer already matches MAM for everything MAM has filled in.</div>'}
+    ${unmatched.length ? `<div style="margin-top:10px;font-size:0.8rem;color:var(--red)">Not synced:<br>${unmatched.map(t =>
+        `${esc(t.sequence ? t.sequence + '. ' : '')}${esc(t.title)} — ${AB_SYNC_STATUS[t.status]}`).join('<br>')}</div>` : ''}
+    ${p.streamerOnly.length ? `<div style="margin-top:6px;font-size:0.8rem;color:var(--muted)">On MadStreamer but not matched to a MAM song: ${p.streamerOnly.map(t => esc(`${t.title} (${t.filename || 'no Filename'})`)).join(', ')}</div>` : ''}
+    ${fields.length ? `<div style="margin-top:10px;display:flex;gap:10px;align-items:center">
+      <button class="btn btn-gold" id="abSyncApplyBtn" onclick="abStreamerSyncApply()">⇄ Push ticked fields to MadStreamer</button>
+      <span id="abSyncStatus" style="font-size:0.8rem;color:var(--muted)"></span></div>` : ''}`)
+}
+
+async function abStreamerSyncApply() {
+  const boxes = [...document.querySelectorAll('#abSyncPanel .ab-sync-field')]
+  const skipFields = boxes.filter(b => !b.checked).map(b => b.dataset.field)
+  if (skipFields.length === boxes.length) { $('abSyncStatus').textContent = 'Tick at least one field.'; return }
+  if (!confirm(`Write ${boxes.length - skipFields.length} field type(s) to MadStreamer for ${_abAlbum.catalogue}?\n\n` +
+               `This changes the live catalogue (the website shows it after the overnight sync). There is no undo.`)) return
+  $('abSyncApplyBtn').disabled = true
+  $('abSyncStatus').textContent = '⟳ Writing to MadStreamer…'
+  try {
+    const res = await api('/api/mam/streamer-sync/apply', 'POST', { catalogue: _abAlbum.catalogue, skipFields })
+    const d = await res.json()
+    if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`)
+    showToast(`MadStreamer: ${d.written} record(s) updated${d.failed ? `, ${d.failed} failed (see console)` : ''}. The website shows it after the overnight sync.`,
+      d.failed ? 'error' : 'success')
+    if (d.failed) console.warn('[streamer-sync] failures', d.tracks.filter(t => t.error), d.tape?.error)
+    await abStreamerSyncPreview()   // re-compare: what's left is what genuinely still differs
+  } catch (err) {
+    $('abSyncStatus').innerHTML = `<span style="color:var(--red)">✗ ${esc(err.message)}</span>`
+    $('abSyncApplyBtn').disabled = false
+  }
+}
+
 async function abPushCoverMad() {
   // One call: the server reads MAM's current cover and runs it through the
   // pipeline (GMVi JPEG + site sizes, MAM and MADStreamer both repointed).
@@ -5695,7 +5799,7 @@ async function abSaveHeaderField(input) {
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
     _abAlbum.header[key] = val
-    showToast(`${data.updated} song record(s) updated${data.failed ? `, ${data.failed} failed` : ''}`, data.failed ? 'error' : 'success')
+    abSavedToast(`Saved${data.updated ? ` (${data.updated} song record(s))` : ''}${data.failed ? `, ${data.failed} failed` : ''}`, data.streamer, !!data.failed)
   } catch (err) {
     showToast(err.message, 'error')
     input.value = _abAlbum.header[key] || ''
@@ -5737,7 +5841,7 @@ function abEditCell(td) {
       else if (key === 'publisher') track.publishers = val
       else if (key === 'genre') track.genre = val
       else if (key === 'isrc') track.isrc = val
-      showToast('Saved to Gallo')
+      abSavedToast('Saved', data.streamer)
     } catch (err) {
       showToast(err.message, 'error')
       restore()

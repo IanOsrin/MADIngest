@@ -67,6 +67,7 @@ import { readVisionWavInfo, buildSoundInfoBlock } from '../lib/wav-info.js'
 import { getXrefStatus, getXrefRows, startXrefRebuild } from '../lib/catalogue-xref.js'
 import { artworkState, artworkImage, copyArtwork } from '../lib/artwork-compare.js'
 import { setAlbumCover } from '../lib/album-cover.js'
+import { syncMamEdit } from '../lib/mam-streamer-sync.js'
 import { contentDisposition } from '../lib/content-disposition.js'
 
 // Load metadata on startup (non-blocking — portal works even if file is missing)
@@ -1766,7 +1767,10 @@ router.patch('/album/track/:recordId', adminAuth, express.json(), async (req, re
     }
     const fieldData = buildDbSyncFieldData('mam', fields, Object.keys(fields))
     const written = await updateMamSong(req.params.recordId, fieldData)
-    res.json({ ok: true, recordId: req.params.recordId, fields: written })
+    // Same save, second database: the matching MADStreamer track (catalogue +
+    // Filename). Reported, never thrown — the MAM write has already happened.
+    const streamer = await syncMamEdit({ songRecordId: req.params.recordId, mamFields: written })
+    res.json({ ok: true, recordId: req.params.recordId, fields: written, streamer })
   } catch (err) {
     res.status(502).json({ error: err.message })
   }
@@ -1795,19 +1799,27 @@ router.post('/album/album-patch', adminAuth, express.json(), async (req, res) =>
     }
 
     const results = []
+    const songFields = new Set()
     if (songKeys.length) {
       const songData = buildDbSyncFieldData('mam', fields, songKeys)
       for (const t of found.tracks) {
-        try { await updateMamSong(t.fm_record_id, songData); results.push({ recordId: t.fm_record_id, ok: true }) }
-        catch (err) { results.push({ recordId: t.fm_record_id, ok: false, error: err.message }) }
+        try {
+          for (const f of await updateMamSong(t.fm_record_id, songData)) songFields.add(f)
+          results.push({ recordId: t.fm_record_id, ok: true })
+        } catch (err) { results.push({ recordId: t.fm_record_id, ok: false, error: err.message }) }
       }
     }
     const failed = results.filter(r => !r.ok).length
+    const streamer = await syncMamEdit({
+      catalogue: catalogue.trim(), mamFields: [...albumFields, ...songFields],
+      songRecordIds: albumFields.length ? null : results.filter(r => r.ok).map(r => r.recordId),
+    })
     res.json({
       ok: true,
       albumRecordId: found.album.recordId,
       albumFields,
       updated: results.length - failed, failed, results,
+      streamer,
     })
   } catch (err) {
     res.status(502).json({ error: err.message })
