@@ -29,6 +29,7 @@
  * repair that ran to completion against a backup copy nobody read.
  */
 import 'dotenv/config'
+import { fileURLToPath } from 'node:url'
 import { appendFileSync, mkdirSync } from 'node:fs'
 
 const APPLY = process.argv.includes('--apply')
@@ -165,4 +166,6 @@ async function main() {
   }
 }
 
-main()
+// Only run when executed directly — the converters above are imported by
+// the Streamer scripts, and importing must not kick off a MAM run.
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) main()
