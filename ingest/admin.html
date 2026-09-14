@@ -5623,14 +5623,16 @@ async function abVcSearch() {
 async function abUseVisionCover(path) {
   if (!confirm(`Use this Vision image as the Gallo cover for ${_abAlbum.catalogue}?\n\n${path}`)) return
   const status = $('abActionStatus')
-  status.textContent = '⟳ Writing cover into the Gallo Artwork container…'
+  status.textContent = '⟳ Setting cover through the artwork pipeline…'
   try {
     const res  = await api('/api/ingest/album/cover-from-vision', 'POST', { catalogue: _abAlbum.catalogue, path })
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
     status.textContent = ''
     $('abLinkPanel').style.display = 'none'
-    showToast(`Cover ${data.action} from ${path.split('/').pop()}`)
+    const sides = `MAM ${data.mam?.ok ? '✓' : '✗'} · MADStreamer ${data.madstreamer?.ok ? '✓' : '✗ ' + (data.madstreamer?.reason || '')}`
+    showToast(`Cover ${data.action} from ${path.split('/').pop()} as ${data.key} — ${sides}`,
+      data.mam?.ok && data.madstreamer?.ok ? 'success' : 'error')
     abLoadCover($('abPageCover'), _abAlbum.catalogue)
   } catch (err) {
     status.textContent = ''
@@ -5638,31 +5640,21 @@ async function abUseVisionCover(path) {
   }
 }
 
-// Chain the existing MAD artwork endpoints: ensure the GMVi record exists,
-// then push the current Gallo cover to the S3 home the streamer reads.
 async function abPushCoverMad() {
+  // One call: the server reads MAM's current cover and runs it through the
+  // pipeline (GMVi JPEG + site sizes, MAM and MADStreamer both repointed).
+  // It used to upload the bytes as-is from here, which kept PNGs as PNGs.
   const status = $('abActionStatus')
-  status.textContent = '⟳ Reading the album cover…'
+  status.textContent = '⟳ Pushing cover through the artwork pipeline…'
   try {
-    const coverRes = await api(`/api/ingest/album/cover?catalogue=${encodeURIComponent(_abAlbum.catalogue)}`)
-    if (!coverRes.ok) throw new Error('This album has no cover yet — upload one first')
-    const blob = await coverRes.blob()
-    status.textContent = '⟳ Ensuring MAD artwork record…'
-    const ensRes  = await api('/api/ingest/madstreamer/artwork/ensure', 'POST', { catalogue_no: _abAlbum.catalogue, create: true })
-    const ens     = await ensRes.json()
-    if (!ensRes.ok) throw new Error(ens.error || `HTTP ${ensRes.status}`)
-    const gmvi = ens.record?.gmvi
-    if (!gmvi) throw new Error('MAD artwork record has no GMVi number')
-    status.textContent = `⟳ Uploading cover to MAD (GMVi ${gmvi})…`
-    const fd = new FormData()
-    fd.append('gmvi', gmvi)
-    fd.append('catalogue_no', _abAlbum.catalogue)
-    fd.append('image', new File([blob], 'cover.jpg', { type: blob.type || 'image/jpeg' }))
-    const upRes = await fetch('/api/ingest/madstreamer/artwork/upload', { method: 'POST', headers: { Authorization: `Bearer ${adminToken}` }, body: fd })
-    const up    = await upRes.json()
-    if (!upRes.ok) throw new Error(up.error || `HTTP ${upRes.status}`)
+    const res = await api('/api/ingest/album/cover/sync', 'POST', { catalogue: _abAlbum.catalogue })
+    const d   = await res.json()
+    if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`)
     status.textContent = ''
-    showToast(`Cover ${up.replaced ? 'replaced' : 'uploaded'} on MAD (GMVi ${gmvi}). Note: the site serves the resized derivative — the nightly resizer picks this up.`)
+    const sides = `MAM ${d.mam?.ok ? '✓' : '✗'} · MADStreamer ${d.madstreamer?.ok ? '✓' : '✗ ' + (d.madstreamer?.reason || '')}`
+    showToast(`Cover ${d.replaced ? 'replaced' : 'set'} as ${d.key} — ${sides}. The website picks it up after its overnight data sync.`,
+      d.mam?.ok && d.madstreamer?.ok ? 'success' : 'error')
+    await abRefresh()
   } catch (err) {
     status.textContent = ''
     showToast(err.message, 'error')
@@ -5842,7 +5834,11 @@ async function abUploadCover(file) {
     const res  = await fetch('/api/ingest/album/cover', { method: 'POST', headers: { Authorization: `Bearer ${adminToken}` }, body: fd })
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
-    showToast(`Cover ${data.action} (${(data.bytes / 1024).toFixed(0)}KB)`)
+    // Say what happened on BOTH sides — a cover that reached MAM but not the
+    // website is exactly the failure that went unnoticed on 2026-09-14.
+    const sides = `MAM ${data.mam?.ok ? '✓' : '✗'} · MADStreamer ${data.madstreamer?.ok ? '✓' : '✗ ' + (data.madstreamer?.reason || '')}`
+    showToast(`Cover ${data.action} as ${data.key} (${data.converted}) — ${sides}`,
+      data.mam?.ok && data.madstreamer?.ok ? 'success' : 'error')
     abLoadCover($('abPageCover'), _abAlbum.catalogue)
   } catch (err) {
     showToast(err.message, 'error')

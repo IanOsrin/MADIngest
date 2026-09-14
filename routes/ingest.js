@@ -20,7 +20,7 @@ import { fuzzyScore, normForFuzzy } from '../lib/fuzzy-match.js'
 import { extractAudioMeta, detectAudioFormat, generateWarnings, titleFromFilename } from '../lib/audio-meta.js'
 import { parseDDEXPackage, parseDDEXXml } from '../lib/ddex.js'
 import { parseTrackSheet } from '../lib/excel-ingest.js'
-import { uploadImport, uploadArtworkImport, presignImport, presignArtworkImport, presignAudioDownload, downloadImport,
+import { uploadImport, presignImport, presignAudioDownload, downloadImport,
          uploadMp3ByGcat, uploadWavByGcat, uploadArtworkByGmvi, uploadPlaylistArt, downloadAnyKey, keyFromS3Url, downloadByUrl,
          artworkKeyForGmvi, listArtworkKeysForGmvi, headAnyKey, urlForKey, uploadAnyKey,
          writeArtworkDerivatives } from '../lib/s3-imports.js'
@@ -66,6 +66,7 @@ import { visionStat, visionUploadFile, visionList } from '../lib/vision-drive.js
 import { readVisionWavInfo, buildSoundInfoBlock } from '../lib/wav-info.js'
 import { getXrefStatus, getXrefRows, startXrefRebuild } from '../lib/catalogue-xref.js'
 import { artworkState, artworkImage, copyArtwork } from '../lib/artwork-compare.js'
+import { setAlbumCover } from '../lib/album-cover.js'
 import { contentDisposition } from '../lib/content-disposition.js'
 
 // Load metadata on startup (non-blocking — portal works even if file is missing)
@@ -646,15 +647,16 @@ router.get('/presign', async (req, res) => {
   }
 })
 
-router.get('/presign-artwork', async (req, res) => {
-  try {
-    const { filename, content_type, artist, album, catalogue_no } = req.query
-    if (!filename) return res.status(400).json({ error: 'filename required' })
-    const result = await presignArtworkImport(filename, content_type || 'image/jpeg', { artist, album, catalogue_no })
-    res.json(result)
-  } catch (err) {
-    res.status(500).json({ error: err.message })
-  }
+router.get('/presign-artwork', async (_req, res) => {
+  // CLOSED 2026-09-14. This handed out signed upload URLs — with no
+  // authentication — that put covers straight into AudioImports/artwork/ in
+  // whatever format the caller sent: no GMVi record, no JPEG, no derivatives,
+  // and neither database told. That is exactly how covers bypass the pipeline.
+  // Covers now go through POST /album/cover or /madstreamer/artwork/upload,
+  // both of which use lib/album-cover.js.
+  res.status(410).json({
+    error: 'Direct cover uploads are closed. Set covers through the MAM tab or the Artwork tab, which name the file by its GMVi, convert to JPEG and update MAM and MADStreamer together.',
+  })
 })
 
 // ── Register — create FM record after browser has uploaded to S3 ──────────────
@@ -771,11 +773,15 @@ router.post('/submit',
       if (artworkFile) {
         try {
           const artBuf = await readFile(artworkFile.path)
-          const art    = await uploadArtworkImport(artBuf, artworkFile.originalname, { artist: metadata.artist, album: metadata.album, catalogue_no: metadata.catalogue_no })
+          // Through the pipeline, like every cover: GMVi JPEG + derivatives, MAM and
+          // MADStreamer updated if they hold the album. This path used to upload
+          // the raw file to AudioImports/ — the same bypass as the MAM tab's.
+          if (!metadata.catalogue_no) throw new Error('no catalogue number, so the cover has no album to belong to')
+          const art    = await setAlbumCover(metadata.catalogue_no, artBuf, { label: artworkFile.originalname })
           artworkUrl   = art.url
           metadata.artwork_url = artworkUrl
         } catch(artErr) {
-          console.warn('[Ingest] Artwork upload failed:', artErr.message)
+          console.warn('[Ingest] Artwork NOT set (the track is still ingested):', artErr.message)
         }
         await unlink(artworkFile.path).catch(() => {})
       }
@@ -2094,21 +2100,18 @@ router.get('/album/vision-image', adminAuth, async (req, res) => {
 // Gallo kept covers in an Artwork table's container field; MAM holds a URL on
 // the album (Artwork_S3_URL). So this is an upload to S3 followed by a pointer
 // write, not a container write - and there is no artwork record to create.
-async function _setMamCover(cat, image, filename, contentType) {
-  const album = await findMamAlbumByCatalogue(cat)
-  if (!album) throw Object.assign(new Error(`No album ${cat} in Music Arena Master`), { status: 404 })
-  const previous = album.fieldData?.['Artwork_S3_URL'] || null
-  const up = await uploadArtworkImport(image, filename, {
-    catalogue_no: cat,
-    album:  album.fieldData?.['Album Title'],
-    artist: album.fieldData?.['Album Artist'],
-    contentType,
-  })
-  // The old object is deliberately NOT deleted: anything still holding the
-  // previous URL (a cached page, the mirror until its next sync) keeps working.
-  await updateMamAlbum(album.recordId, { 'Artwork_S3_URL': up.url })
-  return { recordId: album.recordId, key: up.key, url: up.url,
-           action: previous ? 'replaced' : 'created', supersededKept: previous }
+// The MAM tab's cover actions. This was the shortcut that caused 2026-09-14's
+// seven bypassed covers: it uploaded the raw file to AudioImports/ and pointed
+// MAM at it, skipping the GMVi record, the JPEG conversion, the derivatives and
+// MADStreamer entirely. It is now a thin wrapper on the one pipeline.
+async function _setMamCover(cat, image, filename) {
+  const out = await setAlbumCover(cat, image, { label: filename || 'cover' })
+  return {
+    recordId: out.mam.recordId || null, gmvi: out.gmvi, key: out.key, url: out.url,
+    action: out.replaced ? 'replaced' : 'created',
+    mam: out.mam, madstreamer: out.madstreamer,
+    converted: `${out.source.format} → JPEG ${Math.round(out.jpegBytes / 1024)} KB`,
+  }
 }
 
 router.post('/album/cover-from-vision', adminAuth, express.json(), async (req, res) => {
@@ -2123,9 +2126,41 @@ router.post('/album/cover-from-vision', adminAuth, express.json(), async (req, r
       : new Response(obj.Body).arrayBuffer()))
     const filename = visionPath.split('/').pop()
     const contentType = IMAGE_TYPES[(visionPath.match(IMAGE_EXT)?.[1] || 'jpg').toLowerCase()] || 'image/jpeg'
-    const result = await _setMamCover(cat, image, filename, contentType)
+    const result = await _setMamCover(cat, image, filename)
     console.log(`[Album] Cover ${result.action} from Vision: ${cat} <- ${visionPath}`)
     res.json({ ok: true, ...result, source: visionPath })
+  } catch (err) {
+    res.status(err.status || 502).json({ error: err.message })
+  }
+})
+
+// Take the cover MAM currently points at and put it through the pipeline:
+// GMVi JPEG + derivatives, with MAM and MADStreamer both repointed. This is
+// "Push cover to MAD", and it is also how a cover that went round the pipeline
+// (a raw AudioImports/ PNG) is repaired — the source is read, never trusted.
+router.post('/album/cover/sync', adminAuth, express.json(), async (req, res) => {
+  const cat = String(req.body?.catalogue || '').trim()
+  if (!cat) return res.status(400).json({ error: 'catalogue required' })
+  try {
+    const album = await findMamAlbumByCatalogue(cat)
+    if (!album) return res.status(404).json({ error: `No album ${cat} in Music Arena Master` })
+    const af = album.fieldData || {}
+    const s3src = String(af['Artwork_S3_URL'] || '').trim()
+    const visionSrc = String(af['Artwork_Vision_URL'] || '').trim()
+    let image
+    if (s3src) {
+      const key = keyFromS3Url(s3src)
+      image = key ? (await downloadAnyKey(key)).buffer : Buffer.from(await (await fetch(s3src)).arrayBuffer())
+    } else if (visionSrc) {
+      const obj = await visionOpen(visionSrc)
+      image = Buffer.from(await obj.Body.transformToByteArray())
+    } else {
+      return res.status(404).json({ error: `${cat} has no cover in MAM to push` })
+    }
+    const out = await setAlbumCover(cat, image, { label: `${cat} cover` })
+    console.log(`[Album] Cover synced ${cat}: ${s3src || visionSrc} → ${out.key} ` +
+      `(MAM ${out.mam.ok ? 'ok' : 'no'}, MADStreamer ${out.madstreamer.ok ? 'ok' : out.madstreamer.reason})`)
+    res.json({ ok: true, from: s3src || visionSrc, ...out })
   } catch (err) {
     res.status(err.status || 502).json({ error: err.message })
   }
@@ -2140,7 +2175,7 @@ router.post('/album/cover', adminAuth, uploadCoverImage.single('image'), async (
   try {
     const image = await readFile(req.file.path)
     await unlink(req.file.path).catch(() => {})
-    const result = await _setMamCover(cat, image, req.file.originalname, req.file.mimetype)
+    const result = await _setMamCover(cat, image, req.file.originalname)
     res.json({ ok: true, ...result })
   } catch (err) {
     await unlink(req.file?.path).catch(() => {})
@@ -3447,48 +3482,32 @@ const uploadAlbumArtImage = multer({
 })
 
 router.post('/madstreamer/artwork/upload', adminAuth, uploadAlbumArtImage.single('image'), async (req, res) => {
+  // Goes through lib/album-cover.js like every other cover. This route used to
+  // upload the file in whatever format it arrived (a PNG stayed a PNG master)
+  // and repointed MADStreamer only — MAM was never told.
   const gmvi = String(req.body?.gmvi || '').trim()
   const cat  = String(req.body?.catalogue_no || '').trim()
-  if (!gmvi)     return res.status(400).json({ error: 'gmvi required' })
   if (!req.file) return res.status(400).json({ error: 'image file required' })
+  if (!cat) {
+    return res.status(400).json({ error: 'catalogue_no required — a cover belongs to an album, and both MAM and MADStreamer are pointed at it by catalogue' })
+  }
   try {
-    const prev      = await artworkFileState(gmvi)
-    const replacing = prev.exists
-
-    // A replacement gets a new URL, so something has to write that URL to
-    // FileMaker or the cover is invisible. Refuse BEFORE touching S3 rather
-    // than uploading an image nothing will ever point at.
-    if (replacing && !cat) {
-      return res.status(400).json({ error: 'catalogue_no required when replacing artwork — the new cover lands on a timestamped key and the Tape Files record has to be repointed at it' })
-    }
-
-    const ext = (path.extname(req.file.originalname) || '.jpg').toLowerCase()
-    const up  = await uploadArtworkByGmvi(req.file.buffer, gmvi, ext, req.file.mimetype, { stamped: replacing })
-
-    // Repoint FileMaker. The old master is deliberately NOT deleted: anything
-    // still holding the previous URL (a cached page, the Postgres mirror until
-    // its next sync) keeps rendering instead of breaking.
-    let repointed = null
-    if (replacing) {
-      repointed = await setTapeFileArtworkUrl(cat, up.url)
-      if (!repointed.ok) {
-        return res.status(409).json({
-          error: `Cover uploaded to ${up.key} but FileMaker was NOT repointed: ${repointed.reason}. The site still shows the old cover. Fix the catalogue number and upload again.`,
-          key: up.key, url: up.url, repointed: false,
-        })
-      }
-    }
-
-    console.log(`[Artwork] ${replacing ? 'Replaced' : 'Uploaded'} ${up.key}` +
-      (repointed?.ok ? ` (Tape Files ${repointed.recordId} repointed from ${repointed.previousUrl || 'nothing'})` : ''))
+    const out = await setAlbumCover(cat, req.file.buffer, { label: req.file.originalname })
+    // The screen chose a GMVi; the pipeline resolves its own from the catalogue.
+    // If they disagree the screen was looking at a different record — say so.
+    const gmviMismatch = gmvi && gmvi !== out.gmvi ? `note: this catalogue's artwork record is ${out.gmvi}, not ${gmvi}` : null
+    console.log(`[Artwork] ${out.replaced ? 'Replaced' : 'Uploaded'} ${out.key} for ${cat} — ` +
+      `MAM ${out.mam.ok ? 'ok' : 'NOT updated (' + out.mam.reason + ')'}, ` +
+      `MADStreamer ${out.madstreamer.ok ? 'ok' : 'NOT updated (' + out.madstreamer.reason + ')'}`)
     res.json({
-      ok: true, key: up.key, url: up.url, replaced: replacing,
-      repointed: repointed?.ok ?? null,
-      supersededKept: replacing ? prev.key : null,
-      duplicateTapeRecords: repointed?.duplicates || null,
+      ok: true, key: out.key, url: out.url, gmvi: out.gmvi, replaced: out.replaced,
+      repointed: out.madstreamer.ok, mam: out.mam, madstreamer: out.madstreamer,
+      duplicateTapeRecords: out.madstreamer.duplicates || null,
+      converted: `${out.source.format} ${out.source.width}×${out.source.height} → JPEG ${Math.round(out.jpegBytes / 1024)} KB`,
+      warning: gmviMismatch,
     })
   } catch (err) {
-    res.status(502).json({ error: err.message })
+    res.status(err.status || 502).json({ error: err.message })
   }
 })
 
