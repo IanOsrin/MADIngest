@@ -2969,7 +2969,7 @@ async function awUpload() {
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
     status.textContent = `✓ ${data.replaced ? 'Replaced' : 'Uploaded'} ${data.key}`
     status.style.color = 'var(--green)'
-    showToast(`Artwork ${data.replaced ? 'replaced' : 'uploaded'} — ${data.key}`)
+    showToast(`Artwork ${data.replaced ? 'replaced' : 'uploaded'} — ${data.key}${data.vision ? ` · Vision ${data.vision.ok ? '✓' : '✗ ' + (data.vision.reason || '')}` : ''}`, data.vision && !data.vision.ok && !data.vision.skipped ? 'error' : 'success')
     awFind(false)   // refresh the current-image panel
   } catch (err) {
     status.textContent = `✗ ${err.message}`
@@ -5668,9 +5668,10 @@ async function abUseVisionCover(path) {
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
     status.textContent = ''
     $('abLinkPanel').style.display = 'none'
-    const sides = `MAM ${data.mam?.ok ? '✓' : '✗'} · MADStreamer ${data.madstreamer?.ok ? '✓' : '✗ ' + (data.madstreamer?.reason || '')}`
+    const sides = `MAM ${data.mam?.ok ? '✓' : '✗'} · MADStreamer ${data.madstreamer?.ok ? '✓' : '✗ ' + (data.madstreamer?.reason || '')}` +
+      (data.vision && !data.vision.skipped ? ` · Vision ${data.vision.ok ? '✓' : '✗ ' + (data.vision.reason || '')}` : '')
     showToast(`Cover ${data.action} from ${path.split('/').pop()} as ${data.key} — ${sides}`,
-      data.mam?.ok && data.madstreamer?.ok ? 'success' : 'error')
+      data.mam?.ok && data.madstreamer?.ok && (!data.vision || data.vision.skipped || data.vision.ok) ? 'success' : 'error')
     abLoadCover($('abPageCover'), _abAlbum.catalogue)
   } catch (err) {
     status.textContent = ''
@@ -5975,9 +5976,10 @@ async function abUploadCover(file) {
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
     // Say what happened on BOTH sides — a cover that reached MAM but not the
     // website is exactly the failure that went unnoticed on 2026-09-14.
-    const sides = `MAM ${data.mam?.ok ? '✓' : '✗'} · MADStreamer ${data.madstreamer?.ok ? '✓' : '✗ ' + (data.madstreamer?.reason || '')}`
+    const sides = `MAM ${data.mam?.ok ? '✓' : '✗'} · MADStreamer ${data.madstreamer?.ok ? '✓' : '✗ ' + (data.madstreamer?.reason || '')}` +
+      (data.vision && !data.vision.skipped ? ` · Vision ${data.vision.ok ? '✓' : '✗ ' + (data.vision.reason || '')}` : '')
     showToast(`Cover ${data.action} as ${data.key} (${data.converted}) — ${sides}`,
-      data.mam?.ok && data.madstreamer?.ok ? 'success' : 'error')
+      data.mam?.ok && data.madstreamer?.ok && (!data.vision || data.vision.skipped || data.vision.ok) ? 'success' : 'error')
     abLoadCover($('abPageCover'), _abAlbum.catalogue)
   } catch (err) {
     showToast(err.message, 'error')

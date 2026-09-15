@@ -2145,12 +2145,12 @@ router.get('/album/vision-image', adminAuth, async (req, res) => {
 // seven bypassed covers: it uploaded the raw file to AudioImports/ and pointed
 // MAM at it, skipping the GMVi record, the JPEG conversion, the derivatives and
 // MADStreamer entirely. It is now a thin wrapper on the one pipeline.
-async function _setMamCover(cat, image, filename) {
-  const out = await setAlbumCover(cat, image, { label: filename || 'cover' })
+async function _setMamCover(cat, image, filename, { vision = 'upload' } = {}) {
+  const out = await setAlbumCover(cat, image, { label: filename || 'cover', vision })
   return {
     recordId: out.mam.recordId || null, gmvi: out.gmvi, key: out.key, url: out.url,
     action: out.replaced ? 'replaced' : 'created',
-    mam: out.mam, madstreamer: out.madstreamer,
+    mam: out.mam, madstreamer: out.madstreamer, vision: out.vision,
     converted: `${out.source.format} → JPEG ${Math.round(out.jpegBytes / 1024)} KB`,
   }
 }
@@ -2167,7 +2167,8 @@ router.post('/album/cover-from-vision', adminAuth, express.json(), async (req, r
       : new Response(obj.Body).arrayBuffer()))
     const filename = visionPath.split('/').pop()
     const contentType = IMAGE_TYPES[(visionPath.match(IMAGE_EXT)?.[1] || 'jpg').toLowerCase()] || 'image/jpeg'
-    const result = await _setMamCover(cat, image, filename)
+    // The image already lives on Vision — link MAM to it rather than copying it.
+    const result = await _setMamCover(cat, image, filename, { vision: { path: visionPath } })
     console.log(`[Album] Cover ${result.action} from Vision: ${cat} <- ${visionPath}`)
     res.json({ ok: true, ...result, source: visionPath })
   } catch (err) {
@@ -2198,7 +2199,8 @@ router.post('/album/cover/sync', adminAuth, express.json(), async (req, res) => 
     } else {
       return res.status(404).json({ error: `${cat} has no cover in MAM to push` })
     }
-    const out = await setAlbumCover(cat, image, { label: `${cat} cover` })
+    // Re-pushing MAM's existing cover: Vision already has (or never had) it.
+    const out = await setAlbumCover(cat, image, { label: `${cat} cover`, vision: false })
     console.log(`[Album] Cover synced ${cat}: ${s3src || visionSrc} → ${out.key} ` +
       `(MAM ${out.mam.ok ? 'ok' : 'no'}, MADStreamer ${out.madstreamer.ok ? 'ok' : out.madstreamer.reason})`)
     res.json({ ok: true, from: s3src || visionSrc, ...out })
@@ -3542,7 +3544,7 @@ router.post('/madstreamer/artwork/upload', adminAuth, uploadAlbumArtImage.single
       `MADStreamer ${out.madstreamer.ok ? 'ok' : 'NOT updated (' + out.madstreamer.reason + ')'}`)
     res.json({
       ok: true, key: out.key, url: out.url, gmvi: out.gmvi, replaced: out.replaced,
-      repointed: out.madstreamer.ok, mam: out.mam, madstreamer: out.madstreamer,
+      repointed: out.madstreamer.ok, mam: out.mam, madstreamer: out.madstreamer, vision: out.vision,
       duplicateTapeRecords: out.madstreamer.duplicates || null,
       converted: `${out.source.format} ${out.source.width}×${out.source.height} → JPEG ${Math.round(out.jpegBytes / 1024)} KB`,
       warning: gmviMismatch,
