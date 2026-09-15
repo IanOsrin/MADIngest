@@ -314,6 +314,34 @@ router.get('/vision-player', async (req, res) => {
   const rel = visionPathOk(req.query.path)
   const esc = (s) => String(s || '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
   res.setHeader('Content-Type', 'text/html; charset=utf-8')
+  // 2,636 MAM songs carry a web address in Audio_Vision_URL instead of a Vision
+  // path — the S3 MP3, or an old FileMaker container streaming URL (2026-09-15).
+  // Play those rather than refusing, and say plainly it is not the master.
+  // Only our own hosts: the browser fetches src, so this is not an open proxy,
+  // but it must not become a player for arbitrary URLs either.
+  if (!rel) {
+    const raw = String(req.query.path ?? '').trim()
+    let u = null
+    try { u = /^https?:\/\//i.test(raw) ? new URL(raw) : null } catch { u = null }
+    const LEGACY_HOSTS = { 'mass-music-audio-files.s3.eu-north-1.amazonaws.com': 'the website MP3 on S3',
+                           's3.eu-north-1.amazonaws.com': 'the website MP3 on S3',
+                           'digitalcupboard.app': 'an old FileMaker container copy' }
+    const what = u && LEGACY_HOSTS[u.hostname.toLowerCase()]
+    if (what) {
+      const title = esc(prettyName(req.query.title) || prettyName(decodeURIComponent(u.pathname.split('/').pop() || '').replace(/\.\w+$/, '')))
+      const artist = esc(prettyName(req.query.artist))
+      return res.send(`<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  html,body{margin:0;height:100%;font-family:-apple-system,Segoe UI,sans-serif;background:#f4f6fb;color:#1a1a2e}
+  .box{display:flex;flex-direction:column;justify-content:center;gap:6px;height:100%;padding:12px 18px;box-sizing:border-box}
+  .t{font-weight:600;font-size:15px;line-height:1.2} .a{color:#666;font-size:13px}
+  .n{color:#b45309;font-size:11px} audio{width:100%;margin-top:4px}
+</style></head><body><div class="box"><div class="t">${title}</div>${artist ? `<div class="a">${artist}</div>` : ''}
+<div class="n">Not linked to a Vision master — playing ${esc(what)}</div>
+<audio controls preload="metadata" src="${esc(u.href)}"></audio></div></body></html>`)
+    }
+  }
   if (!rel) {
     // Say WHY rather than just "no media" — a web viewer is a black box, and
     // "the path never arrived" and "the path was rejected" look identical
