@@ -5379,7 +5379,7 @@ function abCacheRender() {
         <input type="checkbox" class="ab-conflict" data-key="${esc(c.key)}" data-field="${esc(c.field)}">
         <span style="flex:1"><strong>${esc(c.label)}</strong> · ${esc(c.field)}<br>
           <span style="color:var(--muted)">MAM:</span> ${esc(c.mam)}
-          <span style="color:var(--muted)">→ cache:</span> <span style="color:var(--gold)">${esc(c.cache)}</span></span>
+          <span style="color:var(--muted)">→ ${c.fromRowOrder ? 'row order' : 'cache'}:</span> <span style="color:var(--gold)">${esc(c.cache)}</span>${c.fromRowOrder ? ' <span style="color:var(--amber);font-size:0.76rem">check the sleeve</span>' : ''}</span>
       </label>`)
     }
     html += `<button class="btn btn-ghost" style="margin-top:10px;font-size:0.8rem" onclick="abCacheApply(true)">Replace ticked field(s)</button>`
