@@ -5410,6 +5410,16 @@ function abCacheRender() {
       const what = g.fillCount
         ? Object.entries(g.fills).map(([k, v]) => `${esc(k)}: <span style="color:var(--gold)">${esc(v)}</span>`).join(' · ')
         : '<span style="color:var(--muted)">nothing to fill — already complete</span>'
+      // Values the cache would REPLACE on this song — the title first. Each is
+      // its own tick, never set by "Tick all at 80%+": renaming a song is a
+      // separate decision from accepting that the two rows are the same song.
+      const order = f => f === 'Track Name' ? 0 : f === 'Track Artist' ? 1 : 2
+      const replace = Object.entries(g.conflicts || {}).sort((a, b) => order(a[0]) - order(b[0]))
+        .map(([f, v]) => `<label style="display:flex;gap:8px;align-items:baseline;cursor:pointer;margin:3px 0 0 26px;font-size:0.78rem">
+          <input type="checkbox" class="ab-conflict" data-key="${esc(g.recordId)}" data-field="${esc(f)}">
+          <span>${f === 'Track Name' ? '<strong>Rename</strong>' : `Replace <strong>${esc(f)}</strong>`}:
+            <span style="color:var(--muted)">${esc(v.mam)}</span> → <span style="color:var(--gold)">${esc(v.cache)}</span></span>
+        </label>`).join('')
       html += row(`<label style="display:flex;gap:8px;align-items:baseline;cursor:pointer">
         <input type="checkbox" class="ab-suggest" data-rec="${esc(g.recordId)}" data-score="${pct}">
         <span style="flex:1">
@@ -5417,7 +5427,7 @@ function abCacheRender() {
           <span style="color:var(--muted)">↔ cache "${esc(g.matched)}"</span>
           <span style="color:${good ? 'var(--green)' : 'var(--amber)'}">${pct}% match</span><br>
           <span style="font-size:0.78rem">${what}</span>
-        </span></label>`)
+        </span></label>${replace}`)
     }
     html += `<button class="btn btn-gold" style="margin-top:10px;font-size:0.8rem" onclick="abCacheApply(false)">Apply fills including ticked matches</button>`
   }
