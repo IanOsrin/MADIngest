@@ -4975,6 +4975,44 @@ const AB_TRACK_COLS = [
   ['parental', 'Parental', t => t.explicit ? 'Explicit' : ''],
 ]
 
+// Columns where one value for the whole album is a normal thing to want.
+// Not #, Track, ISRC or Duration — the same value on every song is always wrong there.
+const AB_FILLABLE = new Set(['track_artist', 'genre', 'composer', 'producer', 'publisher', 'parental'])
+
+// Fill a column: one value onto every song of the open album, through the same
+// album-patch route the header fields use (MAM, then MadStreamer).
+async function abFillColumn(key) {
+  const col = AB_TRACK_COLS.find(([k]) => k === key)
+  if (!col || !_abAlbum) return
+  const [, label, get] = col
+  const tracks = _abAlbum.tracks
+  const counts = {}
+  for (const t of tracks) { const v = String(get(t)).trim(); counts[v] = (counts[v] || 0) + 1 }
+  const common = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || ''
+  const distinct = Object.keys(counts).length
+  const val = prompt(`${label} for all ${tracks.length} songs of ${_abAlbum.catalogue}:\n\n` +
+    `(currently ${distinct === 1 ? `"${common || 'blank'}" on every song` : `${distinct} different values`})`, common)
+  if (val === null) return
+  const v = val.trim()
+  const differing = tracks.filter(t => String(get(t)).trim() !== v).length
+  if (!differing) { showToast(`Every song already has ${label} "${v}"`); return }
+  if (!confirm(`${v ? `Set ${label} to "${v}"` : `CLEAR ${label}`} on all ${tracks.length} songs?\n\n` +
+               `${differing} song(s) will change. Existing values are replaced, in MAM and on MadStreamer. There is no undo.`)) return
+  const status = $('abActionStatus')
+  status.textContent = `⟳ Setting ${label} on ${tracks.length} songs…`
+  try {
+    const res  = await api('/api/ingest/album/album-patch', 'POST', { catalogue: _abAlbum.catalogue, fields: { [key]: v } })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    status.textContent = ''
+    abSavedToast(`${label} set on ${data.updated} song(s)${data.failed ? `, ${data.failed} failed` : ''}`, data.streamer, !!data.failed)
+    await abRefresh()
+  } catch (err) {
+    status.textContent = ''
+    showToast(err.message, 'error')
+  }
+}
+
 async function abDoSearch() {
   const q = $('abSearch').value.trim()
   if (q.length < 2) { showToast('Type at least 2 characters', 'error'); return }
@@ -5088,7 +5126,8 @@ function abRenderPage() {
     </div>
     <div style="overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius)">
       <table style="font-size:0.8rem;min-width:980px"><thead><tr>
-        ${AB_TRACK_COLS.map(([, label]) => `<th>${esc(label)}</th>`).join('')}<th>Audio</th>
+        ${AB_TRACK_COLS.map(([key, label]) => `<th style="white-space:nowrap">${esc(label)}${AB_FILLABLE.has(key) && a.tracks.length > 1
+          ? ` <button class="btn btn-ghost" style="font-size:0.7rem;padding:0 5px;margin-left:3px" title="Set one value on every song in this album" onclick="abFillColumn('${key}')">⇩</button>` : ''}</th>`).join('')}<th>Audio</th>
       </tr></thead><tbody id="abTrackBody">
         ${a.tracks.map((t, ti) => `<tr>${AB_TRACK_COLS.map(([key, , get]) =>
           `<td data-ti="${ti}" data-key="${key}" ondblclick="abEditCell(this)"
