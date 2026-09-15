@@ -5348,7 +5348,7 @@ function abCacheRender() {
         .map(([k, v]) => `${esc(k)}: <span style="color:var(--gold)">${esc(v)}</span>`).join(' · ')}`)
     }
     html += `<button class="btn btn-gold" style="margin-top:10px;font-size:0.8rem" onclick="abCacheApply(false)">Fill ${p.totalFills} blank(s)</button>`
-  } else if (!p.note) {
+  } else if (p.cacheRows) {
     html += `<div style="color:var(--muted);font-size:0.82rem;margin-top:8px">No blanks the cache can fill.</div>`
   }
 
@@ -5364,6 +5364,16 @@ function abCacheRender() {
     html += head('MAM and the cache disagree', `${conflictRows.length} field(s) — tick only what you want replaced`)
     html += `<div style="color:var(--muted);font-size:0.78rem;margin-bottom:6px">
       Nothing here changes unless you tick it. The cache is a good source, not an authority.</div>`
+    // A field that disagrees on several songs (typically a whole album's
+    // sequence numbers) gets one button to tick them all — still a tick, not a write.
+    const perField = {}
+    for (const c of conflictRows) perField[c.field] = (perField[c.field] || 0) + 1
+    const bulk = Object.entries(perField).filter(([, n]) => n >= 2)
+    if (bulk.length) {
+      html += `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px">${bulk.map(([f, n]) =>
+        `<button class="btn btn-ghost" style="font-size:0.74rem;padding:2px 9px"
+          onclick="abCacheTickField(${JSON.stringify(f).replace(/"/g, '&quot;')})">Tick all ${esc(f)} (${n})</button>`).join('')}</div>`
+    }
     for (const c of conflictRows) {
       html += row(`<label style="display:flex;gap:8px;align-items:baseline;cursor:pointer">
         <input type="checkbox" class="ab-conflict" data-key="${esc(c.key)}" data-field="${esc(c.field)}">
@@ -5468,6 +5478,12 @@ async function abCacheApplyAll() {
   ].filter(Boolean)
   if (!confirm(`Apply to ${_abPlan.catalogue}?\n\n  · ${parts.join('\n  · ')}\n\nWrites to Music Arena Master.`)) return
   await abCacheApply(false)
+}
+
+function abCacheTickField(field) {
+  for (const cb of document.querySelectorAll('#abCachePanel .ab-conflict')) {
+    if (cb.dataset.field === field && !cb.closest('label')?.style.marginLeft) cb.checked = true
+  }
 }
 
 // One click for the common case: spelling drift scores high, so 80%+ is
