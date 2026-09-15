@@ -30,6 +30,7 @@ import {
   visionUploadFile, visionDownloadTo, visionDelete, visionRename,
 } from '../lib/vision-drive.js'
 import { contentDisposition } from '../lib/content-disposition.js'
+import { relinkMamAfterRename } from '../lib/vision-mam-relink.js'
 
 const router = Router()
 
@@ -274,9 +275,23 @@ router.post('/rename', adminAuth, async (req, res) => {
 
     const r = await visionRename(from, to)
     console.log(`[vision-util] renamed ${from} → ${to} (${r.moved} object(s))`)
+
+    // MAM links songs to masters by full path; repoint them, or the rename
+    // orphans every song that used this file. Reported, never thrown — the
+    // files have already moved.
+    let mam
+    try { mam = await relinkMamAfterRename(parts[0], r.items) }
+    catch (e) { mam = { relinked: 0, failed: 1, errors: [e.message] } }
+    if (mam.relinked || mam.failed) console.log(`[vision-util] MAM relinked ${mam.relinked} song(s), ${mam.failed} failed`)
+
+    const mamNote = mam.skipped ? ` MAM links NOT updated: ${mam.skipped}.`
+      : mam.failed ? ` MAM: ${mam.relinked} song link(s) updated, ${mam.failed} FAILED (${(mam.errors || []).join('; ')}).`
+      : mam.relinked ? ` MAM: ${mam.relinked} song link(s) updated.`
+      : mam.audioFiles ? ' No MAM song pointed at it.' : ''
+    const { items, ...rest } = r
     res.json({
-      ok: true, from, to, ...r,
-      note: `Moved ${r.moved} file${r.moved === 1 ? '' : 's'}. Re-index the folder so search reflects the new path.`,
+      ok: true, from, to, ...rest, mam: { ...mam, songs: undefined, count: mam.songs?.length },
+      note: `Moved ${r.moved} file${r.moved === 1 ? '' : 's'}.${mamNote} Re-index the folder so search reflects the new path.`,
     })
   } catch (e) {
     console.error('[vision-util] rename failed:', e.message)

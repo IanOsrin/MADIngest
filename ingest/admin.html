@@ -8917,7 +8917,7 @@ async function viZipFolder() {
 async function viRename(i) {
   const e = viEntries[i]
   const status = document.getElementById('viStatus')
-  const to = prompt(`Rename "${e.name}" to:\n\n(a plain name renames it here; include "/" to move it elsewhere)`, e.name)
+  const to = prompt(`Rename "${e.name}" to:\n\n(a plain name renames it here; include "/" to move it elsewhere)\n\nMAM songs linked to it are updated to the new path.`, e.name)
   if (to === null || to.trim() === '' || to === e.name) return
   status.textContent = 'Renaming…'
   try {
@@ -9028,7 +9028,8 @@ async function viDoSearch() {
           <div class="muted" style="font-size:11px">${gfEsc(f.path.replace(/\/[^/]+$/, ''))}</div></td>
         <td style="text-align:right;font-family:monospace;font-size:0.78rem">${viSize(f.size)}</td>
         <td></td>
-        <td><button class="btn" onclick="viGetPath(${i})">Download</button></td>
+        <td style="white-space:nowrap"><button class="btn" onclick="viGetPath(${i})">Download</button>
+          <button class="btn btn-ghost" onclick="viRenameSearch(${i})" title="Rename or move">Rename</button></td>
         <td style="text-align:left" id="viSStat${i}" class="muted"></td>
       </tr>`).join('')
   } catch (e) {
@@ -9098,6 +9099,34 @@ async function viReindexHere() {
     status.innerHTML = `<span style="color:var(--red)">Index failed: ${gfEsc(e.message)}</span>`
   } finally {
     btn.disabled = false
+  }
+}
+
+// Rename straight from a search hit. Search reads the index, which does not
+// know about the rename until the folder is re-indexed, so the row is updated
+// in place rather than re-searched.
+async function viRenameSearch(i) {
+  const f = viSearchResults[i]
+  const name = f.name || f.path.split('/').pop()
+  const stat = document.getElementById(`viSStat${i}`)
+  const to = prompt(`Rename "${name}" to:\n\n(a plain name renames it in its folder; include "/" to move it elsewhere)\n\nMAM songs linked to this file are updated to the new name.`, name)
+  if (to === null || to.trim() === '' || to === name) return
+  stat.textContent = 'renaming…'
+  try {
+    const r = await fetch('/api/vision-util/rename', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: f.path, to: to.trim() }),
+    })
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    f.path = j.to; f.name = j.to.split('/').pop()
+    const row = stat.closest('tr')
+    if (row) row.cells[0].innerHTML = `${viIcon(f.name)} ${gfEsc(f.name)}<div class="muted" style="font-size:11px">${gfEsc(f.path.replace(/\/[^/]+$/, ''))}</div>`
+    stat.innerHTML = `<span style="color:${j.mam?.failed ? 'var(--red)' : 'var(--gold)'}">✔ renamed${j.mam?.relinked ? ` · ${j.mam.relinked} MAM link(s) updated` : ''}${j.mam?.failed ? ` · ${j.mam.failed} MAM link(s) failed` : ''}</span>`
+    showToast(j.note, j.mam?.failed || j.mam?.skipped ? 'error' : 'success')
+  } catch (err) {
+    stat.innerHTML = `<span style="color:var(--red)">rename failed: ${gfEsc(err.message)}</span>`
   }
 }
 
