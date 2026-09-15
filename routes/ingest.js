@@ -21,11 +21,12 @@ import { extractAudioMeta, detectAudioFormat, generateWarnings, titleFromFilenam
 import { parseDDEXPackage, parseDDEXXml } from '../lib/ddex.js'
 import { parseTrackSheet } from '../lib/excel-ingest.js'
 import { uploadImport, presignImport, presignAudioDownload, downloadImport,
-         uploadMp3ByGcat, uploadWavByGcat, uploadArtworkByGmvi, uploadPlaylistArt, downloadAnyKey, keyFromS3Url, downloadByUrl,
-         artworkKeyForGmvi, listArtworkKeysForGmvi, headAnyKey, urlForKey, uploadAnyKey,
-         writeArtworkDerivatives } from '../lib/s3-imports.js'
+         uploadMp3ByGcat, uploadWavByGcat, uploadPlaylistArt, downloadAnyKey, keyFromS3Url, downloadByUrl,
+         artworkKeyForGmvi, listArtworkKeysForGmvi, headAnyKey, urlForKey, uploadAnyKey } from '../lib/s3-imports.js'
+// No uploadArtworkByGmvi / writeArtworkDerivatives here on purpose: every album
+// cover goes through lib/album-cover.js setAlbumCover.
 import { createGalloRecord, createTapeFileRecord, updateGalloRecord, runGalloScript, runScriptOnRecord, pingGallo, findGalloRecordsByCatalogue, searchGalloRecords, fetchContainerData, getGalloTrack, getGalloLayoutFields, getGalloLayoutFieldSet, reloadGalloLayoutFields, getRecentGalloCreates, clearRecentGalloCreates } from '../lib/fm-gallo.js'
-import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, searchMadStreamerRecords, findArtistBio, upsertArtistBio, listArtistBios, findPlaylistArt, upsertPlaylistArt, listPlaylistArt, deletePlaylistArt, PLAYLIST_CATEGORIES, findStreamerSongs, findStreamerSongsByGenre, listPublicPlaylists, findSongsByPlaylist, setPublicPlaylist, getStreamerSongAudioUrl, findArtworkByCatalogue, createArtworkRecord, setTapeFileArtworkUrl, setPublicPlaylistOrder, _config as madStreamerConfig } from '../lib/madstreamer.js'
+import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, searchMadStreamerRecords, findArtistBio, upsertArtistBio, listArtistBios, findPlaylistArt, upsertPlaylistArt, listPlaylistArt, deletePlaylistArt, PLAYLIST_CATEGORIES, findStreamerSongs, findStreamerSongsByGenre, listPublicPlaylists, findSongsByPlaylist, setPublicPlaylist, getStreamerSongAudioUrl, findArtworkByCatalogue, findArtworkByGmvi, findTapeFileByCatalogue, createArtworkRecord, setTapeFileArtworkUrl, setPublicPlaylistOrder, _config as madStreamerConfig } from '../lib/madstreamer.js'
 import { CANONICAL_GENRES } from '../lib/genre-taxonomy.js'
 import { mergeSourceTracks, selectSources } from '../lib/search-merge.js'
 import { checkDataHealth } from '../lib/data-health.js'
@@ -1371,6 +1372,44 @@ router.post('/s3/upload-folder', adminAuth, uploadFolder.array('files', 500), as
     // artwork prefix is flat. Basename only, and never a path that could climb.
     const name = String(f.originalname || '').split('/').pop().replace(/^\.+/, '')
     if (!name) { results.push({ name: f.originalname, ok: false, error: 'unusable filename' }); continue }
+
+    // Covers go through the cover pipeline, never straight into artwork/.
+    // Writing the file under its own name skipped JPEG conversion, the GMVi
+    // naming, the stamped key a replacement needs, and the MAM + Tape Files
+    // repoint — so an "uploaded" cover often never changed on the site
+    // (2026-09-15). The file name says which album: "GMVi5595.jpg" or the
+    // catalogue number, "GALP 1065.jpg".
+    if (target === 'artwork') {
+      if (!ARTWORK_IMAGE_RE.test(name)) {
+        results.push({ name, ok: false, error: 'not an image (jpg, png, webp or tiff)' }); continue
+      }
+      const stem = name.replace(/\.[^.]+$/, '').trim()
+      try {
+        let cat = null
+        if (/^GMVin?\d+$/i.test(stem)) {
+          const art = await findArtworkByGmvi(stem)
+          if (!art) { results.push({ name, ok: false, error: `no MadStreamer artwork record has ${stem} — name the file by catalogue number instead` }); continue }
+          if (!art.catalogue) { results.push({ name, ok: false, error: `artwork record ${stem} has no catalogue number` }); continue }
+          cat = art.catalogue
+        } else {
+          // A typo must not mint an Artwork record for an album that doesn't exist.
+          const known = (await findMamAlbumByCatalogue(stem)) || (await findTapeFileByCatalogue(stem))
+          if (!known) { results.push({ name, ok: false, error: `no album "${stem}" in MAM or MadStreamer — name the file GMVi<n> or by its exact catalogue number` }); continue }
+          cat = stem
+        }
+        const c = await setAlbumCover(cat, f.buffer, { label: name })
+        const warn = [
+          !c.mam.ok && `MAM not updated: ${c.mam.reason}`,
+          c.madstreamer && !c.madstreamer.ok && `MadStreamer not updated: ${c.madstreamer.reason}`,
+          /^GMVi/i.test(stem) && c.gmvi.toLowerCase() !== stem.toLowerCase() && `album ${cat} uses ${c.gmvi}, not ${stem}`,
+        ].filter(Boolean)
+        results.push({ name, key: c.key, bytes: f.size, ok: true, catalogue: cat, gmvi: c.gmvi, replaced: c.replaced, warnings: warn })
+      } catch (e) {
+        results.push({ name, ok: false, error: e.message })
+      }
+      continue
+    }
+
     try {
       const key = `${prefix}/${name}`
       await uploadAnyKey(f.buffer, key, f.mimetype || 'application/octet-stream')
@@ -1380,17 +1419,7 @@ router.post('/s3/upload-folder', adminAuth, uploadFolder.array('files', 500), as
       // derivative, the CDN cached that 403 and the cover stayed broken even
       // after the file existed. Generating them in the same breath as the
       // upload is what stops a 403 ever being served (Ian, 2026-08-06).
-      let derivatives = null
-      if (target === 'artwork' && ARTWORK_IMAGE_RE.test(name)) {
-        try {
-          derivatives = await writeArtworkDerivatives(key, f.buffer)
-        } catch (e) {
-          results.push({ name, key, bytes: f.size, ok: false,
-            error: `uploaded, but could not be resized (${e.message}) — the app serves the derivative, so this cover will not appear` })
-          continue
-        }
-      }
-      results.push({ name, key, bytes: f.size, ok: true, derivatives })
+      results.push({ name, key, bytes: f.size, ok: true })
     } catch (e) {
       results.push({ name, ok: false, error: e.message })
     }
@@ -3803,11 +3832,21 @@ async function _runMadStreamerPush(track, gmvi, opts = {}) {
     console.log(`[MadStreamer ${gcat}] WAV uploaded → ${wavUp.url}`)
   }
 
-  // 5. Artwork — pull from Gallo's Artwork URL, re-upload as <GMVi>.<ext>.
-  //    Requires a GMVi from MadStreamer's Artwork layout. Skipped (warning)
-  //    when GMVi is unavailable so the audio push still succeeds.
+  // 5. Artwork — only when the album has NO cover yet, and then through the
+  //    cover pipeline (lib/album-cover.js). This used to re-upload Gallo's image
+  //    as artwork/<GMVi>.<ext> on every track: raw bytes (PNGs stayed PNGs),
+  //    over the album's real cover, with MAM and Tape Files never updated
+  //    (2026-09-15). Replacing an existing cover is the MAM tab's job.
   let artworkUp = null
-  if (track.artwork_url && gmvi) {
+  let hasCover = false
+  if (gmvi) {
+    for (const key of await listArtworkKeysForGmvi(gmvi)) {
+      if ((await headAnyKey(key)).exists) { hasCover = true; break }
+    }
+  }
+  if (track.artwork_url && hasCover) {
+    console.log(`[MadStreamer ${gcat}] Album already has a cover (${gmvi}) — left alone`)
+  } else if (track.artwork_url && track.catalogue_no) {
     const artKey = keyFromS3Url(track.artwork_url)
     let artBuf, artType, artExt
     if (artKey) {
@@ -3821,10 +3860,16 @@ async function _runMadStreamerPush(track, gmvi, opts = {}) {
       artType = dl.contentType || 'image/jpeg'
       artExt  = path.extname(new URL(track.artwork_url).pathname) || '.jpg'
     }
-    artworkUp = await uploadArtworkByGmvi(artBuf, gmvi, artExt, artType)
-    console.log(`[MadStreamer ${gcat}] Artwork uploaded → ${artworkUp.url}`)
-  } else if (!gmvi) {
-    console.warn(`[MadStreamer ${gcat}] No GMVi available for catalogue ${track.catalogue_no} — artwork not pushed`)
+    try {
+      const c = await setAlbumCover(track.catalogue_no, artBuf, { label: `Gallo cover ${artExt} ${artType}` })
+      artworkUp = { key: c.key, url: c.url }
+      console.log(`[MadStreamer ${gcat}] Cover set through the pipeline → ${c.url} (MAM ${c.mam.ok ? '✓' : '✗'} · MadStreamer ${c.madstreamer?.ok ? '✓' : '✗'})`)
+    } catch (e) {
+      // The audio is the point of this push; a cover problem must not sink it.
+      console.warn(`[MadStreamer ${gcat}] Cover not set: ${e.message}`)
+    }
+  } else if (!track.catalogue_no) {
+    console.warn(`[MadStreamer ${gcat}] No catalogue number — artwork not pushed`)
   } else {
     console.warn(`[MadStreamer ${gcat}] No Artwork URL on Gallo record — skipping artwork upload`)
   }

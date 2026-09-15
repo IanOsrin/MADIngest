@@ -1153,13 +1153,17 @@
           objects in <code>artwork/</code> to place a handful of files shows no progress for
           most of a minute. This writes straight to the keys, so there is nothing to enumerate.
           <br><br>
-          Same-named keys are <strong>overwritten</strong>, as the old script did. Local files are
-          <strong>not deleted</strong> — the browser cannot, and the old script's <code>rm -rf</code>
-          ran whether or not you meant it to.
+          <strong>Covers</strong> (artwork/) go through the cover pipeline, one album per file: name each
+          file <code>GMVi5595.jpg</code> or by its catalogue number, <code>GALP 1065.jpg</code>. Each becomes a
+          JPEG with the website sizes, and MAM and MadStreamer are both pointed at it. A file whose name
+          matches no album is refused, not uploaded.
+          <br><br>
+          <strong>Audio</strong> (mp3/): same-named files are <strong>overwritten</strong>, as the old script did.
+          Local files are <strong>not deleted</strong>.
         </p>
 
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
-          <select id="s3Target" class="btn-browse" style="min-width:220px">
+          <select id="s3Target" class="btn-browse" style="min-width:220px" onchange="_s3Files.length && s3FolderChosen(_s3Files)">
             <option value="artwork">artwork/ &mdash; cover images</option>
             <option value="mp3">mp3/ &mdash; audio</option>
           </select>
@@ -1176,7 +1180,7 @@
               <thead><tr style="background:var(--surface);position:sticky;top:0">
                 <th style="padding:6px 10px;text-align:left;color:var(--muted)">File</th>
                 <th style="padding:6px 10px;text-align:right;color:var(--muted)">Size</th>
-                <th style="padding:6px 10px;text-align:left;color:var(--muted)">Destination key</th>
+                <th style="padding:6px 10px;text-align:left;color:var(--muted)">Destination</th>
               </tr></thead>
               <tbody id="s3Body"></tbody>
             </table>
@@ -2281,7 +2285,7 @@ function s3FolderChosen(fileList) {
   $('s3Body').innerHTML = _s3Files.map(f => `<tr style="border-top:1px solid var(--border)">
       <td style="padding:5px 10px">${esc(f.name)}</td>
       <td style="padding:5px 10px;text-align:right;font-family:monospace">${viSize(f.size)}</td>
-      <td style="padding:5px 10px;font-family:monospace;font-size:0.74rem;color:var(--muted)">${esc(prefix)}/${esc(f.name)}</td>
+      <td style="padding:5px 10px;font-family:monospace;font-size:0.74rem;color:var(--muted)">${prefix === 'artwork' ? `cover for ${esc(f.name.replace(/\.[^.]+$/, ''))}` : `${esc(prefix)}/${esc(f.name)}`}</td>
     </tr>`).join('')
   $('s3ListWrap').style.display = ''
 }
@@ -2289,7 +2293,10 @@ function s3FolderChosen(fileList) {
 async function s3Upload() {
   if (!_s3Files.length) return
   const target = $('s3Target').value
-  if (!confirm(`Upload ${_s3Files.length} file(s) to ${target}/ on S3?\n\nAny existing key with the same name is overwritten.`)) return
+  const msg = target === 'artwork'
+    ? `Set ${_s3Files.length} album cover(s) through the cover pipeline?\n\nEach file name must be a GMVi number or a catalogue number. An album that already has a cover gets it replaced (the old file is kept).`
+    : `Upload ${_s3Files.length} file(s) to mp3/ on S3?\n\nAny existing file with the same name is overwritten.`
+  if (!confirm(msg)) return
 
   const btn = $('s3UploadBtn'); btn.disabled = true
   $('s3Status').textContent = `Uploading ${_s3Files.length} file(s)…`
@@ -2306,7 +2313,9 @@ async function s3Upload() {
     $('s3Results').innerHTML =
       `<div style="font-weight:600;margin-bottom:8px">${j.uploaded} uploaded${j.failed ? `, ${j.failed} FAILED` : ''} to ${esc(j.prefix)}/</div>` +
       j.results.filter(r => !r.ok).map(r =>
-        `<div style="font-size:0.8rem;color:var(--red)"><code>${esc(r.name)}</code> — ${esc(r.error)}</div>`).join('')
+        `<div style="font-size:0.8rem;color:var(--red)"><code>${esc(r.name)}</code> — ${esc(r.error)}</div>`).join('') +
+      j.results.filter(r => r.ok && r.catalogue).map(r =>
+        `<div style="font-size:0.8rem;color:${r.warnings?.length ? 'var(--amber)' : 'var(--muted)'}"><code>${esc(r.name)}</code> → ${esc(r.catalogue)} · ${esc(r.key)}${r.replaced ? ' (replaced)' : ''}${r.warnings?.length ? ' — ' + esc(r.warnings.join('; ')) : ''}</div>`).join('')
     $('s3Status').textContent = ''
     showToast(`${j.uploaded} file(s) uploaded to ${j.prefix}/`, j.failed ? 'warning' : 'success')
   } catch (e) {
@@ -6016,7 +6025,8 @@ async function acLoad() {
           const res = await api('/api/ingest/artwork-compare/copy', 'POST', { catalogue: _acCat, from, to, force })
           const j = await res.json().catch(() => ({}))
           if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`)
-          showToast(`Artwork copied to ${toLabel} (${(j.wrote || []).join(', ')})`, 'success')
+          showToast(`Artwork copied to ${toLabel} (${(j.wrote || []).join(', ')})`,
+            (j.mam && !j.mam.ok) || (j.madstreamer && !j.madstreamer.ok) ? 'error' : 'success')
           acLoad()
         } catch (e) {
           $('acStatus').textContent = ''
