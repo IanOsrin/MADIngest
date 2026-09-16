@@ -317,6 +317,7 @@
       <button class="tab-btn active" data-tab="album" onclick="showTab('album')">MAM</button>
       <button class="tab-btn" data-tab="catalog" onclick="showTab('catalog')">Source</button>
       <button class="tab-btn" data-tab="health" onclick="showTab('health')">Data Health</button>
+      <button class="tab-btn" data-tab="tags" onclick="showTab('tags')">Tags</button>
       <button class="tab-btn" data-tab="ddex" onclick="showTab('ddex')">DDEX</button>
       <button class="tab-btn" data-tab="excel" onclick="showTab('excel')">Excel</button>
       <button class="tab-btn" data-tab="dbsync" onclick="showTab('dbsync')">DB Sync</button>
@@ -409,6 +410,46 @@
     </div>
 
     <!-- ── DDEX tab ────────────────────────────────────────── -->
+    <div id="tab-tags" class="tab-panel">
+      <div class="import-section">
+        <h3>Sync tags</h3>
+        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:12px">
+          Mood, scene and use tags for music supervisors, written by the tagger
+          (<code>MAD-Analyzer/sync_tagger.py</code>) and corrected here. A model gets the mood roughly right and
+          the occasional track plainly wrong, so the ear wins every time — anything you change is marked
+          100% certain and is never overwritten by a later tagging run.
+          <br><br>
+          The list reads last night's copy of the catalogue, so a track you fix stays right on screen but only
+          joins the filters after tonight's sync. Corrections go into MadStreamer immediately.
+        </p>
+
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+          <input id="tagQ" placeholder="Artist, title or catalogue…" style="min-width:230px"
+                 onkeydown="if(event.key==='Enter')tagSearch(0)">
+          <select id="tagGenre" class="btn-browse" onchange="tagSearch(0)"><option value="">All genres</option></select>
+          <select id="tagMood" class="btn-browse" onchange="tagSearch(0)"><option value="">Any mood</option></select>
+          <select id="tagVocal" class="btn-browse" onchange="tagSearch(0)"><option value="">Vocal or not</option></select>
+          <select id="tagState" class="btn-browse" onchange="tagSearch(0)">
+            <option value="all">Everything</option>
+            <option value="untagged">Not tagged yet</option>
+            <option value="tagged">Tagged</option>
+            <option value="unsure">Tagged, but unsure (under 40%)</option>
+          </select>
+          <button class="btn btn-gold" onclick="tagSearch(0)">Search</button>
+          <span id="tagStatus" style="font-size:0.82rem;color:var(--muted)"></span>
+        </div>
+
+        <div id="tagCoverage" style="font-size:0.8rem;color:var(--muted);margin-bottom:10px"></div>
+        <div id="tagResults"></div>
+        <div id="tagPager" style="display:none;gap:10px;align-items:center;margin-top:12px">
+          <button class="btn btn-ghost" onclick="tagSearch(_tagOffset - _tagLimit)">← Previous</button>
+          <span id="tagPageInfo" style="font-size:0.82rem;color:var(--muted)"></span>
+          <button class="btn btn-ghost" onclick="tagSearch(_tagOffset + _tagLimit)">Next →</button>
+        </div>
+        <audio id="tagPlayer" style="display:none"></audio>
+      </div>
+    </div>
+
     <div id="tab-ddex" class="tab-panel">
 
             <div class="import-section" id="secBuildIngrooves" style="margin-bottom:24px">
@@ -2103,6 +2144,156 @@ async function mcfApply() {
   } catch (e) {
     $('mcfStatus').innerHTML = `<span style="color:var(--red)">${gfEsc(e.message)}</span>`
     $('mcfApplyBtn').disabled = false
+  }
+}
+
+
+// ── Sync tags ───────────────────────────────────────────────────────────────
+// Tags exist to be searched by people writing briefs, so every value comes from
+// a fixed vocabulary — a free-typed "uplifting" would be invisible to the search
+// built on these tags, the same trap Genre Fix fell into.
+let _tagVocab = null, _tagOffset = 0, _tagLimit = 50, _tagRows = []
+
+async function tagInit() {
+  if (_tagVocab) return
+  try {
+    const res = await api('/api/tags/genres')
+    const data = await res.json()
+    if (res.ok) {
+      const done = data.genres.reduce((n, g) => n + g.tagged, 0)
+      const all  = data.genres.reduce((n, g) => n + g.total, 0)
+      $('tagCoverage').textContent = `${done.toLocaleString()} of ${all.toLocaleString()} tracks tagged` +
+        (done < all ? ` · ${(all - done).toLocaleString()} still to do` : ' · complete')
+      $('tagGenre').innerHTML = '<option value="">All genres</option>' + data.genres
+        .map(g => `<option value="${esc(g.genre)}">${esc(g.genre)} (${g.tagged}/${g.total})</option>`).join('')
+    }
+  } catch { /* the filters still work without the genre list */ }
+  await tagSearch(0)
+}
+
+async function tagSearch(offset) {
+  _tagOffset = Math.max(0, offset || 0)
+  const params = new URLSearchParams({
+    q: $('tagQ').value.trim(), genre: $('tagGenre').value, mood: $('tagMood').value,
+    vocal: $('tagVocal').value, state: $('tagState').value,
+    limit: String(_tagLimit), offset: String(_tagOffset),
+  })
+  $('tagStatus').textContent = '⟳ Reading the catalogue…'
+  try {
+    const res  = await api('/api/tags/search?' + params)
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    _tagVocab = data.vocab
+    _tagRows  = data.tracks
+    if ($('tagMood').options.length <= 1) {
+      $('tagMood').innerHTML = '<option value="">Any mood</option>' +
+        _tagVocab.mood.map(m => `<option>${esc(m)}</option>`).join('')
+      $('tagVocal').innerHTML = '<option value="">Vocal or not</option>' +
+        _tagVocab.vocal.map(m => `<option>${esc(m)}</option>`).join('')
+    }
+    $('tagStatus').textContent = `${data.total.toLocaleString()} track(s)`
+    tagRender()
+    $('tagPager').style.display = data.total > _tagLimit ? 'flex' : 'none'
+    $('tagPageInfo').textContent = `${_tagOffset + 1}–${Math.min(_tagOffset + _tagLimit, data.total)} of ${data.total.toLocaleString()}`
+  } catch (err) {
+    $('tagStatus').textContent = ''
+    $('tagResults').innerHTML = `<div style="color:var(--red);font-size:0.85rem">✗ ${esc(err.message)}</div>`
+  }
+}
+
+function tagRender() {
+  if (!_tagRows.length) { $('tagResults').innerHTML = '<div style="color:var(--muted);font-size:0.85rem">Nothing matches.</div>'; return }
+  const sel = (kind, i, value) => `<select class="btn-browse" style="font-size:0.78rem;padding:2px 6px"
+      onchange="tagSet(${i}, '${kind}', this.value)">
+      <option value=""${value ? '' : ' selected'}>—</option>
+      ${_tagVocab[kind].map(v => `<option${v === value ? ' selected' : ''}>${esc(v)}</option>`).join('')}</select>`
+
+  $('tagResults').innerHTML = `<div style="overflow-x:auto"><table style="font-size:0.8rem;min-width:1050px">
+    <thead><tr>
+      <th>Track</th><th>Genre</th><th>BPM</th><th>Key</th><th>Energy</th><th>Length</th>
+      <th>Scene / tags</th><th>Mood</th><th>Theme</th><th>Voice</th><th>Sure</th><th></th>
+    </tr></thead><tbody>
+    ${_tagRows.map((t, i) => `<tr id="tagRow${i}">
+      <td style="max-width:280px">
+        <strong>${esc(t.track_title || '')}</strong><br>
+        <span style="color:var(--muted)">${esc(t.album_artist || '')}${t.catalogue_no ? ' · ' + esc(t.catalogue_no) : ''}${t.release_year ? ' · ' + esc(t.release_year) : ''}</span>
+        ${t.composers || t.isrc ? `<br><span style="color:var(--muted);font-size:0.7rem">${esc(t.composers || '')}${t.isrc ? ' · ' + esc(t.isrc) : ''}</span>` : ''}
+      </td>
+      <td style="white-space:nowrap">${esc(t.genre || '')}${t.label ? `<br><span style="color:var(--muted);font-size:0.72rem">${esc(t.label)}</span>` : ''}</td>
+      <td style="white-space:nowrap;font-family:monospace;font-size:0.76rem">${t.bpm ? Math.round(Number(t.bpm)) : '—'}</td>
+      <td style="white-space:nowrap;font-size:0.76rem">${esc(t.musical_key || '—')}</td>
+      <td style="white-space:nowrap;font-family:monospace;font-size:0.76rem"
+          title="Loudness-based energy, 0–100">${t.energy ? Math.round(Number(t.energy)) : '—'}</td>
+      <td style="white-space:nowrap;font-family:monospace;font-size:0.76rem">${esc(String(t.duration || '—').replace(/^00:/, ''))}</td>
+      <td style="max-width:290px">
+        <input value="${esc(t.tags || '')}" style="width:100%;font-size:0.76rem"
+               onchange="tagSet(${i}, 'tags', this.value)" title="Free text, comma separated">
+        <div style="margin-top:3px">${(_tagVocab.scene || []).slice(0, 8).map(sc =>
+          `<button class="btn btn-ghost" style="font-size:0.68rem;padding:0 5px;margin:1px 2px 0 0"
+             onclick="tagAddChip(${i}, ${JSON.stringify(sc).replace(/"/g, '&quot;')})">+${esc(sc)}</button>`).join('')}
+          <button class="btn btn-ghost" style="font-size:0.68rem;padding:0 5px" onclick="tagMoreChips(${i})">more…</button></div>
+      </td>
+      <td>${sel('mood', i, t.mood || '')}${t.old_mood ? `<div style="color:var(--muted);font-size:0.68rem">was ${esc(t.old_mood)}</div>` : ''}</td>
+      <td>${sel('theme', i, t.theme || '')}</td>
+      <td>${sel('vocal', i, t.vocal || '')}</td>
+      <td style="white-space:nowrap;color:${Number(t.confidence) >= 60 ? 'var(--green)' : Number(t.confidence) ? 'var(--amber)' : 'var(--muted)'}">
+        ${t.confidence ? esc(t.confidence) + '%' : '—'}</td>
+      <td style="white-space:nowrap">
+        ${t.audio ? `<button class="btn btn-ghost" style="font-size:0.72rem" onclick="tagPlay(${i})">▶</button>` : ''}
+        <button class="btn btn-gold" style="font-size:0.72rem" id="tagSave${i}" onclick="tagSave(${i})" disabled>Save</button>
+        <span id="tagMsg${i}" style="font-size:0.72rem;color:var(--muted)"></span>
+      </td>
+    </tr>`).join('')}
+  </tbody></table></div>`
+}
+
+function tagSet(i, kind, value) {
+  _tagRows[i][kind] = value
+  _tagRows[i]._dirty = true
+  $(`tagSave${i}`).disabled = false
+  $(`tagMsg${i}`).textContent = ''
+}
+
+function tagAddChip(i, word) {
+  const row = _tagRows[i]
+  const have = String(row.tags || '').split(',').map(s => s.trim()).filter(Boolean)
+  if (have.some(h => h.toLowerCase() === word.toLowerCase())) return
+  row.tags = [word, ...have].join(', ')
+  const input = $(`tagRow${i}`).querySelector('input')
+  if (input) input.value = row.tags
+  tagSet(i, 'tags', row.tags)
+}
+
+function tagMoreChips(i) {
+  const word = prompt(`Add a scene tag:\n\n${(_tagVocab.scene || []).join(', ')}`, '')
+  if (word && word.trim()) tagAddChip(i, word.trim())
+}
+
+function tagPlay(i) {
+  const player = $('tagPlayer')
+  const url = _tagRows[i].audio
+  if (!url) return
+  if (!player.paused && player.dataset.i === String(i)) { player.pause(); return }
+  player.src = url; player.dataset.i = String(i)
+  player.play().catch(err => showToast('Could not play: ' + err.message, 'error'))
+}
+
+async function tagSave(i) {
+  const row = _tagRows[i]
+  const btn = $(`tagSave${i}`), msg = $(`tagMsg${i}`)
+  btn.disabled = true; msg.textContent = '⟳'
+  try {
+    const res  = await api(`/api/tags/${encodeURIComponent(row.fm_record_id)}`, 'PATCH', {
+      mood: row.mood || '', theme: row.theme || '', vocal: row.vocal || '', tags: row.tags || '',
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    row._dirty = false
+    row.confidence = '100'
+    msg.innerHTML = '<span style="color:var(--gold)">✔ saved</span>'
+  } catch (err) {
+    btn.disabled = false
+    msg.innerHTML = `<span style="color:var(--red)">${esc(err.message)}</span>`
   }
 }
 
@@ -9192,6 +9383,11 @@ async function viGetPath(i) {
 }
 
 // First open of the tab loads the root listing (or the not-configured notice)
+const _tagOrigShowTab = showTab
+showTab = function (name) {
+  _tagOrigShowTab(name)
+  if (name === 'tags') tagInit()
+}
 const _viOrigShowTab = showTab
 showTab = function (name) {
   _viOrigShowTab(name)
