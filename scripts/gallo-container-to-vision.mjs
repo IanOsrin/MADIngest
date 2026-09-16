@@ -41,6 +41,10 @@ const worklistFile = args.find(a => !a.startsWith('--') && a.endsWith('.json'))
 const APPLY = args.includes('--apply')
 const LIMIT = Number(args[args.indexOf('--limit') + 1]) || Infinity
 const ONLY_CAT = args.includes('--catalogue') ? args[args.indexOf('--catalogue') + 1] : null
+// A Gallo checksum that disagrees is not always a wrong file — Gallo's hash can
+// be of an earlier export. With this flag a mismatch is accepted when the WAV's
+// length matches MAM's Duration to within 2 s; without it, every mismatch stops.
+const ACCEPT_DURATION = args.includes('--accept-duration-match')
 if (!worklistFile) { console.error('worklist.json required'); process.exit(1) }
 
 const ROOT = process.env.GALLO_RECOVER_ROOT || '/gallo-music-files-wavs/Gallo Recovered WAVs'
@@ -48,6 +52,21 @@ const JOURNAL = process.env.GALLO_RECOVER_LOG ||
   path.join(os.homedir(), 'Downloads', 'Gallo_container_to_Vision_log.jsonl')
 
 const clean = s => String(s || '').normalize('NFC').replace(/[\/\\:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim().replace(/^\.+/, '')
+// Seconds of audio from a WAV's own header (fmt byte rate, data chunk size).
+function wavSeconds(buf) {
+  let off = 12, byteRate = 0, dataSize = 0
+  while (off + 8 <= buf.length) {
+    const id = buf.toString('ascii', off, off + 4), size = buf.readUInt32LE(off + 4)
+    if (id === 'fmt ') byteRate = buf.readUInt32LE(off + 16)
+    if (id === 'data') { dataSize = Math.min(size, buf.length - off - 8); break }
+    off += 8 + size + (size % 2)
+  }
+  return byteRate && dataSize ? dataSize / byteRate : null
+}
+const hmsSeconds = v => {
+  const m = String(v || '').trim().match(/^(?:(\d+):)?(\d{1,2}):(\d{2})(?:\.\d+)?$/)
+  return m ? Number(m[1] || 0) * 3600 + Number(m[2]) * 60 + Number(m[3]) : null
+}
 const letterOf = s => { const c = clean(s).charAt(0).toUpperCase(); return /[A-Z]/.test(c) ? c : '#' }
 
 const done = new Set()
@@ -105,9 +124,24 @@ for (const [cat, songs] of Object.entries(byCat)) {
         bump('not a WAV'); log({ ...base, status: 'failed', why: `downloaded ${buf.length} bytes, not a WAV` }); continue
       }
       const md5 = crypto.createHash('md5').update(buf).digest('hex').toUpperCase()
-      const want = String(g.audio_hash_md5 || '').trim().toUpperCase()
+      // Gallo stores "?" and other placeholders where it has no checksum — only a
+      // real 32-hex MD5 counts as one (21 songs were wrongly refused on "?").
+      const rawWant = String(g.audio_hash_md5 || '').trim().toUpperCase()
+      const want = /^[0-9A-F]{32}$/.test(rawWant) ? rawWant : ''
+      let durationMatched = false
       if (want && want !== md5) {
-        bump('checksum mismatch'); log({ ...base, status: 'failed', why: `MD5 ${md5} ≠ Gallo ${want}`, bytes: buf.length }); continue
+        const secs = wavSeconds(buf)
+        const mamSong = (await (db || await mamSession()).find('Songs', [{ 'Album Catalogue': '==' + cat }], 500))
+          .find(x => String(x.recordId) === base.mamRecordId)?.fieldData
+        const mamSecs = hmsSeconds(mamSong?.Duration)
+        const close = secs != null && mamSecs != null && Math.abs(secs - mamSecs) <= 2
+        if (!(ACCEPT_DURATION && close)) {
+          bump(close ? 'checksum mismatch, duration matches' : 'checksum mismatch, duration differs')
+          log({ ...base, status: 'failed', why: `MD5 ${md5} ≠ Gallo ${want}`, bytes: buf.length,
+                wavSeconds: secs && Math.round(secs), mamDuration: mamSong?.Duration || null, durationMatches: close })
+          continue
+        }
+        durationMatched = true
       }
 
       // Add-only. Same size already there = a previous run's upload; anything else = pick a free name.
@@ -134,7 +168,7 @@ for (const [cat, songs] of Object.entries(byCat)) {
       }
       await db.patch('Songs', base.mamRecordId, { Audio_Vision_URL: dest, Audio_Truth: 'Vision' })
       bump('linked')
-      log({ ...base, status: 'linked', before: s['Current Audio_Vision_URL'], dest, bytes: buf.length, md5, hashChecked: !!want })
+      log({ ...base, status: 'linked', before: s['Current Audio_Vision_URL'], dest, bytes: buf.length, md5, hashChecked: !!want && !durationMatched, durationMatched })
     } catch (e) {
       bump('error'); log({ ...base, status: 'failed', why: e.message })
     } finally {
