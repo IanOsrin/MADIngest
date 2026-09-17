@@ -5194,7 +5194,7 @@ const AB_TRACK_COLS = [
   ['isrc', 'ISRC',        t => t.isrc || ''],
   ['genre', 'Genre',      t => t.genre || ''],
   ['duration', 'Duration', t => t.duration_sec != null ? `${Math.floor(t.duration_sec/60)}:${String(t.duration_sec%60).padStart(2,'0')}` : ''],
-  ['composer', 'Composers', t => (t.composers || []).join('; ')],
+  ['composer', 'Composers', t => t.composers_credit || (t.composers || []).join('; ')],
   ['producer', 'Producers', t => (t.producers || []).join('; ')],
   ['publisher', 'Publishers', t => t.publishers || ''],
   ['parental', 'Parental', t => t.explicit ? 'Explicit' : ''],
@@ -6136,7 +6136,7 @@ function abEditCell(td) {
       if (key === 'track_name') track.title = val
       else if (key === 'track_artist') track.artist_name = val
       else if (key === 'seq') track.sequence_no = parseInt(val, 10) || null
-      else if (key === 'composer') track.composers = val.split(';').map(s => s.trim()).filter(Boolean)
+      else if (key === 'composer') { track.composers_credit = val; track.composers = val.split(/[;,]/).map(s => s.replace(/<[^>]*>/g, '').trim()).filter(Boolean) }
       else if (key === 'producer') track.producers = val.split(';').map(s => s.trim()).filter(Boolean)
       else if (key === 'publisher') track.publishers = val
       else if (key === 'genre') track.genre = val

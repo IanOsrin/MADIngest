@@ -72,6 +72,16 @@ commas as well, and dedupes case-insensitively. An untagged value still splits o
 fill plan. The Lyricist/Composer distinction is dropped — DDEX already sent
 every writer with the Composer role, so nothing it used is lost.
 
+**Ian's rule, added the same afternoon.** In MAM the plural **Composers** field
+keeps the role tags as supplied (`… <Lyricist>, … <Composer>`); the numbered
+**Composer … Composer 4** fields hold one plain name each. `lib/credits.js`
+(`creditNames`, `mamComposerFields`) is the one place that reads a credit, used
+by the MAM tab edit builder (`cache-db-sync`), `createMamSong`, and the cache
+fill. The MAM tab's Composers column shows the tagged field
+(`composers_credit`); DDEX still gets plain names. Existing records whose
+numbered slots already hold tagged names (TGE 90 track 5) are not rewritten by a
+fill — tag-stripped they equal the cache — so they stay until edited.
+
 The dedupe is not cosmetic. Producers already read `Producer` **and**
 `Producers`, both of which every write path fills with the same string — so any
 record written through the album tab has been showing "Hamilton Nzimande;
