@@ -2,7 +2,13 @@ services:
   - type: web
     name: gallo-ingest
     runtime: docker
-    plan: starter # 512MB — metadata xlsx is pre-converted to JSON at build time
+    # standard = 2 GB. Starter's 512 MB is too tight: the catalogue metadata alone
+    # is ~165 MB in memory (69,627 rows), and a spreadsheet merge, upload or zip on
+    # top of it can make Render kill and restart the server. The likely cause of
+    # the intermittent "Unexpected token '<'" errors reported 2026-09-17. Changing this line
+    # only takes effect if the service is synced from this Blueprint; otherwise
+    # set Instance Type in the dashboard to match.
+    plan: standard
     region: frankfurt # closest to eu-north-1 S3 and EU FileMaker hosts
     healthCheckPath: /health
     autoDeploy: true
@@ -11,7 +17,7 @@ services:
         value: production
       - key: UPLOAD_TMP_DIR
         value: /tmp/gallo-uploads
-      # The YouTube video tab is disabled here: 1080p ffmpeg encodes OOM the
+      # The YouTube video tab is disabled here: 1080p ffmpeg encodes OOM'd the
       # 512MB starter plan. It runs on LOCAL GalloIngest only (server gates it
       # on NODE_ENV!==production). To re-enable hosted, upgrade the plan and
       # set YOUTUBE_ENABLED=true.
