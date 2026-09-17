@@ -33,7 +33,7 @@ const producers = [s['Producer'], s['Producers']].map(val).filter(Boolean)
 Producers already read the plural. Composers didn't. Plural-only records
 therefore produced an empty array, and an empty array renders as an empty cell.
 
-**The cache keeps Ingrooves'ckile tags.** `lib/metadata-cache.js` stores the
+**The cache keeps Ingrooves' role tags.** `lib/metadata-cache.js` stores the
 `Writers / Composers` column verbatim. TGE 90's five rows all read:
 
 ```
@@ -58,6 +58,19 @@ at the same time was the tell: the record was never empty.
 |---|---|
 | `lib/fm-mam.js` | `mapMamRecord` reads both credit shapes through one `creditList` helper — splits on `;`, dedupes. Applied to composers **and** producers |
 | `lib/mam-cache-fill.js` | `conflictsWith` tag-strips credit fields on the MAM side too, via the existing `stripTags`. `CREDIT_FIELDS` = Composers, Composer, Producers, Producer, Publishers |
+
+**Follow-up, applied the same day on Ian's Mac.** A live read of TGE 90 showed
+MAM's *own* fields hold the tagged Ingrooves form too: `Composers` is
+`Pieter W. Grobbelaar <Lyricist>, Pieter W. Grobbelaar <Composer>` on all five
+tracks, and track 5 also has `Composer` / `Composer 2` holding one tagged name
+each. With `creditList` splitting on `;` only, the tab showed the tags and DDEX
+would have shipped one writer called "…<Lyricist>, …<Composer>" (track 5: three
+entries). `creditList` now strips `<…>` role tags, splits a *tagged* value on
+commas as well, and dedupes case-insensitively. An untagged value still splits on
+`;` only, so a surname-first "Mankwane, Marks" stays one name. Result on TGE 90:
+`Pieter W. Grobbelaar`, once, on every track; 0 composer conflicts in the cache
+fill plan. The Lyricist/Composer distinction is dropped — DDEX already sent
+every writer with the Composer role, so nothing it used is lost.
 
 The dedupe is not cosmetic. Producers already read `Producer` **and**
 `Producers`, both of which every write path fills with the same string — so any
