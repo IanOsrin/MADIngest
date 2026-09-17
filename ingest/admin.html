@@ -8177,6 +8177,12 @@ async function youtubeInit() {
     if (!res.ok) throw new Error(data.error || 'support check failed')
     ytDefaultOutDir = data.defaultOutDir || ''
     if (ytDefaultOutDir && !$('ytOutDir').value) $('ytOutDir').placeholder = ytDefaultOutDir
+    if (data.fixedOutDir) {
+      // Hosted: renders land in the server's own folder — download them from the list below.
+      $('ytOutDir').value = ''
+      $('ytOutDir').disabled = true
+      $('ytOutDir').placeholder = 'On the server — download files from the list below'
+    }
     if (!data.ok) {
       const w = $('ytSupportWarn')
       w.style.display = 'block'

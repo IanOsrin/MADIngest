@@ -7,9 +7,9 @@
  * GET /api/youtube/outputs?dir=   → list produced files in the output folder
  * GET /api/youtube/sidecar?dir=&file= → sidecar text (copy-paste into Studio)
  *
- * Rendering runs the engine in lib/youtube-video.js (desktop-only: AppKit
- * overlays + ffmpeg). One render at a time — encodes are CPU-bound and the
- * tool is single-operator.
+ * Rendering runs the engine in lib/youtube-video.js (AppKit overlays on the
+ * Mac, ffmpeg drawtext on the hosted Linux image). One render at a time —
+ * encodes are CPU-bound and the tool is single-operator.
  */
 
 import express, { Router } from 'express'
@@ -29,10 +29,16 @@ const expandDir = s => {
   return v === '~' || v.startsWith('~/') ? path.join(os.homedir(), v.slice(1)) : v
 }
 
+// On the hosted instance the output folder is fixed: anyone with the admin
+// password could otherwise list, download from or clear any folder on the
+// server. Locally the operator picks a folder on their own Mac.
+const HOSTED = process.env.NODE_ENV === 'production'
+const outputDir = s => HOSTED ? path.resolve(DEFAULT_OUT_DIR) : path.resolve(expandDir(s) || DEFAULT_OUT_DIR)
+
 router.get('/support', adminAuth, async (req, res, next) => {
   try {
     const support = await checkRenderSupport()
-    res.json({ ...support, defaultOutDir: DEFAULT_OUT_DIR })
+    res.json({ ...support, defaultOutDir: DEFAULT_OUT_DIR, fixedOutDir: HOSTED })
   } catch (err) { next(err) }
 })
 
@@ -105,7 +111,7 @@ router.get('/render-stream', (req, res) => {
   generateVideos({
     trackIds:    ids(req.query.tracks),
     shortIds:    ids(req.query.shorts),
-    outDir:      expandDir(req.query.out) || DEFAULT_OUT_DIR,
+    outDir:      outputDir(req.query.out),
     excerpt:     Math.max(0, num(req.query.excerpt, 0)),
     shortLen:    Math.min(60, Math.max(15, num(req.query.short_len, 30))),
     shortOffset: Math.max(0, num(req.query.short_offset, 30)),
@@ -120,7 +126,7 @@ router.get('/render-stream', (req, res) => {
 // ── output folder browsing ───────────────────────────────────────────────────
 router.get('/outputs', adminAuth, (req, res, next) => {
   try {
-    const dir = path.resolve(expandDir(req.query.dir) || DEFAULT_OUT_DIR)
+    const dir = outputDir(req.query.dir)
     if (!fs.existsSync(dir)) return res.json({ dir, files: [] })
     const files = fs.readdirSync(dir)
       .filter(f => /--(arttrack|short)\.(mp4|txt)$/.test(f))
@@ -142,7 +148,7 @@ router.get('/download', (req, res, next) => {
     if (!token || token !== process.env.INGEST_ADMIN_SECRET) {
       return res.status(401).json({ error: 'Unauthorized' })
     }
-    const dir  = path.resolve(expandDir(req.query.dir) || DEFAULT_OUT_DIR)
+    const dir  = outputDir(req.query.dir)
     const file = String(req.query.file || '').trim()
     // only files the outputs listing shows, and never outside the folder
     if (!/^[^/\\]+--(arttrack|short)\.(mp4|txt)$/.test(file)) {
@@ -162,7 +168,7 @@ router.get('/download', (req, res, next) => {
 // never recurses, never leaves the folder.
 router.post('/clear-outputs', adminAuth, express.json(), (req, res, next) => {
   try {
-    const dir = path.resolve(expandDir(req.body?.dir) || DEFAULT_OUT_DIR)
+    const dir = outputDir(req.body?.dir)
     if (!fs.existsSync(dir)) return res.json({ dir, deleted: 0 })
     const ours = /(--(arttrack|short)\.(mp4|txt)|\.overlay\.png|\.art\.(jpg|webp)|\.mp3)$/
     let deleted = 0
@@ -179,7 +185,7 @@ router.post('/clear-outputs', adminAuth, express.json(), (req, res, next) => {
 
 router.get('/sidecar', adminAuth, (req, res, next) => {
   try {
-    const dir  = path.resolve(expandDir(req.query.dir) || DEFAULT_OUT_DIR)
+    const dir  = outputDir(req.query.dir)
     const file = String(req.query.file || '').trim()
     // sidecars only, and never outside the requested folder
     if (!/^[^/\\]+\.txt$/.test(file)) {

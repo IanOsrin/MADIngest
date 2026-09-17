@@ -17,10 +17,14 @@ services:
         value: production
       - key: UPLOAD_TMP_DIR
         value: /tmp/gallo-uploads
-      # The YouTube video tab is disabled here: 1080p ffmpeg encodes OOM'd the
-      # 512MB starter plan. It runs on LOCAL GalloIngest only (server gates it
-      # on NODE_ENV!==production). To re-enable hosted, upgrade the plan and
-      # set YOUTUBE_ENABLED=true.
+      # YouTube video tab: back on hosted (2026-09-17) now the plan is standard
+      # (2 GB) — its 1080p ffmpeg encodes OOM'd the old 512 MB starter plan.
+      # One render at a time; the faster x264 preset keeps a full-length
+      # art-track on the single hosted CPU to a sensible wait.
+      - key: YOUTUBE_ENABLED
+        value: "true"
+      - key: YT_X264_PRESET
+        value: veryfast
       - key: INGEST_ADMIN_SECRET
         sync: false
       # The Vision Utility's upload / zip-download / rename work here. DELETE

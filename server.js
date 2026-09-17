@@ -28,14 +28,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app  = express()
 const PORT = process.env.PORT || 3001
 
-// The YouTube tab renders 1080p art-tracks with ffmpeg — encodes whose peak
-// RAM exceeds the 512MB hosted (starter) plan and OOM-killed the instance.
-// It's a single-operator desktop tool, so it runs on LOCAL GalloIngest only:
-// hosted sets NODE_ENV=production (render.yaml) → off. Set YOUTUBE_ENABLED=true
-// to force it on, e.g. if the hosted plan is ever bumped past 512MB.
-const YOUTUBE_ENABLED =
-  process.env.YOUTUBE_ENABLED === 'true' ||
-  (process.env.YOUTUBE_ENABLED !== 'false' && process.env.NODE_ENV !== 'production')
+// The YouTube tab renders 1080p art-tracks with ffmpeg. Those encodes OOM'd
+// the old 512 MB hosted plan, so it was local-only from July 2026; the service
+// is on the 2 GB standard plan now and it runs hosted too (Ian, 2026-09-17).
+// YOUTUBE_ENABLED=false switches it off anywhere.
+const YOUTUBE_ENABLED = process.env.YOUTUBE_ENABLED !== 'false'
 
 // The "Generate DDEX" build packages 24-bit WAV masters into an Ingrooves folder
 // on the LOCAL disk — a heavy batch job (hundreds of MB, cross-continent pulls
