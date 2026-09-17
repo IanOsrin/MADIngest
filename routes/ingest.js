@@ -48,7 +48,7 @@ import {
   mapCms2024Record,
   _config               as cms2024Config,
 } from '../lib/fm-cms2024.js'
-import { searchMamRecords, findMamTracksByCatalogue, getMamAlbumForEdit, findMamAlbumByCatalogue,
+import { searchMamRecords, searchMamAlbums, findMamTracksByCatalogue, getMamAlbumForEdit, findMamAlbumByCatalogue,
          getMamLayoutFieldSet, updateMamRecord, updateMamSong, updateMamAlbum,
          getMamFieldData } from '../lib/fm-mam.js'
 // The album tab creates in MAM as well as editing it.
@@ -1686,25 +1686,16 @@ router.get('/metadata/album-fields', adminAuth, (req, res) => {
 // finds and single-record writes — never bulk scans.
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Search → albums. Groups searchMamRecords hits by catalogue number.
+// Search → albums. Searches MAM's Albums and Songs layouts and returns every
+// matching album (lib/fm-mam.js searchMamAlbums) — no track cap hiding albums.
 router.get('/album/search', adminAuth, async (req, res) => {
   const { q } = req.query
   // scope: 'artist' | 'title' | anything else = every searchable field
   const scope = String(req.query.scope || 'any').trim().toLowerCase()
   if (!q || q.trim().length < 2) return res.json({ albums: [] })
   try {
-    const { tracks } = await searchMamRecords(q.trim(), { limit: 150, scope })
-    const byCat = new Map()
-    for (const t of tracks) {
-      const cat = (t.catalogue_no || '').trim()
-      if (!cat) continue
-      if (!byCat.has(cat)) byCat.set(cat, { catalogue: cat, album_title: null, album_artist: null, hits: 0 })
-      const a = byCat.get(cat)
-      a.hits++
-      a.album_title  ||= t.album_title
-      a.album_artist ||= t.album_artist || t.artist_name
-    }
-    res.json({ scope, albums: [...byCat.values()].sort((a, b) => (a.album_title || '').localeCompare(b.album_title || '')) })
+    const { albums, truncated } = await searchMamAlbums(q.trim(), { scope })
+    res.json({ scope, truncated, albums: albums.sort((a, b) => (a.album_title || '').localeCompare(b.album_title || '')) })
   } catch (err) {
     res.status(502).json({ error: err.message })
   }

@@ -5250,6 +5250,7 @@ async function abDoSearch() {
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
     $('abStatus').textContent = `${data.albums.length} album(s)`
       + (scope === 'title' ? ' by title' : scope === 'artist' ? ' by artist' : '')
+      + (data.truncated ? ' — very broad search, some may be missing: add a word' : '')
     const box = $('abResults')
     box.style.display = 'grid'
     box.innerHTML = data.albums.map(a => `
