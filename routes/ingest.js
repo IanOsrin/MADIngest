@@ -26,7 +26,7 @@ import { uploadImport, presignImport, presignAudioDownload, downloadImport,
 // No uploadArtworkByGmvi / writeArtworkDerivatives here on purpose: every album
 // cover goes through lib/album-cover.js setAlbumCover.
 import { createGalloRecord, createTapeFileRecord, updateGalloRecord, runGalloScript, runScriptOnRecord, pingGallo, findGalloRecordsByCatalogue, searchGalloRecords, fetchContainerData, getGalloTrack, getGalloLayoutFields, getGalloLayoutFieldSet, reloadGalloLayoutFields, getRecentGalloCreates, clearRecentGalloCreates } from '../lib/fm-gallo.js'
-import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, searchMadStreamerRecords, findArtistBio, upsertArtistBio, listArtistBios, findPlaylistArt, upsertPlaylistArt, listPlaylistArt, deletePlaylistArt, PLAYLIST_CATEGORIES, findStreamerSongs, findStreamerSongsByGenre, listPublicPlaylists, findSongsByPlaylist, setPublicPlaylist, getStreamerSongAudioUrl, findArtworkByCatalogue, findArtworkByGmvi, findTapeFileByCatalogue, createArtworkRecord, setTapeFileArtworkUrl, setPublicPlaylistOrder, _config as madStreamerConfig } from '../lib/madstreamer.js'
+import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, searchMadStreamerRecords, findArtistBio, upsertArtistBio, listArtistBios, deleteArtistBio, findPlaylistArt, upsertPlaylistArt, listPlaylistArt, deletePlaylistArt, PLAYLIST_CATEGORIES, findStreamerSongs, findStreamerSongsByGenre, listPublicPlaylists, findSongsByPlaylist, setPublicPlaylist, getStreamerSongAudioUrl, findArtworkByCatalogue, findArtworkByGmvi, findTapeFileByCatalogue, createArtworkRecord, setTapeFileArtworkUrl, setPublicPlaylistOrder, _config as madStreamerConfig } from '../lib/madstreamer.js'
 import { CANONICAL_GENRES } from '../lib/genre-taxonomy.js'
 import { mergeSourceTracks, selectSources } from '../lib/search-merge.js'
 import { checkDataHealth } from '../lib/data-health.js'
@@ -3217,6 +3217,7 @@ router.get('/madstreamer/layout-fields', adminAuth, async (req, res) => {
  * POST /madstreamer/bio         → { artistName, bio } — creates or updates
  *                                  the artist's record and forces Active = 1
  *                                  on commit.
+ * DELETE /madstreamer/bio/:recordId → removes that artist's bio record.
  */
 router.get('/madstreamer/bios', adminAuth, async (req, res) => {
   try {
@@ -3245,6 +3246,16 @@ router.post('/madstreamer/bio', adminAuth, express.json(), async (req, res) => {
   try {
     const result = await upsertArtistBio({ artistName, bio })
     res.json({ ok: true, ...result })
+  } catch (err) {
+    res.status(502).json({ error: err.message })
+  }
+})
+
+router.delete('/madstreamer/bio/:recordId', adminAuth, async (req, res) => {
+  const id = String(req.params.recordId || '').trim()
+  if (!/^\d+$/.test(id)) return res.status(400).json({ error: 'numeric recordId required' })
+  try {
+    res.json({ ok: true, ...(await deleteArtistBio(id)) })
   } catch (err) {
     res.status(502).json({ error: err.message })
   }

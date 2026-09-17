@@ -3026,8 +3026,12 @@ async function bioListLoad(force) {
     const data = await res.json()
     if (!res.ok || !data.ok) throw new Error(data.error || 'Load failed')
     bioListLoaded = true
+    // Numbered like FileMaker's record number: position in FileMaker's own
+    // order, 1…N, so it renumbers itself after every save or delete (the list
+    // reloads after both). The permanent FileMaker record ID is on the tooltip.
     const bios = data.bios || []
     bioListData = bios
+    bioCountNote(bios.length)
     if (!bios.length) {
       wrap.innerHTML = '<div class="empty-state">No bios saved yet.</div>'
       return
@@ -3038,14 +3042,16 @@ async function bioListLoad(force) {
     // the inline JS string literal and made every Edit click silently fail.
     wrap.innerHTML = `
       <table>
-        <thead><tr><th>Artist</th><th>Bio</th><th>Active</th><th></th></tr></thead>
+        <thead><tr><th>No.</th><th>Artist</th><th>Bio</th><th>Active</th><th></th><th></th></tr></thead>
         <tbody>
           ${bios.map((b, i) => `
             <tr>
+              <td style="color:var(--muted);font-variant-numeric:tabular-nums" title="FileMaker record ID ${esc(b.recordId)}">${i + 1}</td>
               <td class="cell-title">${esc(b.artistName)}</td>
               <td class="cell-artist" style="max-width:420px">${esc((b.bio || '').slice(0, 140))}${(b.bio || '').length > 140 ? '…' : ''}</td>
               <td>${String(b.active) === '1' ? badge('approved') : badge('pending')}</td>
               <td><span class="cell-link" onclick="bioEditFromIndex(${i})">Edit</span></td>
+              <td><span class="cell-link" style="color:var(--red)" onclick="bioDeleteFromIndex(${i})">Delete</span></td>
             </tr>`).join('')}
         </tbody>
       </table>`
@@ -3054,12 +3060,38 @@ async function bioListLoad(force) {
   }
 }
 
+function bioCountNote(n) {
+  const h = document.querySelector('#tab-biography .import-section:last-child h3')
+  if (h) h.textContent = `Existing Bios (${n})`
+}
+
+// Delete is permanent in FileMaker, so it names the artist and asks first.
+async function bioDeleteFromIndex(i) {
+  const row = bioListData[i]
+  if (!row) return
+  if (!confirm(`Delete the biography for "${row.artistName}"?\n\nThis removes the record from MadStreamer and cannot be undone.`)) return
+  try {
+    const res  = await api(`/api/ingest/madstreamer/bio/${encodeURIComponent(row.recordId)}`, 'DELETE')
+    const data = await res.json()
+    if (!res.ok || !data.ok) throw new Error(data.error || 'Delete failed')
+    showToast(`Bio deleted for ${row.artistName}`)
+    if ($('bioArtistName').value.trim().toLowerCase() === String(row.artistName).trim().toLowerCase()) {
+      bioReset()
+      bioStatus(`Deleted the bio for ${row.artistName}.`, false)
+    }
+    bioListLoaded = false
+    bioListLoad(true)
+  } catch (err) {
+    showToast(`Delete failed: ${err.message}`, 'error')
+  }
+}
+
 function bioEditFromIndex(i) {
   const row = bioListData[i]
   if (!row) return
   $('bioArtistName').value = row.artistName || ''
   $('bioText').value = row.bio || ''
-  bioStatus(`Loaded from list (record ${row.recordId}) — save to update.`, false)
+  bioStatus(`Loaded No. ${i + 1} from the list (FileMaker record ${row.recordId}) — save to update.`, false)
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
