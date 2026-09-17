@@ -1931,6 +1931,40 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 
 <script>
+// ── Server hiccups ───────────────────────────────────────────────────────────
+// Every /api route answers in JSON. An HTML page instead is Render's own error
+// page while the server restarts (a deploy or a crash), and callers then died on
+// res.json() with "Unexpected token '<'". This wraps fetch for /api calls only:
+// reads retry quietly, and anything still HTML becomes a readable JSON error, so
+// all ~150 call sites show a sensible message without each handling it.
+;(() => {
+  const nativeFetch = window.fetch.bind(window)
+  const wait = ms => new Promise(r => setTimeout(r, ms))
+  window.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input?.url || ''
+    if (!url.startsWith('/api/')) return nativeFetch(input, init)
+    const method = String(init.method || (typeof input === 'object' && input.method) || 'GET').toUpperCase()
+    const tries = method === 'GET' ? 3 : 1
+    let res
+    for (let i = 0; i < tries; i++) {
+      try {
+        res = await nativeFetch(input, init)
+      } catch (err) {
+        if (i === tries - 1) throw new Error('Cannot reach GalloIngest. Check the internet connection and try again.')
+        await wait(2500)
+        continue
+      }
+      const type = res.headers.get('content-type') || ''
+      if (!type.includes('text/html')) return res
+      if (i < tries - 1) await wait(2500)
+    }
+    const msg = res.status === 404
+      ? `GalloIngest does not know ${url.split('?')[0]} (HTTP 404). Reload the page: it may be older than the server.`
+      : `GalloIngest is restarting or busy (HTTP ${res.status}). Wait a minute and try again.`
+    return new Response(JSON.stringify({ error: msg }), { status: res.status >= 400 ? res.status : 502, headers: { 'Content-Type': 'application/json' } })
+  }
+})()
+
 'use strict';
 
 // ── State ──────────────────────────────────────────────────────────────────
