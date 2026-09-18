@@ -7555,7 +7555,7 @@ function mdfRender(plan) {
   }
 
   html += `<div style="display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
-    <button class="btn" style="color:var(--gold);border-color:rgba(212,175,55,0.5)" onclick="mdfApply()">Apply ticked to MAM</button>
+    <button class="btn" id="mdfApplyBtn" style="color:var(--gold);border-color:rgba(212,175,55,0.5)" onclick="mdfApply()">Apply ticked to MAM</button>
     <label style="font-size:0.78rem;color:var(--muted);cursor:pointer"><input type="checkbox" checked onchange="document.querySelectorAll('.mdf-fill').forEach(c => c.checked = this.checked)"> all fills</label>
     <label style="font-size:0.78rem;color:var(--muted);cursor:pointer"><input type="checkbox" onchange="document.querySelectorAll('.mdf-conflict').forEach(c => c.checked = this.checked)"> all conflicts</label>
   </div>`
@@ -7597,16 +7597,37 @@ function mdfRender(plan) {
 
   // Tracks MAM doesn't have
   if (plan.missing.length) {
-    html += `<details style="margin-top:8px" open><summary style="cursor:pointer;font-size:0.82rem;color:var(--amber)">${plan.missing.length} track(s) in the other databases but not in MAM</summary>
+    // An album MAM holds nothing of is the case where every missing track is
+    // wanted; ticking them by hand there reads as the tool not working.
+    const tickAdds = c.mamTracks === 0
+    html += `<details style="margin-top:8px" open><summary style="cursor:pointer;font-size:0.82rem;color:var(--amber)">${plan.missing.length} track(s) in the other databases but not in MAM${tickAdds ? ' — MAM holds none of this album, so they are ticked' : ''}</summary>
       <div style="font-size:0.8rem;margin-top:6px">
-        <label style="color:var(--muted);cursor:pointer"><input type="checkbox" onchange="document.querySelectorAll('.mdf-add').forEach(c => c.checked = this.checked)"> tick all</label>` +
+        <label style="color:var(--muted);cursor:pointer"><input type="checkbox"${tickAdds ? ' checked' : ''} onchange="document.querySelectorAll('.mdf-add').forEach(c => c.checked = this.checked)"> tick all</label>` +
       plan.missing.map((m, i) => `<label style="display:block;cursor:pointer">
-          <input type="checkbox" class="mdf-add" data-i="${i}"> ${m.seq != null ? `#${esc(m.seq)} ` : ''}${esc(m.title || '(no title)')}${m.artist ? ' — ' + esc(m.artist) : ''}
+          <input type="checkbox" class="mdf-add" data-i="${i}"${tickAdds ? ' checked' : ''}> ${m.seq != null ? `#${esc(m.seq)} ` : ''}${esc(m.title || '(no title)')}${m.artist ? ' — ' + esc(m.artist) : ''}
           <span style="color:var(--muted)"> · from ${esc((m.from || [m.source]).map(k => MDF_SRC_LABEL[k]).join(' + '))}${m.isrc ? ' · ISRC ' + esc(m.isrc) : ''}${m.audio ? ' · has audio' : ''}</span>
         </label>`).join('') + `</div></details>`
   }
 
   $('mdfResult').innerHTML = html
+  // The button spells out what is ticked: applying album fields and a cover
+  // while the tracks sit unticked reads as "it didn't create the songs"
+  // (Ian, 2026-09-18).
+  $('mdfResult').addEventListener('change', mdfSummarise)
+  mdfSummarise()
+}
+
+function mdfSummarise() {
+  const btn = $('mdfApplyBtn')
+  if (!btn) return
+  const fields = document.querySelectorAll('.mdf-fill:checked, .mdf-conflict:checked').length
+  const adds = document.querySelectorAll('.mdf-add:checked').length
+  const cover = $('mdfArtwork')?.checked
+  const bits = [fields ? `${fields} field${fields === 1 ? '' : 's'}` : null,
+                adds ? `${adds} new track${adds === 1 ? '' : 's'}` : null,
+                cover ? 'the cover' : null].filter(Boolean)
+  btn.textContent = bits.length ? `Apply ${bits.join(' + ')} to MAM` : 'Nothing ticked'
+  btn.disabled = !bits.length
 }
 
 // MAM has never held this catalogue: offer the whole album — its own record
