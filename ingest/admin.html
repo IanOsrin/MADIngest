@@ -7659,8 +7659,15 @@ async function mdfCreateAlbum() {
     })
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    // Say what actually happened: the album create can fail while the request
+    // itself succeeds, and a green "created" line over a failure is a lie.
     const failed = data.failed?.length ? ` · ${data.failed.length} failed (${esc(data.failed[0].error || '')})` : ''
-    status.textContent = `✓ album created · ${data.added} song(s)${data.artwork ? ' · cover copied' : ''}${failed}`
+    if (!data.albumCreated) {
+      status.innerHTML = `<span style="color:var(--red)">✗ nothing was created${esc(failed)}</span>`
+      showToast(`${_mdfPlan.catalogue} was NOT created — ${data.failed?.[0]?.error || 'unknown error'}`, 'error')
+      return
+    }
+    status.textContent = `✓ album created · ${data.added} of ${_mdfPlan.newAlbum.tracks.length} song(s)${data.artwork ? ' · cover copied' : ''}${failed}`
     showToast(`${_mdfPlan.catalogue} created in MAM`, data.failed?.length ? 'error' : 'success')
     await mdfPreview()        // re-read: it should now show as an existing album
   } catch (err) {
