@@ -106,8 +106,10 @@ router.post('/db-fill/apply', adminAuth, express.json({ limit: '4mb' }), async (
       album:       (req.body?.album && typeof req.body.album === 'object') ? req.body.album : {},
       artworkFrom: req.body?.artworkFrom ? String(req.body.artworkFrom) : null,
       addTracks:   Array.isArray(req.body?.addTracks) ? req.body.addTracks : [],
+      createAlbum: (req.body?.createAlbum && typeof req.body.createAlbum === 'object') ? req.body.createAlbum : null,
     })
-    console.log(`[mam-db-fill] apply ${req.body?.catalogue}: ${out.fieldsWritten} field(s) on ` +
+    console.log(`[mam-db-fill] apply ${req.body?.catalogue}: ${out.albumCreated ? 'album CREATED, ' : ''}` +
+                `${out.fieldsWritten} field(s) on ` +
                 `${out.tracksUpdated} track(s), ${out.albumFields} album field(s), ${out.added} added, ` +
                 `artwork ${out.artwork ? 'copied' : 'untouched'}, ${out.failed.length} failed`)
     res.json({ ok: true, ...out })

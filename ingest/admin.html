@@ -1044,7 +1044,8 @@
           <br><br>
           <strong>Empty MAM fields are filled</strong> (ticked below). Where MAM already holds something different
           it is a <strong>conflict</strong>: shown old → new and left alone unless you tick it. Tracks a source has
-          and MAM doesn't are listed at the end and created only if ticked. Tracks are matched on ISRC, then on
+          and MAM doesn't are listed at the end and created only if ticked. A catalogue MAM has never held is
+          offered as a whole new album — its record plus every track the others hold, deduplicated across them. Tracks are matched on ISRC, then on
           title — never on track order. Gallo wins, then CMS, then MadStreamer; every source's value is shown so
           you can choose another. The cover goes through the usual pipeline, so MADStreamer gets it too.
         </p>
@@ -7535,6 +7536,7 @@ function mdfValueCell(v) {
 }
 
 function mdfRender(plan) {
+  if (plan.albumMissing) return mdfRenderNewAlbum(plan)
   const c = plan.counts
   const srcLine = Object.entries(c.sources).map(([k, n]) => `${MDF_SRC_LABEL[k]}: ${n} track${n === 1 ? '' : 's'}`).join(' · ')
   const errLine = Object.entries(plan.sourceErrors || {}).map(([k, m]) => `${MDF_SRC_LABEL[k]} unreadable — ${m}`).join('; ')
@@ -7543,6 +7545,7 @@ function mdfRender(plan) {
     MAM has <b>${c.mamTracks}</b> track${c.mamTracks === 1 ? '' : 's'} · ${esc(srcLine)}<br>
     <b>${c.fills}</b> blank${c.fills === 1 ? '' : 's'} to fill · <b>${c.conflicts}</b> conflict${c.conflicts === 1 ? '' : 's'} · <b>${c.missing}</b> track${c.missing === 1 ? '' : 's'} MAM doesn't have
     ${errLine ? `<br><span style="color:var(--amber)">${esc(errLine)}</span>` : ''}
+    ${plan.counts.repaired ? `<br><span style="color:var(--muted)">${plan.counts.repaired} value(s) had mangled accents in the source ("ZoÃ«") and are proposed repaired ("Zoë").</span>` : ''}
   </div>`
 
   if (!c.fills && !c.conflicts && !c.missing && (plan.artwork.mamHas || !plan.artwork.available.length)) {
@@ -7603,6 +7606,67 @@ function mdfRender(plan) {
   }
 
   $('mdfResult').innerHTML = html
+}
+
+// MAM has never held this catalogue: offer the whole album — its own record
+// and every track the other databases hold, deduplicated across them.
+function mdfRenderNewAlbum(plan) {
+  const n = plan.newAlbum
+  const srcLine = Object.entries(plan.counts.sources).map(([k, v]) => `${MDF_SRC_LABEL[k]}: ${v} track${v === 1 ? '' : 's'}`).join(' · ')
+  const f = n.fields
+  const art = plan.artwork
+  const fieldLine = Object.entries(f).map(([k, v]) => `${esc(k)}: <b>${esc(v.value)}</b> <span style="color:var(--muted)">(${MDF_SRC_LABEL[v.source]})</span>`).join(' · ')
+
+  $('mdfResult').innerHTML = `
+    <div style="font-size:0.85rem;margin-bottom:10px">
+      <b style="color:var(--amber)">MAM has no album for ${esc(plan.catalogue)}.</b> ${esc(srcLine)}.
+      Creating it makes one album record and <b>${n.tracks.length}</b> song${n.tracks.length === 1 ? '' : 's'}, with the values and audio links shown below.
+      ${plan.counts.unusable ? `<br><span style="color:var(--muted)">${plan.counts.unusable} source row(s) have neither a title nor an ISRC and are left out.</span>` : ''}
+      ${plan.counts.repaired ? `<br><span style="color:var(--muted)">${plan.counts.repaired} value(s) had mangled accents in the source ("ZoÃ«") and are proposed repaired ("Zoë").</span>` : ''}
+    </div>
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+      <button class="btn" style="color:var(--gold);border-color:rgba(212,175,55,0.5)" onclick="mdfCreateAlbum()">Create album in MAM</button>
+      <label style="font-size:0.78rem;color:var(--muted);cursor:pointer"><input type="checkbox" checked onchange="document.querySelectorAll('.mdf-new').forEach(c => c.checked = this.checked)"> all tracks</label>
+      ${art.available.length ? `<label style="font-size:0.78rem;color:var(--muted);cursor:pointer"><input type="checkbox" id="mdfArtwork" checked> copy the cover from
+        <select id="mdfArtworkFrom" class="btn-browse" style="font-size:0.78rem">${art.available.map(k => `<option value="${k}"${k === art.suggested ? ' selected' : ''}>${MDF_SRC_LABEL[k]}</option>`).join('')}</select></label>`
+        : '<span style="font-size:0.78rem;color:var(--muted)">No cover in any of the other databases.</span>'}
+    </div>
+    <div style="border:1px solid var(--border);border-radius:6px;padding:8px 10px;margin-bottom:10px;font-size:0.82rem">
+      <b>Album record</b><div style="margin-top:3px">${fieldLine || '<span style="color:var(--muted)">no album details in the sources</span>'}</div>
+    </div>
+    ${n.tracks.map((t, i) => `<label style="display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);border-radius:6px;padding:6px 10px;margin-bottom:5px;font-size:0.82rem;cursor:pointer">
+      <input type="checkbox" class="mdf-new" data-i="${i}" checked style="margin-top:3px">
+      <div style="min-width:0">
+        <div>${t.seq != null ? `#${esc(t.seq)} ` : ''}<b>${esc(t.title || '(no title)')}</b>${t.artist ? ' — ' + esc(t.artist) : ''}
+          <span style="color:var(--muted);font-size:0.76rem"> · from ${esc((t.from || []).map(k => MDF_SRC_LABEL[k]).join(' + '))}${t.isrc ? ' · ISRC ' + esc(t.isrc) : ' · no ISRC'}</span></div>
+        <div style="color:var(--muted)">${esc(Object.keys(t.fields || {}).length)} field(s)${t.fields?.['Audio_Vision_URL'] ? ' · Vision master' : t.audio ? ' · audio link' : ' · <span style="color:var(--amber)">no audio</span>'}</div>
+      </div></label>`).join('')}`
+}
+
+async function mdfCreateAlbum() {
+  if (!_mdfPlan?.newAlbum) return
+  const picked = [...document.querySelectorAll('.mdf-new:checked')].map(cb => _mdfPlan.newAlbum.tracks[Number(cb.dataset.i)]).filter(Boolean)
+  if (!picked.length) { showToast('No tracks ticked', 'error'); return }
+  const artworkFrom = $('mdfArtwork')?.checked ? $('mdfArtworkFrom').value : null
+  if (!confirm(`Create ${_mdfPlan.catalogue} in Music Arena Master?\n\n1 album record and ${picked.length} song(s)${artworkFrom ? `, plus the cover from ${MDF_SRC_LABEL[artworkFrom]}` : ''}.`)) return
+  const status = $('mdfStatus')
+  status.textContent = '⟳ Creating in MAM…'
+  try {
+    const res = await api('/api/mam/db-fill/apply', 'POST', {
+      catalogue: _mdfPlan.catalogue,
+      createAlbum: { fields: _mdfPlan.newAlbum.fields, tracks: picked },
+      artworkFrom,
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    const failed = data.failed?.length ? ` · ${data.failed.length} failed (${esc(data.failed[0].error || '')})` : ''
+    status.textContent = `✓ album created · ${data.added} song(s)${data.artwork ? ' · cover copied' : ''}${failed}`
+    showToast(`${_mdfPlan.catalogue} created in MAM`, data.failed?.length ? 'error' : 'success')
+    await mdfPreview()        // re-read: it should now show as an existing album
+  } catch (err) {
+    status.textContent = `✗ ${err.message}`
+    showToast(err.message, 'error')
+  }
 }
 
 async function mdfApply() {
