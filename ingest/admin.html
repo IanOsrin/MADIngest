@@ -7542,6 +7542,7 @@ function mdfRender(plan) {
   const errLine = Object.entries(plan.sourceErrors || {}).map(([k, m]) => `${MDF_SRC_LABEL[k]} unreadable — ${m}`).join('; ')
 
   let html = `<div style="font-size:0.85rem;margin-bottom:10px">
+    ${plan.askedFor ? `<span style="color:var(--amber)">MAM files this album as <b>${esc(plan.catalogue)}</b>, not ${esc(plan.askedFor)} — filling that one.</span><br>` : ''}
     MAM has <b>${c.mamTracks}</b> track${c.mamTracks === 1 ? '' : 's'} · ${esc(srcLine)}<br>
     <b>${c.fills}</b> blank${c.fills === 1 ? '' : 's'} to fill · <b>${c.conflicts}</b> conflict${c.conflicts === 1 ? '' : 's'} · <b>${c.missing}</b> track${c.missing === 1 ? '' : 's'} MAM doesn't have
     ${errLine ? `<br><span style="color:var(--amber)">${esc(errLine)}</span>` : ''}
@@ -7624,6 +7625,20 @@ function mdfRenderNewAlbum(plan) {
       ${plan.counts.unusable ? `<br><span style="color:var(--muted)">${plan.counts.unusable} source row(s) have neither a title nor an ISRC and are left out.</span>` : ''}
       ${plan.counts.repaired ? `<br><span style="color:var(--muted)">${plan.counts.repaired} value(s) had mangled accents in the source ("ZoÃ«") and are proposed repaired ("Zoë").</span>` : ''}
     </div>
+    ${(plan.holders || []).length ? `<div style="border:1px solid var(--red);border-radius:6px;padding:8px 10px;margin-bottom:10px;font-size:0.82rem">
+      <b style="color:var(--red)">MAM already holds these recordings</b>
+      ${plan.holders.map(h => `<div style="margin-left:4px">${esc(h.catalogue || h.albumID)} — “${esc(h.title || '?')}”${h.artist ? ' by ' + esc(h.artist) : ''}${h.trackCount ? ` · ${h.trackCount} tracks` : ''} · ${h.hits} of ${h.sampled} sampled ISRCs match
+        <button class="btn btn-ghost" style="font-size:0.74rem;padding:1px 8px;margin-left:6px" onclick="$('mdfCat').value='${esc(h.catalogue || '')}';mdfPreview()">Preview ${esc(h.catalogue || 'it')} instead</button></div>`).join('')}
+      <div style="color:var(--muted);margin-top:4px">Same ISRCs = the same recordings, whatever the catalogue number says. Creating anyway makes a second copy of these tracks in MAM.</div>
+      <label style="display:block;margin-top:6px;cursor:pointer"><input type="checkbox" id="mdfForce"> create ${esc(plan.catalogue)} anyway, as a separate release</label>
+    </div>` : ''}
+    ${(plan.variants || []).length ? `<div style="border:1px solid rgba(240,168,50,0.5);border-radius:6px;padding:8px 10px;margin-bottom:10px;font-size:0.82rem">
+      <b style="color:var(--amber)">MAM has a similar catalogue already</b>
+      ${plan.variants.map(v => `<div style="margin-left:4px">${esc(v.catalogue)} — “${esc(v.title || '?')}”${v.artist ? ' by ' + esc(v.artist) : ''}${v.trackCount ? ` · ${v.trackCount} tracks` : ''}
+        <button class="btn btn-ghost" style="font-size:0.74rem;padding:1px 8px;margin-left:6px" onclick="$('mdfCat').value='${esc(v.catalogue)}';mdfPreview()">Preview ${esc(v.catalogue)} instead</button></div>`).join('')}
+      <div style="color:var(--muted);margin-top:4px">Different titles mean different releases (CDGMP 1823 and GMP 1823 are not the same album) — but the same title under a CD/MC prefix is usually one album filed twice.</div>
+      <label style="display:block;margin-top:6px;cursor:pointer"><input type="checkbox" id="mdfForce"> create ${esc(plan.catalogue)} anyway, as a separate album</label>
+    </div>` : ''}
     <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
       <button class="btn" style="color:var(--gold);border-color:rgba(212,175,55,0.5)" onclick="mdfCreateAlbum()">Create album in MAM</button>
       <label style="font-size:0.78rem;color:var(--muted);cursor:pointer"><input type="checkbox" checked onchange="document.querySelectorAll('.mdf-new').forEach(c => c.checked = this.checked)"> all tracks</label>
@@ -7654,7 +7669,7 @@ async function mdfCreateAlbum() {
   try {
     const res = await api('/api/mam/db-fill/apply', 'POST', {
       catalogue: _mdfPlan.catalogue,
-      createAlbum: { fields: _mdfPlan.newAlbum.fields, tracks: picked },
+      createAlbum: { fields: _mdfPlan.newAlbum.fields, tracks: picked, force: $('mdfForce')?.checked || false },
       artworkFrom,
     })
     const data = await res.json()
