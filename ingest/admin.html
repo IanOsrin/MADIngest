@@ -7600,12 +7600,13 @@ function mdfRender(plan) {
     // An album MAM holds nothing of is the case where every missing track is
     // wanted; ticking them by hand there reads as the tool not working.
     const tickAdds = c.mamTracks === 0
-    html += `<details style="margin-top:8px" open><summary style="cursor:pointer;font-size:0.82rem;color:var(--amber)">${plan.missing.length} track(s) in the other databases but not in MAM${tickAdds ? ' — MAM holds none of this album, so they are ticked' : ''}</summary>
+    html += `<details style="margin-top:8px" open><summary style="cursor:pointer;font-size:0.82rem;color:var(--amber)">${plan.missing.length} track(s) in the other databases but not in MAM${tickAdds ? ' — MAM holds none of this album, so they are ticked, except any already held elsewhere' : ''}</summary>
       <div style="font-size:0.8rem;margin-top:6px">
         <label style="color:var(--muted);cursor:pointer"><input type="checkbox"${tickAdds ? ' checked' : ''} onchange="document.querySelectorAll('.mdf-add').forEach(c => c.checked = this.checked)"> tick all</label>` +
       plan.missing.map((m, i) => `<label style="display:block;cursor:pointer">
-          <input type="checkbox" class="mdf-add" data-i="${i}"${tickAdds ? ' checked' : ''}> ${m.seq != null ? `#${esc(m.seq)} ` : ''}${esc(m.title || '(no title)')}${m.artist ? ' — ' + esc(m.artist) : ''}
+          <input type="checkbox" class="mdf-add" data-i="${i}"${tickAdds && !m.elsewhere ? ' checked' : ''}> ${m.seq != null ? `#${esc(m.seq)} ` : ''}${esc(m.title || '(no title)')}${m.artist ? ' — ' + esc(m.artist) : ''}
           <span style="color:var(--muted)"> · from ${esc((m.from || [m.source]).map(k => MDF_SRC_LABEL[k]).join(' + '))}${m.isrc ? ' · ISRC ' + esc(m.isrc) : ''}${m.audio ? ' · has audio' : ''}</span>
+          ${m.elsewhere ? `<span style="color:var(--amber)"> · already in MAM on ${esc(m.elsewhere.map(h => h.catalogue || h.albumID).join(', '))} — ticking adds a second copy</span>` : ''}
         </label>`).join('') + `</div></details>`
   }
 
