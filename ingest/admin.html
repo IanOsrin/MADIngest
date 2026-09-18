@@ -745,8 +745,50 @@
             ⬆ Replace from xlsx…
             <input type="file" id="xvReplaceFile" accept=".xlsx,.csv" style="display:none" onchange="xvReplaceChosen(this.files[0])">
           </label>
+          <label class="btn btn-ghost" id="suOpenBtn" style="cursor:pointer">
+            ⬆ Update from xlsx…
+            <input type="file" id="suFile" accept=".xlsx,.xls,.csv" style="display:none" onchange="suRead(this.files[0])">
+          </label>
           <button class="btn" id="xvPushBtn" style="display:none;color:var(--gold);border-color:rgba(212,175,55,0.5)" onclick="xvPushOpen()">⇪ Push changes to databases</button>
           <span id="xvFileLabel" style="font-size:0.82rem;color:var(--muted)"></span>
+        </div>
+
+        <!-- Update from a client spreadsheet: match rows, change only the
+             fields he edited. Nothing is written before Apply. -->
+        <div id="suPanel" style="display:none;border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;margin-bottom:12px">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px">
+            <b style="font-size:0.9rem">Update from a spreadsheet</b>
+            <button class="btn btn-ghost" style="font-size:0.78rem" onclick="suClose()">✕ Close</button>
+          </div>
+          <p style="font-size:0.8rem;color:var(--muted);margin-bottom:10px">
+            For a sheet exported from the client's own database, whatever its columns are called. Say which of his
+            columns is which of ours, and how his rows should be matched to the cache; you then see every value that
+            would change before anything is written. <strong>A blank cell is treated as "not supplied" and never
+            clears a value.</strong> Applying writes to the cache and queues the changes on ⇪ Push changes to databases.
+          </p>
+          <div id="suStep1" style="font-size:0.82rem;color:var(--muted)">Choose a file with ⬆ Update from xlsx… above.</div>
+          <div id="suMapping" style="display:none">
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+              <span id="suFileLabel" style="font-size:0.82rem"></span>
+              <label style="font-size:0.8rem;color:var(--muted)">Match his rows to ours by
+                <select id="suMatchKey" class="btn-browse" style="margin-left:6px"></select>
+              </label>
+              <button class="btn btn-gold" onclick="suPreview()">Preview changes</button>
+              <span id="suStatus" style="font-size:0.82rem;color:var(--muted)"></span>
+            </div>
+            <div style="max-height:260px;overflow:auto;border:1px solid var(--border);border-radius:6px">
+              <table style="width:100%;border-collapse:collapse;font-size:0.8rem">
+                <thead><tr>
+                  <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);color:var(--muted)">His column</th>
+                  <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);color:var(--muted)">Example values</th>
+                  <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);color:var(--muted)">Our field</th>
+                  <th style="text-align:center;padding:6px 8px;border-bottom:1px solid var(--border);color:var(--muted)">Update it</th>
+                </tr></thead>
+                <tbody id="suMapRows"></tbody>
+              </table>
+            </div>
+          </div>
+          <div id="suResult" style="display:none;margin-top:12px"></div>
         </div>
 
         <div id="xvToolbar" style="display:none;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
@@ -7421,6 +7463,193 @@ async function igApply() {
     status.textContent = `✓ ${data.applied.length} row(s) written to the cache${failNote} — now review ⇪ Push changes to databases`
     $('igResult').style.display = 'none'
     showToast(`${data.applied.length} cache row(s) updated — queued for DB push`, data.failed.length ? 'error' : 'success')
+  } catch (err) {
+    status.textContent = `✗ ${err.message}`
+    showToast(err.message, 'error')
+  }
+}
+
+// ── Update the cache from a client spreadsheet ───────────────────────────────
+// Three steps, nothing written until the last: read his columns → confirm what
+// they mean and how rows are matched → review every proposed change and apply
+// the ticked ones. A blank cell never clears a value (server-side rule).
+let _suToken = null
+let _suInfo = null
+let _suEdits = []
+let _suUnmatched = []
+
+function suMapping() {
+  const map = {}
+  document.querySelectorAll('.su-field').forEach(sel => { if (sel.value) map[sel.dataset.header] = sel.value })
+  return map
+}
+
+function suUpdateFields() {
+  return [...document.querySelectorAll('.su-use:checked')]
+    .map(cb => document.querySelector(`.su-field[data-header="${CSS.escape(cb.dataset.header)}"]`)?.value)
+    .filter(Boolean)
+}
+
+async function suRead(file) {
+  $('suFile').value = ''
+  if (!file) return
+  $('suPanel').style.display = 'block'
+  $('suResult').style.display = 'none'
+  $('suStep1').textContent = `⟳ Reading ${file.name}…`
+  $('suMapping').style.display = 'none'
+  try {
+    const fd = new FormData()
+    fd.append('sheet', file)
+    const res = await fetch('/api/ingest/metadata/sheet-update/read', {
+      method: 'POST', headers: { Authorization: `Bearer ${adminToken}` }, body: fd
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    _suToken = data.token
+    _suInfo = data
+    $('suStep1').style.display = 'none'
+    $('suFileLabel').innerHTML = `<b>${esc(data.file)}</b> · sheet “${esc(data.sheetName)}” · ${data.rowCount.toLocaleString()} rows`
+    $('suMatchKey').innerHTML = data.matchKeys
+      .map(k => `<option value="${esc(k.key)}"${k.key === data.suggestedKey ? ' selected' : ''}>${esc(k.label)}</option>`).join('')
+    const options = ['<option value="">— ignore —</option>']
+      .concat(data.fields.map(f => `<option value="${esc(f.key)}">${esc(f.label)}</option>`)).join('')
+    $('suMapRows').innerHTML = data.columns.map(c => `
+      <tr>
+        <td style="padding:5px 8px;border-bottom:1px solid var(--border)"><b>${esc(c.header)}</b></td>
+        <td style="padding:5px 8px;border-bottom:1px solid var(--border);color:var(--muted);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.samples.join(' · '))}</td>
+        <td style="padding:5px 8px;border-bottom:1px solid var(--border)">
+          <select class="btn-browse su-field" data-header="${esc(c.header)}" style="font-size:0.78rem">${options}</select>
+        </td>
+        <td style="padding:5px 8px;border-bottom:1px solid var(--border);text-align:center">
+          <input type="checkbox" class="su-use" data-header="${esc(c.header)}" ${c.field ? 'checked' : ''}>
+        </td>
+      </tr>`).join('')
+    // Apply the guesses (setting select.value after render keeps the escaping simple)
+    data.columns.forEach(c => {
+      const sel = document.querySelector(`.su-field[data-header="${CSS.escape(c.header)}"]`)
+      if (sel && c.field) sel.value = c.field
+    })
+    $('suMapping').style.display = 'block'
+    $('suStatus').textContent = data.suggestedKey
+      ? 'Check the matches below, then preview.'
+      : 'No column looks like an identifier — map one to ISRC, catalogue or barcode first.'
+  } catch (err) {
+    $('suStep1').textContent = `✗ ${err.message}`
+    $('suStep1').style.display = 'block'
+    showToast(err.message, 'error')
+  }
+}
+
+function suClose() {
+  $('suPanel').style.display = 'none'
+  _suToken = null; _suEdits = []; _suUnmatched = []
+}
+
+async function suPreview() {
+  if (!_suToken) return
+  const status = $('suStatus')
+  status.textContent = '⟳ Comparing against the cache…'
+  $('suResult').style.display = 'none'
+  try {
+    const res = await api('/api/ingest/metadata/sheet-update/preview', 'POST', {
+      token: _suToken, mapping: suMapping(), matchKey: $('suMatchKey').value, updateFields: suUpdateFields(),
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    _suEdits = data.edits || []
+    _suUnmatched = data.unmatched || []
+    status.textContent = `${data.rowsRead.toLocaleString()} sheet row(s) · ${_suEdits.length} with changes · ${data.unchanged} already matching · ${_suUnmatched.length} not in the cache${data.ambiguous.length ? ` · ${data.ambiguous.length} matched more than one row` : ''}`
+
+    let html = ''
+    if (_suEdits.length) {
+      html += `<div style="display:flex;gap:10px;align-items:center;margin-bottom:8px">
+        <button class="btn" style="color:var(--gold);border-color:rgba(212,175,55,0.5)" onclick="suApply()">Apply ticked to cache</button>
+        <label style="font-size:0.78rem;color:var(--muted);cursor:pointer"><input type="checkbox" checked onchange="document.querySelectorAll('.su-cb').forEach(c => c.checked = this.checked)"> tick all</label>
+      </div>`
+      html += _suEdits.slice(0, 500).map((e, i) => {
+        const label = `${e.catalogue ? `[${e.catalogue}] ` : ''}${e.seq != null ? `#${e.seq} ` : ''}${e.title || '(no title)'}${e.artist ? ' — ' + e.artist : ''}`
+        const diffs = Object.entries(e.changes).map(([k, c]) =>
+          `<div style="margin-left:2px">${esc(XV_KEY_LABEL[k] || k)}: ${c.from == null || c.from === '' ? '<span style="color:var(--muted)">—</span>' : esc(String(c.from))} <span style="color:var(--muted)">→</span> ${esc(String(c.to ?? ''))}</div>`).join('')
+        return `<label style="display:flex;gap:10px;align-items:flex-start;padding:7px 10px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px;cursor:pointer">
+          <input type="checkbox" class="su-cb" data-i="${i}" checked style="margin-top:3px">
+          <div style="min-width:0">
+            <div>${esc(label)} <span style="color:var(--muted);font-size:0.76rem"> · his row ${e.sheetRow}, matched by ${esc(e.matchedBy)}</span></div>
+            <div style="font-size:0.8rem;margin-top:2px">${diffs}</div>
+          </div>
+        </label>`
+      }).join('')
+      if (_suEdits.length > 500) html += `<div style="color:var(--muted);font-size:0.8rem">Showing the first 500 of ${_suEdits.length} — applying covers every ticked row shown.</div>`
+    } else {
+      html += '<div style="color:var(--muted);padding:6px 0">Nothing to change — the cache already matches his sheet.</div>'
+    }
+
+    if (data.ambiguous.length) {
+      html += `<details style="margin-top:10px"><summary style="cursor:pointer;color:var(--amber);font-size:0.8rem">${data.ambiguous.length} of his rows matched more than one cache row — left alone</summary>
+        <div style="font-size:0.78rem;color:var(--muted);margin-top:6px">Pick a more specific way of matching, or fix the duplicates in the cache.<br>` +
+        data.ambiguous.slice(0, 30).map(u => `<div>row ${u.sheetRow}: ${esc(u.key)} → ${u.matches} cache rows</div>`).join('') + `</div></details>`
+    }
+
+    if (_suUnmatched.length) {
+      html += `<details style="margin-top:10px"><summary style="cursor:pointer;color:var(--muted);font-size:0.8rem">${_suUnmatched.length} of his rows aren't in the cache</summary>
+        <div style="margin-top:8px">
+          <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px">
+            <button class="btn btn-ghost" style="font-size:0.78rem" onclick="suAddUnmatched()">Add ticked as new cache rows</button>
+            <label style="font-size:0.78rem;color:var(--muted);cursor:pointer"><input type="checkbox" onchange="document.querySelectorAll('.su-new').forEach(c => c.checked = this.checked)"> tick all</label>
+            <span style="font-size:0.78rem;color:var(--muted)">Only the columns you mapped are carried over.</span>
+          </div>` +
+        _suUnmatched.slice(0, 200).map(u => `<label style="display:flex;gap:8px;align-items:center;font-size:0.78rem;padding:2px 0;cursor:pointer">
+            <input type="checkbox" class="su-new" data-row="${u.sheetRow}">
+            <span>row ${u.sheetRow}: ${esc(`${u.catalogue || '?'} ${u.seq != null ? '#' + u.seq : ''} ${u.track_name || ''} ${u.isrc ? '· ISRC ' + u.isrc : ''}`)}</span>
+          </label>`).join('') +
+        (_suUnmatched.length > 200 ? `<div style="color:var(--muted);font-size:0.78rem">… and ${_suUnmatched.length - 200} more</div>` : '') +
+        `</div></details>`
+    }
+    $('suResult').innerHTML = html
+    $('suResult').style.display = 'block'
+  } catch (err) {
+    status.textContent = `✗ ${err.message}`
+    showToast(err.message, 'error')
+  }
+}
+
+async function suApply() {
+  const picked = [...document.querySelectorAll('.su-cb:checked')].map(cb => _suEdits[Number(cb.dataset.i)]).filter(Boolean)
+  if (!picked.length) { showToast('Nothing ticked', 'error'); return }
+  const status = $('suStatus')
+  status.textContent = `⟳ Writing ${picked.length} row(s) to the cache…`
+  try {
+    const res = await api('/api/ingest/metadata/sheet-update/apply', 'POST', { edits: picked })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    // Queue each change on the push button and mirror it into the open grid.
+    for (const a of data.applied) {
+      for (const [k, c] of Object.entries(a.changes)) xvQueueChange(a.index, k, c.from, c.to, XV_ALBUM_KEYS.includes(k))
+      if (_xvRaw[a.index]) for (const [k, c] of Object.entries(a.changes)) _xvRaw[a.index][k] = c.to
+    }
+    if (_xvRaw.length) { xvRebuildSheet(); xvRenderBody() }
+    const failNote = data.failed.length ? ` · ${data.failed.length} failed (${esc(data.failed[0].error)})` : ''
+    status.textContent = `✓ ${data.applied.length} row(s) written to the cache${failNote} — now review ⇪ Push changes to databases`
+    $('suResult').style.display = 'none'
+    showToast(`${data.applied.length} cache row(s) updated — queued for DB push`, data.failed.length ? 'error' : 'success')
+  } catch (err) {
+    status.textContent = `✗ ${err.message}`
+    showToast(err.message, 'error')
+  }
+}
+
+async function suAddUnmatched() {
+  const rows = [...document.querySelectorAll('.su-new:checked')].map(cb => Number(cb.dataset.row))
+  if (!rows.length) { showToast('Nothing ticked', 'error'); return }
+  if (!confirm(`Add ${rows.length} new row(s) to the cache?\n\nThey are added as new tracks — nothing existing changes.`)) return
+  const status = $('suStatus')
+  status.textContent = `⟳ Adding ${rows.length} row(s)…`
+  try {
+    const res = await api('/api/ingest/metadata/sheet-update/add', 'POST', { token: _suToken, mapping: suMapping(), sheetRows: rows })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    status.textContent = `✓ ${data.added} row(s) added to the cache`
+    showToast(`${data.added} row(s) added`, 'success')
+    if (_xvRaw.length) await xvLoadCache()    // new rows shift nothing, but the grid should show them
   } catch (err) {
     status.textContent = `✗ ${err.message}`
     showToast(err.message, 'error')

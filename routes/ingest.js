@@ -9,6 +9,7 @@ import multer from 'multer'
 import path from 'path'
 import os from 'os'
 import { readFile, writeFile, unlink, mkdir, rm } from 'fs/promises'
+import { randomUUID } from 'node:crypto'
 import { mkdirSync, existsSync, createWriteStream } from 'fs'
 import crypto from 'crypto'
 import { Readable, Transform } from 'stream'
@@ -62,6 +63,7 @@ import { loadMetadata, lookupByIsrc, lookupByCatalogue, lookupAlbumTracks, looku
 import { previewDbSync, applyDbSync, buildFieldData as buildDbSyncFieldData,
          MAM_SONG_KEYS, MAM_ALBUM_KEYS } from '../lib/cache-db-sync.js'
 import { parseIngroovesBuffers, diffAgainstCache } from '../lib/ingrooves-sync.js'
+import { readSheet as readClientSheet, diffSheet as diffClientSheet, rowsToAppend as clientRowsToAppend, MATCH_KEYS as SHEET_MATCH_KEYS, UPDATABLE_FIELDS as SHEET_FIELDS } from '../lib/sheet-update.js'
 import { loadVisionIndex, filesForCatalogue, matchTracksToFiles, reindexAfterUpload } from '../lib/gallo-vision-link.js'
 import { visionStat, visionUploadFile, visionList } from '../lib/vision-drive.js'
 import { readVisionWavInfo, buildSoundInfoBlock } from '../lib/wav-info.js'
@@ -2398,9 +2400,10 @@ router.post('/metadata/ingrooves-sync/preview', adminAuth, uploadIngrooves.array
 // the whole album via updateRow's albumWide option. Returns the applied
 // edits so the admin UI can queue them on the push-to-databases button.
 // Body: { edits: [{ index, isrc, changes }] }
-router.post('/metadata/ingrooves-sync/apply', adminAuth, express.json({ limit: '10mb' }), async (req, res) => {
-  const { edits } = req.body || {}
-  if (!Array.isArray(edits) || !edits.length) return res.status(400).json({ error: 'edits required' })
+// Write ticked edits into the cache. Shared by the Ingrooves sync and the
+// client-spreadsheet update: both produce the same { index, expect, changes }
+// shape, and both fan album-level keys out album-wide via updateRow.
+async function applyCacheEdits(edits, label) {
   const applied = [], failed = []
   for (const e of edits) {
     if (!Number.isInteger(e?.index) || !e.changes || !Object.keys(e.changes).length) {
@@ -2417,8 +2420,104 @@ router.post('/metadata/ingrooves-sync/apply', adminAuth, express.json({ limit: '
       failed.push({ index: e.index, title: e.title || null, error: err.message })
     }
   }
-  console.log(`[Ingrooves sync] apply: ${applied.length} row(s) updated, ${failed.length} failed`)
-  res.json({ ok: true, applied, failed })
+  console.log(`[${label}] apply: ${applied.length} row(s) updated, ${failed.length} failed`)
+  return { ok: true, applied, failed }
+}
+
+router.post('/metadata/ingrooves-sync/apply', adminAuth, express.json({ limit: '10mb' }), async (req, res) => {
+  const { edits } = req.body || {}
+  if (!Array.isArray(edits) || !edits.length) return res.status(400).json({ error: 'edits required' })
+  res.json(await applyCacheEdits(edits, 'Ingrooves sync'))
+})
+
+// ── Update from a client spreadsheet (Cache Viewer → Update from xlsx) ───────
+// The client corrects fields in his own database and sends a sheet. His columns
+// are his own, so the flow is: read the file's columns (and guess what they
+// mean) → the operator confirms the mapping and how rows should be matched →
+// preview only the cells that differ → apply the ticked ones.
+//
+// A blank cell never clears a cache value, and nothing is written until apply.
+// The uploaded file is kept between the three steps under a short-lived token,
+// so the operator doesn't re-upload to change one mapping.
+const sheetJobs = new Map()   // token → { path, name, at }
+const SHEET_JOB_TTL_MS = 30 * 60 * 1000
+
+function reapSheetJobs() {
+  for (const [token, job] of sheetJobs) {
+    if (Date.now() - job.at > SHEET_JOB_TTL_MS) {
+      sheetJobs.delete(token)
+      unlink(job.path).catch(() => {})
+    }
+  }
+}
+
+async function sheetJobBuffer(token) {
+  reapSheetJobs()
+  const job = sheetJobs.get(String(token || ''))
+  if (!job) throw Object.assign(new Error('That upload has expired — choose the file again'), { status: 410 })
+  job.at = Date.now()
+  return { buffer: await readFile(job.path), name: job.name }
+}
+
+// Step 1: what's in the file. Writes nothing.
+router.post('/metadata/sheet-update/read', adminAuth, uploadIngrooves.single('sheet'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'spreadsheet required (field: sheet)' })
+  try {
+    if (!getStatus().loaded) await loadMetadata()
+    const buffer = await readFile(req.file.path)
+    const info = readClientSheet(buffer)
+    const token = randomUUID()
+    sheetJobs.set(token, { path: req.file.path, name: req.file.originalname, at: Date.now() })
+    reapSheetJobs()
+    res.json({ ok: true, token, file: req.file.originalname, ...info, matchKeys: SHEET_MATCH_KEYS, fields: SHEET_FIELDS })
+  } catch (err) {
+    await unlink(req.file.path).catch(() => {})
+    console.error('[sheet-update read]', err)
+    res.status(400).json({ error: err.message })
+  }
+})
+
+// Step 2: what would change. Writes nothing.
+// Body: { token, mapping: { 'Column': 'field' }, matchKey, updateFields: [] }
+router.post('/metadata/sheet-update/preview', adminAuth, express.json({ limit: '2mb' }), async (req, res) => {
+  const { token, mapping, matchKey, updateFields } = req.body || {}
+  try {
+    if (!getStatus().loaded) await loadMetadata()
+    const { buffer, name } = await sheetJobBuffer(token)
+    const diff = diffClientSheet(buffer, { mapping, matchKey, updateFields })
+    console.log(`[sheet-update] preview ${name}: ${diff.rowsRead} rows → ${diff.edits.length} changed, ${diff.unchanged} unchanged, ${diff.unmatched.length} unmatched, ${diff.ambiguous.length} ambiguous`)
+    res.json({ ok: true, file: name, ...diff })
+  } catch (err) {
+    console.error('[sheet-update preview]', err.message)
+    res.status(err.status || 400).json({ error: err.message })
+  }
+})
+
+// Step 3: write the ticked changes into the cache. The admin UI then queues
+// them on the existing push-to-databases button.
+router.post('/metadata/sheet-update/apply', adminAuth, express.json({ limit: '10mb' }), async (req, res) => {
+  const { edits } = req.body || {}
+  if (!Array.isArray(edits) || !edits.length) return res.status(400).json({ error: 'edits required' })
+  res.json(await applyCacheEdits(edits, 'sheet-update'))
+})
+
+// Step 3b: add ticked unmatched sheet rows to the cache as NEW rows.
+// Body: { token, mapping, sheetRows: [2, 7, …] }
+router.post('/metadata/sheet-update/add', adminAuth, express.json({ limit: '2mb' }), async (req, res) => {
+  const { token, mapping, sheetRows } = req.body || {}
+  if (!Array.isArray(sheetRows) || !sheetRows.length) return res.status(400).json({ error: 'sheetRows required' })
+  try {
+    if (!getStatus().loaded) await loadMetadata()
+    const { buffer, name } = await sheetJobBuffer(token)
+    const rows = clientRowsToAppend(buffer, { mapping, sheetRows })
+    let added = 0
+    for (const row of rows) { await appendMetadataRow(row); added++ }
+    console.log(`[sheet-update] add from ${name}: ${added} new row(s)`)
+    res.json({ ok: true, added })
+  } catch (err) {
+    console.error('[sheet-update add]', err.message)
+    res.status(err.status || 400).json({ error: err.message })
+  }
 })
 
 // apply: execute the confirmed targets (preview's objects, minus unticked).
