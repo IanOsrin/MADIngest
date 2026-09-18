@@ -7602,7 +7602,7 @@ function mdfRender(plan) {
         <label style="color:var(--muted);cursor:pointer"><input type="checkbox" onchange="document.querySelectorAll('.mdf-add').forEach(c => c.checked = this.checked)"> tick all</label>` +
       plan.missing.map((m, i) => `<label style="display:block;cursor:pointer">
           <input type="checkbox" class="mdf-add" data-i="${i}"> ${m.seq != null ? `#${esc(m.seq)} ` : ''}${esc(m.title || '(no title)')}${m.artist ? ' — ' + esc(m.artist) : ''}
-          <span style="color:var(--muted)"> · from ${MDF_SRC_LABEL[m.source]}${m.isrc ? ' · ISRC ' + esc(m.isrc) : ''}${m.audio ? ' · has audio' : ''}</span>
+          <span style="color:var(--muted)"> · from ${esc((m.from || [m.source]).map(k => MDF_SRC_LABEL[k]).join(' + '))}${m.isrc ? ' · ISRC ' + esc(m.isrc) : ''}${m.audio ? ' · has audio' : ''}</span>
         </label>`).join('') + `</div></details>`
   }
 
