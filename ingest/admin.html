@@ -1034,6 +1034,34 @@
         <div id="dbSyncStatus" style="font-size:0.82rem;margin-top:14px;white-space:pre-wrap;font-family:ui-monospace,Menlo,monospace;color:var(--muted)"></div>
       </div>
 
+      <div class="import-section" style="margin-bottom:24px">
+        <h3>Update MAM from the other databases</h3>
+        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
+          Music Arena Master was merged from the other three once and has drifted ever since — credits typed into
+          <strong>Gallo Catalogue</strong>, a language set in <strong>CMS 2024</strong>, audio linked to a Vision
+          master: none of it reaches MAM on its own. This reads the same catalogue in all three and shows what MAM
+          is missing, <strong>including the audio links and the cover</strong>.
+          <br><br>
+          <strong>Empty MAM fields are filled</strong> (ticked below). Where MAM already holds something different
+          it is a <strong>conflict</strong>: shown old → new and left alone unless you tick it. Tracks a source has
+          and MAM doesn't are listed at the end and created only if ticked. Tracks are matched on ISRC, then on
+          title — never on track order. Gallo wins, then CMS, then MadStreamer; every source's value is shown so
+          you can choose another. The cover goes through the usual pipeline, so MADStreamer gets it too.
+        </p>
+
+        <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
+          <input id="mdfCat" type="text" placeholder="Catalogue number, e.g. CDGURB 104"
+            onkeydown="if(event.key==='Enter')mdfPreview()"
+            style="flex:1;min-width:240px;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
+          <label style="font-size:0.78rem;color:var(--muted)"><input type="checkbox" class="mdf-src" value="gallo" checked> Gallo</label>
+          <label style="font-size:0.78rem;color:var(--muted)"><input type="checkbox" class="mdf-src" value="cms" checked> CMS 2024</label>
+          <label style="font-size:0.78rem;color:var(--muted)"><input type="checkbox" class="mdf-src" value="streamer" checked> Streamer</label>
+          <button class="btn btn-gold" id="mdfPreviewBtn" onclick="mdfPreview()">Preview</button>
+          <span id="mdfStatus" style="font-size:0.82rem;color:var(--muted)"></span>
+        </div>
+        <div id="mdfResult"></div>
+      </div>
+
       <div class="import-section">
         <h3>Bulk copy by catalogue</h3>
         <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
@@ -7463,6 +7491,153 @@ async function igApply() {
     status.textContent = `✓ ${data.applied.length} row(s) written to the cache${failNote} — now review ⇪ Push changes to databases`
     $('igResult').style.display = 'none'
     showToast(`${data.applied.length} cache row(s) updated — queued for DB push`, data.failed.length ? 'error' : 'success')
+  } catch (err) {
+    status.textContent = `✗ ${err.message}`
+    showToast(err.message, 'error')
+  }
+}
+
+// ── Update MAM from the other three databases (DB Sync tab) ─────────────────
+// Preview writes nothing. Fills are ticked, conflicts are not; missing tracks
+// and the cover are separate ticks. Apply sends only what is ticked.
+let _mdfPlan = null
+
+const MDF_SRC_LABEL = { gallo: 'Gallo', cms: 'CMS 2024', streamer: 'Streamer' }
+
+function mdfSources() {
+  return [...document.querySelectorAll('.mdf-src:checked')].map(c => c.value)
+}
+
+async function mdfPreview() {
+  const cat = $('mdfCat').value.trim() || $('dbSyncCat')?.value.trim() || ''
+  if (!cat) { showToast('Enter a catalogue number', 'error'); return }
+  $('mdfCat').value = cat
+  const status = $('mdfStatus')
+  const sources = mdfSources()
+  if (!sources.length) { showToast('Tick at least one source database', 'error'); return }
+  status.textContent = `⟳ Reading ${cat} in ${sources.map(s => MDF_SRC_LABEL[s]).join(', ')}…`
+  $('mdfResult').innerHTML = ''
+  try {
+    const res = await api('/api/mam/db-fill/preview', 'POST', { catalogue: cat, precedence: sources })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    _mdfPlan = data.plan
+    mdfRender(data.plan)
+    status.textContent = ''
+  } catch (err) {
+    status.textContent = `✗ ${err.message}`
+    showToast(err.message, 'error')
+  }
+}
+
+function mdfValueCell(v) {
+  return v == null || v === '' ? '<span style="color:var(--muted)">—</span>' : esc(String(v))
+}
+
+function mdfRender(plan) {
+  const c = plan.counts
+  const srcLine = Object.entries(c.sources).map(([k, n]) => `${MDF_SRC_LABEL[k]}: ${n} track${n === 1 ? '' : 's'}`).join(' · ')
+  const errLine = Object.entries(plan.sourceErrors || {}).map(([k, m]) => `${MDF_SRC_LABEL[k]} unreadable — ${m}`).join('; ')
+
+  let html = `<div style="font-size:0.85rem;margin-bottom:10px">
+    MAM has <b>${c.mamTracks}</b> track${c.mamTracks === 1 ? '' : 's'} · ${esc(srcLine)}<br>
+    <b>${c.fills}</b> blank${c.fills === 1 ? '' : 's'} to fill · <b>${c.conflicts}</b> conflict${c.conflicts === 1 ? '' : 's'} · <b>${c.missing}</b> track${c.missing === 1 ? '' : 's'} MAM doesn't have
+    ${errLine ? `<br><span style="color:var(--amber)">${esc(errLine)}</span>` : ''}
+  </div>`
+
+  if (!c.fills && !c.conflicts && !c.missing && (plan.artwork.mamHas || !plan.artwork.available.length)) {
+    $('mdfResult').innerHTML = html + '<div style="color:var(--muted)">MAM is already up to date with the other databases for this album.</div>'
+    return
+  }
+
+  html += `<div style="display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+    <button class="btn" style="color:var(--gold);border-color:rgba(212,175,55,0.5)" onclick="mdfApply()">Apply ticked to MAM</button>
+    <label style="font-size:0.78rem;color:var(--muted);cursor:pointer"><input type="checkbox" checked onchange="document.querySelectorAll('.mdf-fill').forEach(c => c.checked = this.checked)"> all fills</label>
+    <label style="font-size:0.78rem;color:var(--muted);cursor:pointer"><input type="checkbox" onchange="document.querySelectorAll('.mdf-conflict').forEach(c => c.checked = this.checked)"> all conflicts</label>
+  </div>`
+
+  // Artwork
+  const art = plan.artwork
+  html += `<div style="border:1px solid var(--border);border-radius:6px;padding:8px 10px;margin-bottom:10px;font-size:0.82rem">
+    <b>Cover</b> — MAM ${art.mamHas ? 'has one' : '<span style="color:var(--amber)">has none</span>'}${art.available.length ? ` · available in ${art.available.map(k => MDF_SRC_LABEL[k]).join(', ')}` : ' · none of the others has one either'}
+    ${art.available.length ? `<label style="margin-left:10px;cursor:pointer"><input type="checkbox" id="mdfArtwork" ${art.mamHas ? '' : 'checked'}> copy from
+      <select id="mdfArtworkFrom" class="btn-browse" style="font-size:0.78rem">${art.available.map(k => `<option value="${k}"${k === art.suggested ? ' selected' : ''}>${MDF_SRC_LABEL[k]}</option>`).join('')}</select></label>
+      <div style="color:var(--muted);margin-top:4px">Goes through the cover pipeline: a JPEG master plus the site's sizes, with MAM and MADStreamer both repointed and the original archived on Vision.${art.mamHas ? ' MAM already has a cover — ticking this replaces it.' : ''}</div>` : ''}
+  </div>`
+
+  // Album-level
+  const af = Object.entries(plan.album.fills), ac = Object.entries(plan.album.conflicts)
+  if (af.length || ac.length) {
+    html += `<div style="border:1px solid var(--border);border-radius:6px;padding:8px 10px;margin-bottom:10px;font-size:0.82rem">
+      <b>Album</b>
+      ${af.map(([f, v]) => `<label style="display:block;margin-left:4px;cursor:pointer"><input type="checkbox" class="mdf-fill mdf-album" data-field="${esc(f)}" data-value="${esc(v.value)}" checked> ${esc(f)}: ${mdfValueCell(v.value)} <span style="color:var(--muted)">from ${MDF_SRC_LABEL[v.source]}</span></label>`).join('')}
+      ${ac.map(([f, v]) => `<label style="display:block;margin-left:4px;cursor:pointer;color:var(--amber)"><input type="checkbox" class="mdf-conflict mdf-album" data-field="${esc(f)}" data-value="${esc(v.value)}"> ${esc(f)}: ${mdfValueCell(v.mam)} <span style="color:var(--muted)">→</span> ${mdfValueCell(v.value)} <span style="color:var(--muted)">from ${MDF_SRC_LABEL[v.source]}</span></label>`).join('')}
+    </div>`
+  }
+
+  // Per track
+  html += plan.tracks.map(t => {
+    const fills = Object.entries(t.fills).map(([f, v]) =>
+      `<label style="display:block;margin-left:4px;cursor:pointer"><input type="checkbox" class="mdf-fill" data-rec="${esc(t.recordId)}" data-field="${esc(f)}" data-value="${esc(v.value)}" checked> ${esc(f)}: ${mdfValueCell(v.value)} <span style="color:var(--muted)">from ${MDF_SRC_LABEL[v.source]}${v.audio ? ' · audio link' : ''}${v.provenance ? ' · record link' : ''}</span></label>`).join('')
+    const conflicts = Object.entries(t.conflicts).map(([f, v]) => {
+      const others = (v.others || []).map(o => `${MDF_SRC_LABEL[o.source]}: ${esc(o.value)}`).join(' · ')
+      return `<label style="display:block;margin-left:4px;cursor:pointer;color:var(--amber)"><input type="checkbox" class="mdf-conflict" data-rec="${esc(t.recordId)}" data-field="${esc(f)}" data-value="${esc(v.value)}"> ${esc(f)}: ${mdfValueCell(v.mam)} <span style="color:var(--muted)">→</span> ${mdfValueCell(v.value)} <span style="color:var(--muted)">from ${MDF_SRC_LABEL[v.source]}${others ? ' · also ' + others : ''}</span></label>`
+    }).join('')
+    const matched = Object.entries(t.matchedBy).filter(([, how]) => how).map(([k, how]) => `${MDF_SRC_LABEL[k]} by ${how}`).join(', ')
+    return `<div style="border:1px solid var(--border);border-radius:6px;padding:7px 10px;margin-bottom:6px;font-size:0.82rem">
+      <div>${t.seq != null ? `#${esc(t.seq)} ` : ''}<b>${esc(t.title)}</b>${t.artist ? ' — ' + esc(t.artist) : ''}
+        <span style="color:var(--muted);font-size:0.76rem"> · ${esc(matched || 'no source match')}</span></div>
+      ${fills}${conflicts}
+    </div>`
+  }).join('')
+
+  // Tracks MAM doesn't have
+  if (plan.missing.length) {
+    html += `<details style="margin-top:8px" open><summary style="cursor:pointer;font-size:0.82rem;color:var(--amber)">${plan.missing.length} track(s) in the other databases but not in MAM</summary>
+      <div style="font-size:0.8rem;margin-top:6px">
+        <label style="color:var(--muted);cursor:pointer"><input type="checkbox" onchange="document.querySelectorAll('.mdf-add').forEach(c => c.checked = this.checked)"> tick all</label>` +
+      plan.missing.map((m, i) => `<label style="display:block;cursor:pointer">
+          <input type="checkbox" class="mdf-add" data-i="${i}"> ${m.seq != null ? `#${esc(m.seq)} ` : ''}${esc(m.title || '(no title)')}${m.artist ? ' — ' + esc(m.artist) : ''}
+          <span style="color:var(--muted)"> · from ${MDF_SRC_LABEL[m.source]}${m.isrc ? ' · ISRC ' + esc(m.isrc) : ''}${m.audio ? ' · has audio' : ''}</span>
+        </label>`).join('') + `</div></details>`
+  }
+
+  $('mdfResult').innerHTML = html
+}
+
+async function mdfApply() {
+  if (!_mdfPlan) return
+  const tracks = {}
+  const album = {}
+  for (const cb of document.querySelectorAll('.mdf-fill:checked, .mdf-conflict:checked')) {
+    const { field, value, rec } = cb.dataset
+    if (cb.classList.contains('mdf-album')) album[field] = value
+    else (tracks[rec] ||= {})[field] = value
+  }
+  const addTracks = [...document.querySelectorAll('.mdf-add:checked')].map(cb => _mdfPlan.missing[Number(cb.dataset.i)]).filter(Boolean)
+  const artworkFrom = $('mdfArtwork')?.checked ? $('mdfArtworkFrom').value : null
+  const nFields = Object.values(tracks).reduce((a, o) => a + Object.keys(o).length, 0) + Object.keys(album).length
+  if (!nFields && !addTracks.length && !artworkFrom) { showToast('Nothing ticked', 'error'); return }
+
+  const bits = [nFields ? `${nFields} field(s)` : null, addTracks.length ? `${addTracks.length} new track(s)` : null,
+                artworkFrom ? `the cover from ${MDF_SRC_LABEL[artworkFrom]}` : null].filter(Boolean).join(', ')
+  if (!confirm(`Write ${bits} to Music Arena Master for ${_mdfPlan.catalogue}?`)) return
+
+  const status = $('mdfStatus')
+  status.textContent = `⟳ Writing to MAM…`
+  try {
+    const res = await api('/api/mam/db-fill/apply', 'POST', {
+      catalogue: _mdfPlan.catalogue, tracks, album, addTracks, artworkFrom,
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    const failed = data.failed?.length ? ` · ${data.failed.length} failed (${esc(data.failed[0].error || '')})` : ''
+    status.textContent = `✓ ${data.fieldsWritten} field(s) on ${data.tracksUpdated} track(s)` +
+      `${data.albumFields ? `, ${data.albumFields} album field(s)` : ''}` +
+      `${data.added ? `, ${data.added} track(s) added` : ''}` +
+      `${data.artwork ? ', cover copied' : ''}${failed}`
+    showToast('MAM updated', data.failed?.length ? 'error' : 'success')
+    await mdfPreview()          // re-read, so what's left on screen is what's still outstanding
   } catch (err) {
     status.textContent = `✗ ${err.message}`
     showToast(err.message, 'error')

@@ -11,6 +11,7 @@ import express from 'express'
 import { adminAuth } from '../lib/admin-auth.js'
 import { planCacheFill, applyCacheFill, addMissingSong } from '../lib/mam-cache-fill.js'
 import { syncMamEdit, planAlbumSync, applyAlbumSync } from '../lib/mam-streamer-sync.js'
+import { planMamFill, applyMamFill, DEFAULT_PRECEDENCE } from '../lib/mam-db-fill.js'
 
 const router = Router()
 
@@ -79,6 +80,37 @@ router.post('/cache-fill/add-song', adminAuth, express.json(), async (req, res) 
       { cacheCatalogue: String(req.body?.cacheCatalogue || '') })
     console.log(`[mam-cache-fill] ${out.catalogue}: created "${out.title}" (${out.recordId})`)
     res.json(out)
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }) }
+})
+
+// ── Update MAM from the other three databases (DB Sync tab) ─────────────────
+// MAM drifts: credits typed into Gallo, a language set in CMS, audio linked to
+// a Vision master — none of it reaches MAM. Preview writes nothing; apply fills
+// blanks, replaces only ticked conflicts, adds only ticked missing tracks, and
+// copies the cover through lib/album-cover.js.
+router.post('/db-fill/preview', adminAuth, express.json(), async (req, res) => {
+  try {
+    const precedence = Array.isArray(req.body?.precedence) && req.body.precedence.length
+      ? req.body.precedence.map(String) : DEFAULT_PRECEDENCE
+    const plan = await planMamFill(String(req.body?.catalogue || ''), { precedence })
+    console.log(`[mam-db-fill] preview ${plan.catalogue}: ${plan.counts.fills} fill(s), ` +
+                `${plan.counts.conflicts} conflict(s), ${plan.counts.missing} missing track(s)`)
+    res.json({ ok: true, plan })
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }) }
+})
+
+router.post('/db-fill/apply', adminAuth, express.json({ limit: '4mb' }), async (req, res) => {
+  try {
+    const out = await applyMamFill(String(req.body?.catalogue || ''), {
+      tracks:      (req.body?.tracks && typeof req.body.tracks === 'object') ? req.body.tracks : {},
+      album:       (req.body?.album && typeof req.body.album === 'object') ? req.body.album : {},
+      artworkFrom: req.body?.artworkFrom ? String(req.body.artworkFrom) : null,
+      addTracks:   Array.isArray(req.body?.addTracks) ? req.body.addTracks : [],
+    })
+    console.log(`[mam-db-fill] apply ${req.body?.catalogue}: ${out.fieldsWritten} field(s) on ` +
+                `${out.tracksUpdated} track(s), ${out.albumFields} album field(s), ${out.added} added, ` +
+                `artwork ${out.artwork ? 'copied' : 'untouched'}, ${out.failed.length} failed`)
+    res.json({ ok: true, ...out })
   } catch (e) { res.status(e.status || 500).json({ error: e.message }) }
 })
 
