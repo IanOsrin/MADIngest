@@ -103,6 +103,8 @@
     .btn-green { background: rgba(92,184,92,0.15); color: var(--green); border-color: rgba(92,184,92,0.3); }
     .btn-red   { background: rgba(217,83,79,0.12); color: var(--red);   border-color: rgba(217,83,79,0.3); }
     .btn-ghost { background: var(--gold-glow); color: var(--gold); border-color: var(--border); }
+    /* Reports tab: which grouping is on show */
+    .rep-group.active { background: var(--gold); color: #1a1408; border-color: var(--gold); }
     .btn-blue  { background: rgba(70,130,200,0.15); color: #6aa9e0; border-color: rgba(70,130,200,0.3); }
     .btn-blue:hover:not(:disabled) { background: rgba(70,130,200,0.22); color: #8fbfe7; }
 
@@ -317,6 +319,7 @@
       <button class="tab-btn active" data-tab="album" onclick="showTab('album')">MAM</button>
       <button class="tab-btn" data-tab="catalog" onclick="showTab('catalog')">Source</button>
       <button class="tab-btn" data-tab="health" onclick="showTab('health')">Data Health</button>
+      <button class="tab-btn" data-tab="reports" onclick="showTab('reports')">Reports</button>
       <button class="tab-btn" data-tab="tags" onclick="showTab('tags')">Tags</button>
       <button class="tab-btn" data-tab="ddex" onclick="showTab('ddex')">DDEX</button>
       <button class="tab-btn" data-tab="excel" onclick="showTab('excel')">Excel</button>
@@ -410,6 +413,59 @@
     </div>
 
     <!-- ── DDEX tab ────────────────────────────────────────── -->
+    <!-- ── Reports tab ──────────────────────────────────────── -->
+    <div id="tab-reports" class="tab-panel">
+      <div class="import-section">
+        <h3>Listening report</h3>
+        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:12px">
+          What people listened to on Music Africa Direct in a chosen period, how long they listened for, and each
+          song's share of all listening time in that period. One listen is one play of one track: the site records
+          the seconds actually heard, so a pause and resume counts once and a track cannot exceed its own length.
+          Dates are South African days. Titles, albums and catalogue numbers come from last night's copy of the
+          catalogue.
+          <br><br>
+          Guest 30-second previews are left out of the table and the percentages; they are reported on their own
+          line so the figure is never quietly dropped. <b>Plays 30s+</b> counts listens that reached 30 seconds,
+          the usual royalty threshold.
+        </p>
+
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px">
+          <div>
+            <label style="font-size:0.78rem;color:var(--muted);display:block;margin-bottom:4px">From</label>
+            <input id="repFrom" type="date" style="background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 10px;color:var(--text);font-family:inherit;font-size:0.88rem">
+          </div>
+          <div>
+            <label style="font-size:0.78rem;color:var(--muted);display:block;margin-bottom:4px">To</label>
+            <input id="repTo" type="date" style="background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 10px;color:var(--text);font-family:inherit;font-size:0.88rem">
+          </div>
+          <select id="repPreset" class="btn-browse" onchange="repApplyPreset()">
+            <option value="">Jump to…</option>
+            <option value="this-month">This month</option>
+            <option value="last-month">Last month</option>
+            <option value="last-30">Last 30 days</option>
+            <option value="last-90">Last 90 days</option>
+            <option value="this-year">This year</option>
+            <option value="all">Everything so far</option>
+          </select>
+          <button class="btn btn-gold" onclick="repRun()">Run report</button>
+          <label style="font-size:0.82rem;color:var(--muted);display:flex;align-items:center;gap:6px">
+            <input id="repPreviews" type="checkbox" onchange="repRun()"> Count guest previews too
+          </label>
+          <button class="btn btn-ghost" onclick="repCsv()">Download CSV</button>
+          <span id="repStatus" style="font-size:0.82rem;color:var(--muted)"></span>
+        </div>
+
+        <div style="display:flex;gap:6px;margin-bottom:12px">
+          <button class="btn btn-ghost rep-group active" data-group="song" onclick="repSetGroup('song')">By song</button>
+          <button class="btn btn-ghost rep-group" data-group="album" onclick="repSetGroup('album')">By album</button>
+          <button class="btn btn-ghost rep-group" data-group="artist" onclick="repSetGroup('artist')">By artist</button>
+        </div>
+
+        <div id="repSummary" style="font-size:0.85rem;margin-bottom:10px"></div>
+        <div id="repResults"></div>
+      </div>
+    </div>
+
     <div id="tab-tags" class="tab-panel">
       <div class="import-section">
         <h3>Sync tags</h3>
@@ -10007,6 +10063,114 @@ async function vuUpload() {
     status.textContent = `Upload failed: ${e.message}`
   } finally {
     btn.disabled = false
+  }
+}
+
+// ── Reports tab ──────────────────────────────────────────────────────────────
+// Listening figures from MadStreamer's stream events (one record per listen),
+// grouped by song, album or artist. The server does the counting; this draws it.
+let repGroup = 'song'
+let repLast = null
+
+function repToday() { return new Date(Date.now() + 2 * 3600e3).toISOString().slice(0, 10) }  // SA date
+
+function repApplyPreset() {
+  const v = $('repPreset').value
+  if (!v) return
+  const now = new Date(Date.now() + 2 * 3600e3)
+  const y = now.getUTCFullYear(), m = now.getUTCMonth()
+  const iso = d => d.toISOString().slice(0, 10)
+  const days = n => iso(new Date(now.getTime() - n * 86400e3))
+  if (v === 'this-month')  { $('repFrom').value = iso(new Date(Date.UTC(y, m, 1))); $('repTo').value = repToday() }
+  if (v === 'last-month')  { $('repFrom').value = iso(new Date(Date.UTC(y, m - 1, 1))); $('repTo').value = iso(new Date(Date.UTC(y, m, 0))) }
+  if (v === 'last-30')     { $('repFrom').value = days(29); $('repTo').value = repToday() }
+  if (v === 'last-90')     { $('repFrom').value = days(89); $('repTo').value = repToday() }
+  if (v === 'this-year')   { $('repFrom').value = iso(new Date(Date.UTC(y, 0, 1))); $('repTo').value = repToday() }
+  if (v === 'all')         { $('repFrom').value = '2025-12-01'; $('repTo').value = repToday() }
+  $('repPreset').value = ''
+  repRun()
+}
+
+function repSetGroup(g) {
+  repGroup = g
+  document.querySelectorAll('.rep-group').forEach(b => b.classList.toggle('active', b.dataset.group === g))
+  repRun()
+}
+
+function repParams() {
+  const p = new URLSearchParams({ from: $('repFrom').value, to: $('repTo').value, group: repGroup })
+  if ($('repPreviews').checked) p.set('previews', '1')
+  return p
+}
+
+async function repRun() {
+  const status = $('repStatus')
+  if (!$('repFrom').value || !$('repTo').value) { status.textContent = 'Pick a start and end date.'; return }
+  status.textContent = 'Counting…'
+  $('repResults').innerHTML = ''
+  try {
+    const res = await api('/api/reports/streams?' + repParams().toString())
+    const data = await res.json()
+    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    repLast = data
+    repRender(data)
+    status.textContent = ''
+  } catch (e) {
+    status.textContent = 'Failed: ' + e.message
+  }
+}
+
+function repRender(d) {
+  const t = d.totals
+  const prev = d.previews.counted
+    ? `<span style="color:var(--muted)">Guest previews are included in these figures.</span>`
+    : `<span style="color:var(--muted)">Excluded: ${d.previews.listens} guest preview${d.previews.listens === 1 ? '' : 's'} (${d.previews.duration}).</span>`
+  $('repSummary').innerHTML = `
+    <b>${esc(t.duration)}</b> of listening ·
+    ${t.listens.toLocaleString()} listens (${t.plays30.toLocaleString()} reached 30s) ·
+    ${t.songs.toLocaleString()} different songs · ${t.listeners.toLocaleString()} listeners<br>${prev}`
+
+  if (!d.rows.length) { $('repResults').innerHTML = '<p style="color:var(--muted)">Nobody listened to anything in that period.</p>'; return }
+
+  const isSong = d.group === 'song'
+  const head = isSong ? ['#', 'Track', 'Artist', 'Catalogue', 'Listens', 'Plays 30s+', 'Time played', '% of total']
+    : d.group === 'album' ? ['#', 'Album', 'Artist', 'Catalogue', 'Tracks', 'Listens', 'Plays 30s+', 'Time played', '% of total']
+    : ['#', 'Artist', 'Tracks', 'Listens', 'Plays 30s+', 'Time played', '% of total']
+  const cells = (r, i) => isSong ? [i + 1, r.title, r.subtitle, r.catalogue, r.listens, r.plays30, r.duration, r.share + '%']
+    : d.group === 'album' ? [i + 1, r.title, r.subtitle, r.catalogue, r.tracks, r.listens, r.plays30, r.duration, r.share + '%']
+    : [i + 1, r.title, r.tracks, r.listens, r.plays30, r.duration, r.share + '%']
+
+  $('repResults').innerHTML = `
+    <div style="font-size:0.8rem;color:var(--muted);margin-bottom:6px">
+      Showing ${Math.min(d.rows.length, d.rowCount).toLocaleString()} of ${d.rowCount.toLocaleString()} ${d.group === 'song' ? 'songs' : d.group + 's'} — the CSV has them all.
+    </div>
+    <table style="width:100%;border-collapse:collapse;font-size:0.8rem">
+      <thead><tr>${head.map(h => `<th style="text-align:${/Listens|Plays|Time|%|#/.test(h) ? 'right' : 'left'};padding:6px 8px;border-bottom:1px solid var(--border);color:var(--muted)">${esc(h)}</th>`).join('')}</tr></thead>
+      <tbody>${d.rows.map((r, i) => `<tr>${cells(r, i).map((c, j) => {
+        const right = /Listens|Plays|Time|%|#|Tracks/.test(head[j])
+        const bar = j === cells(r, i).length - 1
+          ? `<span style="display:inline-block;height:6px;width:${Math.max(2, Math.min(100, r.share * 2))}px;background:var(--gold,#c9a227);opacity:.55;margin-left:8px;vertical-align:middle"></span>` : ''
+        return `<td style="text-align:${right ? 'right' : 'left'};padding:6px 8px;border-bottom:1px solid var(--border);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:320px">${esc(c)}${bar}</td>`
+      }).join('')}</tr>`).join('')}</tbody>
+    </table>`
+}
+
+function repCsv() {
+  if (!$('repFrom').value || !$('repTo').value) { $('repStatus').textContent = 'Pick a start and end date.'; return }
+  const p = repParams()
+  p.set('token', adminToken)
+  window.location.href = '/api/reports/streams.csv?' + p.toString()
+}
+
+// Opening the tab shows this month without anyone having to ask for it.
+const _repOrigShowTab = showTab
+showTab = function (name) {
+  _repOrigShowTab(name)
+  if (name === 'reports' && !repLast) {
+    const now = new Date(Date.now() + 2 * 3600e3)
+    $('repFrom').value = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString().slice(0, 10)
+    $('repTo').value = repToday()
+    repRun()
   }
 }
 
