@@ -11,6 +11,7 @@
 import { Router } from 'express'
 import { adminAuth } from '../lib/admin-auth.js'
 import { buildStreamReport } from '../lib/stream-report.js'
+import { buildStreamDashboard } from '../lib/stream-dashboard.js'
 
 const router = Router()
 
@@ -43,6 +44,22 @@ function params(req) {
 router.get('/streams', adminAuth, async (req, res, next) => {
   try {
     res.json({ ok: true, ...(await report(params(req))) })
+  } catch (err) { next(err) }
+})
+
+// The Listening tab (lib/stream-dashboard.js). Cached for a minute: "right now" should be fresh, but
+// flipping between periods or several people looking at once shouldn't each hit FileMaker.
+const dashCache = new Map()
+router.get('/dashboard', adminAuth, async (req, res, next) => {
+  try {
+    const p = params(req)
+    const key = `${p.from}|${p.to}`
+    const hit = dashCache.get(key)
+    if (hit && Date.now() - hit.at < 60 * 1000 && req.query.fresh !== '1') return res.json({ ok: true, ...hit.value })
+    const value = await buildStreamDashboard({ from: p.from, to: p.to })
+    dashCache.set(key, { at: Date.now(), value })
+    if (dashCache.size > 30) dashCache.delete(dashCache.keys().next().value)
+    res.json({ ok: true, ...value })
   } catch (err) { next(err) }
 })
 
