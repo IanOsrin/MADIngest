@@ -319,6 +319,7 @@
       <button class="tab-btn active" data-tab="album" onclick="showTab('album')">MAM</button>
       <button class="tab-btn" data-tab="catalog" onclick="showTab('catalog')">Source</button>
       <button class="tab-btn" data-tab="health" onclick="showTab('health')">Data Health</button>
+      <button class="tab-btn" data-tab="listening" onclick="showTab('listening')">Listening</button>
       <button class="tab-btn" data-tab="reports" onclick="showTab('reports')">Reports</button>
       <button class="tab-btn" data-tab="tags" onclick="showTab('tags')">Tags</button>
       <button class="tab-btn" data-tab="ddex" onclick="showTab('ddex')">DDEX</button>
@@ -414,6 +415,76 @@
 
     <!-- ── DDEX tab ────────────────────────────────────────── -->
     <!-- ── Reports tab ──────────────────────────────────────── -->
+    <div id="tab-listening" class="tab-panel">
+      <style>
+        #tab-listening .ls-row { display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end; margin-bottom:14px }
+        #tab-listening .ls-period.active { background:var(--gold); color:#fff; border-color:var(--gold) }
+        #tab-listening .ls-now { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px }
+        #tab-listening .ls-now > div { flex:1 1 180px; background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius); padding:12px 14px }
+        #tab-listening .ls-now b { display:block; font-size:1.6rem; line-height:1.1; color:var(--text) }
+        #tab-listening .ls-now span, #tab-listening .ls-kpi span { font-size:0.78rem; color:var(--muted) }
+        #tab-listening .ls-live { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--green); margin-right:6px; vertical-align:middle }
+        #tab-listening .ls-live.off { background:var(--muted) }
+        #tab-listening .ls-kpis { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:10px; margin-bottom:16px }
+        #tab-listening .ls-kpi { border:1px solid var(--border); border-radius:var(--radius); padding:10px 12px }
+        #tab-listening .ls-kpi b { display:block; font-size:1.25rem; color:var(--text); margin-bottom:2px }
+        #tab-listening .ls-card { border:1px solid var(--border); border-radius:var(--radius); padding:14px; margin-bottom:14px; background:var(--bg) }
+        #tab-listening .ls-card h4 { margin:0 0 4px; font-size:0.95rem }
+        #tab-listening .ls-card p.ls-sub { margin:0 0 10px; font-size:0.78rem; color:var(--muted) }
+        #tab-listening .ls-grid2 { display:grid; grid-template-columns:repeat(auto-fit, minmax(360px, 1fr)); gap:14px }
+        #tab-listening .ls-chart { position:relative; display:flex; align-items:flex-end; gap:2px; height:180px; border-bottom:1px solid var(--border); padding-top:6px }
+        #tab-listening .ls-col { flex:1 1 0; display:flex; flex-direction:column-reverse; gap:2px; height:100%; justify-content:flex-start; cursor:default; min-width:3px }
+        #tab-listening .ls-col i { display:block; width:100%; border-radius:0 }
+        #tab-listening .ls-col i.full { background:#1a6fd4 }
+        #tab-listening .ls-col i.prev { background:#e0912b }
+        #tab-listening .ls-col i:last-child { border-radius:4px 4px 0 0 }
+        #tab-listening .ls-col:hover i { filter:brightness(1.12) }
+        #tab-listening .ls-axis { display:flex; justify-content:space-between; font-size:0.72rem; color:var(--muted); margin-top:4px }
+        #tab-listening .ls-legend { display:flex; gap:16px; font-size:0.78rem; color:var(--text); margin-bottom:8px; flex-wrap:wrap }
+        #tab-listening .ls-legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:6px; vertical-align:-1px }
+        #tab-listening .ls-tip { position:fixed; pointer-events:none; background:var(--text); color:#fff; font-size:0.78rem; padding:6px 9px; border-radius:6px; z-index:50; display:none; white-space:nowrap }
+        #tab-listening .ls-bar { display:flex; align-items:center; gap:8px; font-size:0.82rem; margin:5px 0 }
+        #tab-listening .ls-bar .n { width:120px; flex:none }
+        #tab-listening .ls-bar .t { flex:1; background:var(--bg-card); border-radius:4px; height:12px; overflow:hidden }
+        #tab-listening .ls-bar .t i { display:block; height:100%; background:#1a6fd4; border-radius:0 4px 4px 0 }
+        #tab-listening .ls-bar .v { width:110px; flex:none; text-align:right; color:var(--muted) }
+        #tab-listening table { width:100%; border-collapse:collapse; font-size:0.8rem }
+        #tab-listening th { text-align:left; padding:6px 8px; border-bottom:1px solid var(--border); color:var(--muted); font-weight:600 }
+        #tab-listening td { padding:6px 8px; border-bottom:1px solid var(--border); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px }
+        #tab-listening td.r, #tab-listening th.r { text-align:right }
+        #tab-listening .ls-pill { display:inline-block; font-size:0.7rem; padding:1px 7px; border-radius:999px; border:1px solid var(--border); color:var(--muted) }
+        #tab-listening .ls-pill.prev { color:#9a5b0c; border-color:#e0912b }
+        #tab-listening .ls-pill.none { color:var(--red); border-color:var(--red) }
+        #tab-listening .ls-why li { margin:4px 0; font-size:0.83rem }
+      </style>
+      <div class="import-section">
+        <h3>Listening dashboard</h3>
+        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:12px">
+          What's happening on Music Africa Direct: who is listening now, how much listening there has been, on what
+          devices, by whom, and the latest listens as they come in. One listen is one play of one track (the seconds
+          actually heard). Times are South African. For song, album and artist totals over a period, use <b>Reports</b>.
+        </p>
+        <div class="ls-row">
+          <button class="btn btn-ghost ls-period" data-p="today" onclick="lsPeriod('today')">Today</button>
+          <button class="btn btn-ghost ls-period" data-p="7" onclick="lsPeriod('7')">Last 7 days</button>
+          <button class="btn btn-ghost ls-period" data-p="30" onclick="lsPeriod('30')">Last 30 days</button>
+          <button class="btn btn-ghost ls-period" data-p="month" onclick="lsPeriod('month')">This month</button>
+          <div>
+            <label style="font-size:0.78rem;color:var(--muted);display:block;margin-bottom:4px">From</label>
+            <input id="lsFrom" type="date" onchange="lsPeriod('custom')" style="background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 10px;color:var(--text);font-family:inherit;font-size:0.88rem">
+          </div>
+          <div>
+            <label style="font-size:0.78rem;color:var(--muted);display:block;margin-bottom:4px">To</label>
+            <input id="lsTo" type="date" onchange="lsPeriod('custom')" style="background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 10px;color:var(--text);font-family:inherit;font-size:0.88rem">
+          </div>
+          <button class="btn btn-gold" onclick="lsRun(true)">Refresh</button>
+          <span id="lsStatus" style="font-size:0.82rem;color:var(--muted)"></span>
+        </div>
+        <div id="lsBody"><p style="color:var(--muted)">Loading…</p></div>
+        <div class="ls-tip" id="lsTip"></div>
+      </div>
+    </div>
+
     <div id="tab-reports" class="tab-panel">
       <div class="import-section">
         <h3>Listening report</h3>
@@ -10674,10 +10745,142 @@ function repCsv() {
   window.location.href = '/api/reports/streams.csv?' + p.toString()
 }
 
+// ── Listening tab ────────────────────────────────────────────────────────────
+// A live picture of listening, from /api/reports/dashboard (lib/stream-dashboard.js). The server does the
+// counting; this draws it. Refreshes itself every minute while it's showing today and the tab is open.
+let lsLast = null
+let lsTimer = null
+let lsMode = 'today'
+
+function lsDays(n) { return new Date(Date.now() + 2 * 3600e3 - n * 86400e3).toISOString().slice(0, 10) }
+
+function lsPeriod(p) {
+  lsMode = p
+  document.querySelectorAll('.ls-period').forEach(b => b.classList.toggle('active', b.dataset.p === p))
+  const today = repToday()
+  if (p === 'today') { $('lsFrom').value = today; $('lsTo').value = today }
+  if (p === '7') { $('lsFrom').value = lsDays(6); $('lsTo').value = today }
+  if (p === '30') { $('lsFrom').value = lsDays(29); $('lsTo').value = today }
+  if (p === 'month') { $('lsFrom').value = today.slice(0, 8) + '01'; $('lsTo').value = today }
+  lsRun()
+}
+
+async function lsRun(fresh = false) {
+  const status = $('lsStatus')
+  if (!$('lsFrom').value || !$('lsTo').value) return
+  status.textContent = 'Counting…'
+  try {
+    const q = new URLSearchParams({ from: $('lsFrom').value, to: $('lsTo').value })
+    if (fresh) q.set('fresh', '1')
+    const res = await api('/api/reports/dashboard?' + q)
+    const data = await res.json()
+    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    lsLast = data
+    lsRender(data)
+    status.textContent = 'Updated ' + new Date().toLocaleTimeString('en-ZA', { hour: '2-digit', minute: '2-digit' })
+  } catch (e) {
+    status.textContent = 'Failed: ' + e.message
+  }
+  clearTimeout(lsTimer)
+  const tabOpen = document.getElementById('tab-listening')?.classList.contains('active')
+  if (lsMode === 'today' && tabOpen) lsTimer = setTimeout(() => lsRun(), 60 * 1000)
+}
+
+const lsNum = n => Number(n || 0).toLocaleString('en-ZA')
+
+function lsRender(d) {
+  const n = d.now, t = d.totals, m = d.missingEmail
+  const live = n.listeningNow > 0
+  const nowHtml = `
+    <div class="ls-now">
+      <div><span><i class="ls-live ${live ? '' : 'off'}"></i>Listening right now</span><b>${lsNum(n.listeningNow)}</b><span>people playing in the last 15 minutes</span></div>
+      <div><span>Listens in the last hour</span><b>${lsNum(n.listensLastHour)}</b><span>including guest previews</span></div>
+      <div><span>Last activity</span><b>${n.lastActivity ? esc(n.lastActivity) : '—'}</b><span>${n.minutesSinceLast == null ? 'no recent listening' : n.minutesSinceLast === 0 ? 'just now' : n.minutesSinceLast + ' minutes ago'}</span></div>
+    </div>`
+
+  const kpi = (v, l) => `<div class="ls-kpi"><b>${v}</b><span>${l}</span></div>`
+  const kpis = `<div class="ls-kpis">
+    ${kpi(esc(t.duration), 'listening time')}
+    ${kpi(lsNum(t.listens), `listens · ${lsNum(t.plays30)} reached 30s`)}
+    ${kpi(lsNum(t.listeners), 'listeners (with an email or code)')}
+    ${kpi(esc(t.perListener), 'average per listener')}
+    ${kpi(lsNum(t.songs), 'different songs')}
+    ${kpi(lsNum(t.previews), `guest previews · ${esc(t.previewDuration)}`)}
+  </div>`
+
+  // Listens per day (or per hour for a single day): full listens and guest previews, stacked.
+  const max = Math.max(1, ...d.series.map(b => b.full + b.preview))
+  const cols = d.series.map(b => {
+    const tip = `${d.oneDay ? 'Hour ' : ''}${b.label}: ${b.full} listens, ${b.preview} previews`
+    return `<div class="ls-col" data-tip="${esc(tip)}">
+      ${b.full ? `<i class="full" style="height:${b.full / max * 100}%"></i>` : ''}
+      ${b.preview ? `<i class="prev" style="height:${b.preview / max * 100}%"></i>` : ''}
+    </div>`
+  }).join('')
+  const first = d.series[0]?.label || '', last = d.series[d.series.length - 1]?.label || ''
+  const chart = `<div class="ls-card">
+    <h4>Listens ${d.oneDay ? 'by hour' : 'by day'}</h4>
+    <p class="ls-sub">Hover a bar for its numbers. Tallest ${d.oneDay ? 'hour' : 'day'}: ${lsNum(max)} listens.</p>
+    <div class="ls-legend"><span><i style="background:#1a6fd4"></i>Full listens (${lsNum(t.listens)})</span><span><i style="background:#e0912b"></i>Guest previews (${lsNum(t.previews)})</span></div>
+    <div class="ls-chart" id="lsChart">${cols}</div>
+    <div class="ls-axis"><span>${esc(first)}</span><span>${esc(last)}</span></div>
+  </div>`
+
+  const dmax = Math.max(1, ...d.devices.map(x => x.listens))
+  const devices = `<div class="ls-card"><h4>Devices</h4><p class="ls-sub">Where listening happens (all listens, previews included).</p>
+    ${d.devices.map(x => `<div class="ls-bar"><span class="n">${esc(x.name)}</span><span class="t"><i style="width:${x.listens / dmax * 100}%"></i></span><span class="v">${lsNum(x.listens)} · ${x.share}%</span></div>`).join('') || '<p style="color:var(--muted)">No listening in this period.</p>'}
+  </div>`
+
+  const why = `<div class="ls-card ls-why"><h4>Listens without an email</h4>
+    <p class="ls-sub">Of ${lsNum(m.total)} listens in this period, ${lsNum(m.withEmail)} carry the listener's email.</p>
+    <ul style="margin:0;padding-left:18px">
+      <li><b>${lsNum(m.guestPreviews)} guest previews</b>: 30-second tasters by visitors without an account. There is no email to attach; this is expected.</li>
+      <li><b>${lsNum(m.noCode)} full listens with no access code recorded</b>${m.noCode ? ` (${lsNum(m.noCodeSubscriberSessions)} of them from sessions that also played <i>with</i> a code)` : ''}: subscribers whose code the website didn't recognise at that moment, typically just after a site update. Fixed on the website on 29 Sep 2026, so these should stop.</li>
+      <li><b>${lsNum(m.codeWithoutEmail)} listens with a code but no email</b>: every listen made with a code carries its email.</li>
+    </ul>
+  </div>`
+
+  const listeners = `<div class="ls-card"><h4>Listeners</h4><p class="ls-sub">Most listening first (full listens only).</p>
+    ${d.listeners.length ? `<table><thead><tr><th>Listener</th><th class="r">Listens</th><th class="r">Time</th><th>Last listened</th><th>Devices</th></tr></thead><tbody>
+    ${d.listeners.map(l => `<tr><td title="${esc(l.who)}">${esc(l.who)}${l.kind === 'code' ? ' <span class="ls-pill">code only</span>' : ''}</td><td class="r">${lsNum(l.listens)}</td><td class="r">${esc(l.duration)}</td><td>${esc(l.last)}</td><td>${esc(l.devices)}</td></tr>`).join('')}
+    </tbody></table>` : '<p style="color:var(--muted)">No listeners in this period.</p>'}
+  </div>`
+
+  const songs = `<div class="ls-card"><h4>Most played songs</h4><p class="ls-sub">By listening time. Full lists in Reports.</p>
+    ${d.topSongs.length ? `<table><thead><tr><th>Song</th><th>Artist</th><th class="r">Listens</th><th class="r">Time</th></tr></thead><tbody>
+    ${d.topSongs.map(s => `<tr><td title="${esc(s.album)}">${esc(s.track)}</td><td>${esc(s.artist)}</td><td class="r">${lsNum(s.listens)}</td><td class="r">${esc(s.duration)}</td></tr>`).join('')}
+    </tbody></table>` : '<p style="color:var(--muted)">Nothing played in this period.</p>'}
+  </div>`
+
+  const recent = `<div class="ls-card"><h4>Latest listens</h4><p class="ls-sub">The newest ${d.recent.length} in this period, newest first.</p>
+    ${d.recent.length ? `<table><thead><tr><th>When</th><th>Song</th><th>Artist</th><th>Listener</th><th>Device</th><th class="r">Played</th></tr></thead><tbody>
+    ${d.recent.map(r => `<tr><td>${esc(r.at)}</td><td title="${esc(r.album)}">${esc(r.track)}</td><td>${esc(r.artist)}</td>
+      <td>${r.whoKind === 'guest' ? '<span class="ls-pill prev">Guest preview</span>' : r.whoKind === 'none' ? '<span class="ls-pill none">No code recorded</span>' : esc(r.who)}</td>
+      <td>${esc(r.device)}</td><td class="r">${esc(r.played)}</td></tr>`).join('')}
+    </tbody></table>` : '<p style="color:var(--muted)">No listens in this period.</p>'}
+  </div>`
+
+  $('lsBody').innerHTML = nowHtml + kpis + chart + `<div class="ls-grid2">${devices}${why}</div><div class="ls-grid2">${listeners}${songs}</div>` + recent
+
+  // Hover tooltip for the bars.
+  const tip = $('lsTip')
+  const chartEl = $('lsChart')
+  chartEl.onmousemove = e => {
+    const col = e.target.closest('.ls-col')
+    if (!col) { tip.style.display = 'none'; return }
+    tip.textContent = col.dataset.tip
+    tip.style.display = 'block'
+    tip.style.left = (e.clientX + 12) + 'px'
+    tip.style.top = (e.clientY - 34) + 'px'
+  }
+  chartEl.onmouseleave = () => { tip.style.display = 'none' }
+}
+
 // Opening the tab shows this month without anyone having to ask for it.
 const _repOrigShowTab = showTab
 showTab = function (name) {
   _repOrigShowTab(name)
+  if (name === 'listening') { if (!lsLast) lsPeriod('today'); else if (lsMode === 'today') lsRun() }
   if (name === 'reports' && !repLast) {
     const now = new Date(Date.now() + 2 * 3600e3)
     $('repFrom').value = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString().slice(0, 10)
