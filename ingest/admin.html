@@ -6764,7 +6764,7 @@ const XV_COLS = [
   ['language', 'Language'], ['audio_language', 'Audio Lang'], ['label', 'Label'],
   ['p_line', '℗ line'], ['c_line', '© line'], ['composer', 'Composers'],
   ['producer', 'Producers'], ['publisher', 'Publishers'], ['parental', 'Parental'],
-  ['rights_territories', 'Territories'], ['featured_artist', 'Featured'],
+  ['rights_territories', 'Territories'], ['featured_artist', 'Featured'], ['version', 'Version'],
 ]
 let _xvRaw     = []     // raw cache rows (server order — index = server row id)
 let _xvCols    = null   // internal key → canonical xlsx header (from the server)
@@ -8221,6 +8221,7 @@ const META_CACHE_FIELDS = [
   { key: 'parental',           label: 'Parental' },
   { key: 'rights_territories', label: 'Rights Territories' },
   { key: 'featured_artist',    label: 'Featured Artist' },
+  { key: 'version',            label: 'Version' },
 ]
 
 // Normalise a string for fuzzy matching
@@ -8255,6 +8256,7 @@ function _autoMapCol(sourceCol) {
     tracknumber: 'seq', trackno: 'seq', sequence: 'seq', sequencenumber: 'seq',
     upc: 'barcode',
     featuredartist: 'featured_artist', featuring: 'featured_artist', feat: 'featured_artist',
+    version: 'version', versiontitle: 'version', mixversion: 'version',
     plabel: 'p_line', clabel: 'c_line',
     lyricalcontentrating: 'parental', parentaladvisory: 'parental', explicit: 'parental',
     rightsterritories: 'rights_territories', rightsandterritories: 'rights_territories',
