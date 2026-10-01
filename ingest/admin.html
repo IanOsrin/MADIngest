@@ -1096,6 +1096,7 @@
                 <th style="padding:8px;text-align:center">Streamer</th>
                 <th style="padding:8px;text-align:center" title="Music Arena Master">MAM</th>
                 <th style="padding:8px;text-align:center" title="Gallo_Metadata_Extract.xlsx — used to backfill missing ISRCs via fuzzy title match">Metadata</th>
+                <th style="padding:8px"></th>
               </tr>
             </thead>
             <tbody id="dbSyncMatrixBody"></tbody>
@@ -8577,7 +8578,7 @@ function renderDbSyncStatus(data) {
 
   // Track matrix. ISRC shown in gold when it was backfilled from the
   // metadata spreadsheet (i.e. none of the three FM DBs had it).
-  matrixBody.innerHTML = (data.matrix || []).map(row => {
+  matrixBody.innerHTML = (data.matrix || []).map((row, idx) => {
     const tick = (v) => v
       ? '<span style="color:var(--green);font-weight:700">✓</span>'
       : '<span style="color:var(--red);font-weight:700">✗</span>'
@@ -8594,8 +8595,9 @@ function renderDbSyncStatus(data) {
       <td style="padding:6px 8px;text-align:center">${tick(row.in_streamer)}</td>
       <td style="padding:6px 8px;text-align:center">${tick(row.in_mam)}</td>
       <td style="padding:6px 8px;text-align:center" title="${row.metadata_isrc ? 'ISRC: ' + esc(row.metadata_isrc) : ''}">${tick(row.in_metadata)}</td>
+      <td style="padding:4px 8px;text-align:right"><button class="btn ${row.in_gallo && row.in_streamer && row.in_mam ? 'btn-ghost' : 'btn-gold'}" style="padding:3px 10px;font-size:0.75rem" onclick="tfOpen(${idx})" title="See this track in every database side by side and fix it">Fix</button></td>
     </tr>`
-  }).join('') || '<tr><td colspan="9" style="padding:14px;color:var(--muted);text-align:center">No tracks found in any DB for this catalogue.</td></tr>'
+  }).join('') || '<tr><td colspan="10" style="padding:14px;color:var(--muted);text-align:center">No tracks found in any DB for this catalogue.</td></tr>'
   matrixWrap.style.display = 'block'
 
   // Show the replicate button only if CMS 2024 has tracks and Gallo/Streamer is missing
@@ -8618,6 +8620,171 @@ function renderDbSyncStatus(data) {
 
   status.textContent = `✓ Status loaded — Gallo ${c.gallo}, CMS 2024 ${c.cms2024}, Streamer ${c.streamer}, Metadata ${c.metadata}`
   status.style.color = 'var(--green)'
+}
+
+// ── Track fix ────────────────────────────────────────────────────────────
+// One track, side by side in every database; the person picks the values and
+// writes them into ONE database at a time. Server: lib/track-fix.js.
+const TF_DBS   = [['gallo', 'Gallo'], ['cms2024', 'CMS 2024'], ['streamer', 'Streamer'], ['mam', 'MAM'], ['metadata', 'Metadata']]
+const TF_WRITE = [['gallo', 'Gallo'], ['streamer', 'MadStreamer'], ['mam', 'MAM']]
+const TF_PREF  = ['streamer', 'mam', 'gallo', 'cms2024', 'metadata']   // first non-empty fills "Use" — MadStreamer wins, as in the Source tab
+let _tf = null
+
+function tfDur(v) { const s = String(v ?? '').trim(); if (!s) return null; if (/^\d+(\.\d+)?$/.test(s)) return Math.round(+s); const p = s.split(':').map(Number); return p.some(isNaN) ? null : p.reduce((a, n) => a * 60 + n, 0) }
+function tfSame(key, a, b) {
+  const t = v => String(v ?? '').trim()
+  if (key === 'duration') return tfDur(a) === tfDur(b)
+  if (key === 'seq') return (parseInt(a, 10) || null) === (parseInt(b, 10) || null)
+  if (key === 'filename') return t(a).replace(/\.[a-z0-9]+$/i, '').toUpperCase() === t(b).replace(/\.[a-z0-9]+$/i, '').toUpperCase()
+  if (key === 'isrc') return t(a).toUpperCase() === t(b).toUpperCase()
+  return t(a) === t(b)
+}
+
+async function tfOpen(idx) {
+  const row = _dbSyncLastResult?.matrix?.[idx]
+  const cat = $('dbSyncCat')?.value?.trim()
+  if (!row || !cat) return
+  _tf = { cat, row, picks: { gallo: row.gallo_id, streamer: row.streamer_id, mam: row.mam_id, cms2024: row.cms2024_id }, use: null, data: null, msg: {} }
+  const ov = document.createElement('div')
+  ov.id = 'tfOverlay'
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:400;display:flex;align-items:center;justify-content:center;padding:24px'
+  ov.onclick = e => { if (e.target === ov) tfClose() }
+  ov.innerHTML = `<div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;max-width:1240px;width:100%;max-height:90vh;display:flex;flex-direction:column">
+    <div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px">
+      <strong id="tfTitle">Fix track</strong>
+      <button class="btn btn-ghost" style="margin-left:auto;padding:2px 10px" onclick="tfClose()">✕</button>
+    </div>
+    <div id="tfBody" style="padding:14px 18px;overflow:auto;font-size:0.84rem">Loading the track from every database…</div>
+  </div>`
+  document.body.appendChild(ov)
+  document.addEventListener('keydown', tfEsc)
+  await tfLoad()
+}
+function tfEsc(e) { if (e.key === 'Escape') tfClose() }
+function tfClose() { document.getElementById('tfOverlay')?.remove(); document.removeEventListener('keydown', tfEsc); _tf = null }
+
+async function tfLoad() {
+  const { cat, row, picks } = _tf
+  const q = new URLSearchParams()
+  if (row.isrc) q.set('isrc', row.isrc)
+  if (row.filename) q.set('filename', row.filename)
+  for (const [db, id] of Object.entries(picks)) if (id) q.set(`${db}_id`, id)
+  try {
+    const res = await api(`/api/ingest/catalogue/${encodeURIComponent(cat)}/track-fix?${q}`)
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    _tf.data = data
+    // keep values the person already chose; fill the rest from the first database that has one
+    const use = {}
+    for (const f of data.fields) {
+      if (_tf.use && f.key in _tf.use) { use[f.key] = _tf.use[f.key]; continue }
+      const from = TF_PREF.find(d => data.dbs[d]?.values?.[f.key])
+      use[f.key] = from ? data.dbs[from].values[f.key] : ''
+    }
+    _tf.use = use
+    tfRender()
+  } catch (e) { $('tfBody').innerHTML = `<p style="color:var(--red)">✗ ${esc(e.message)}</p>` }
+}
+
+function tfPick(db, recordId) { _tf.picks[db] = recordId || null; _tf.msg = {}; tfLoad() }
+function tfUse(key, db) { _tf.use[key] = _tf.data.dbs[db].values[key] || ''; tfRender() }
+function tfEdit(key, el) { _tf.use[key] = el.value; tfRenderActions() }
+
+function tfRender() {
+  const { data, use, cat } = _tf
+  const d = data.dbs
+  $('tfTitle').textContent = `Fix track — ${use.seq ? use.seq + '. ' : ''}${use.title || '(untitled)'} · ${cat}`
+  const head = TF_DBS.map(([db, label]) => {
+    const x = d[db] || {}
+    const state = !x.ok ? `<span style="color:var(--red)" title="${esc(x.error || '')}">✗ couldn't read</span>`
+      : x.present ? `<span style="color:var(--green)">✓ found${x.matchedBy ? ' by ' + esc(x.matchedBy) : ''}</span>`
+      : `<span style="color:var(--red)">missing</span>`
+    const ro = x.writable ? '' : '<div style="color:var(--muted);font-size:0.7rem">read-only</div>'
+    const also = x.alsoMatched?.length ? `<div style="color:var(--amber);font-size:0.7rem">also record ${x.alsoMatched.map(esc).join(', ')}</div>` : ''
+    // when ISRC/Filename find nothing, the person can point at the right record themselves
+    const picker = x.writable && x.ok && x.tracks?.length ? `<select style="margin-top:4px;max-width:170px;font-size:0.7rem" onchange="tfPick('${db}', this.value)">
+        <option value="">${x.present ? 'switch to another track…' : 'is it one of these?'}</option>
+        ${x.tracks.map(t => `<option value="${esc(t.recordId)}" ${String(t.recordId) === String(x.recordId) ? 'selected' : ''}>${esc((t.seq || '?') + '. ' + (t.title || '') + (t.version ? ' (' + t.version + ')' : '') + ' · ' + (t.isrc || t.filename || ''))}</option>`).join('')}
+      </select>` : ''
+    return `<th style="padding:8px;vertical-align:top;text-align:left;min-width:140px">${label}<div style="font-weight:400;font-size:0.74rem">${state}</div>${ro}${also}${picker}</th>`
+  }).join('')
+  const rows = data.fields.map(f => {
+    const cells = TF_DBS.map(([db]) => {
+      const x = d[db] || {}
+      if (!f.in[db]) return `<td style="padding:5px 8px;color:var(--muted);opacity:.5" title="${esc(db)} has no such field">—</td>`
+      const v = x.values?.[f.key]
+      if (!v) return `<td style="padding:5px 8px;color:var(--muted)">·</td>`
+      const differs = !tfSame(f.key, v, use[f.key])
+      return `<td style="padding:5px 8px;cursor:pointer;${differs ? 'background:rgba(240,168,50,0.18)' : ''}" title="${esc(v)}\nClick to use this value" onclick="tfUse('${f.key}','${db}')"><div style="max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(v)}</div></td>`
+    }).join('')
+    return `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:5px 8px;white-space:nowrap;color:var(--muted)">${esc(f.label)}${f.kind === 'audio' ? ' <span title="Decides which audio plays — check before writing" style="color:var(--amber)">⚠</span>' : ''}</td>${cells}
+      <td style="padding:3px 6px;background:var(--gold-glow)"><input value="${esc(use[f.key] || '')}" oninput="tfEdit('${f.key}', this)" style="width:100%;min-width:200px;font-size:0.8rem;padding:4px 6px"></td></tr>`
+  }).join('')
+  $('tfBody').innerHTML = `
+    <p style="margin:0 0 10px;color:var(--muted)">Click a value to use it, or type in the <b>Use</b> column. Amber = differs from Use. Nothing is written until you press a button below, and each button writes to one database only.</p>
+    <div class="table-wrap"><table style="width:100%;border-collapse:collapse;font-size:0.8rem">
+      <thead><tr style="border-bottom:1px solid var(--border)"><th style="padding:8px;text-align:left">Field</th>${head}<th style="padding:8px;text-align:left;background:var(--gold-glow)">Use</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>
+    <div id="tfActions" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin-top:16px"></div>`
+  tfRenderActions()
+}
+
+// What a write to `db` would change: fields that database carries where Use differs from what it holds.
+function tfChanges(db) {
+  const { data, use } = _tf
+  const x = data.dbs[db]
+  return data.fields.filter(f => f.in[db]).map(f => {
+    const now = x.values?.[f.key] || '', want = String(use[f.key] ?? '').trim()
+    if (tfSame(f.key, now, want)) return null
+    if (!x.present && !want) return null
+    return { key: f.key, label: f.label, now, want, clear: !want, audio: f.kind === 'audio' }
+  }).filter(Boolean)
+}
+
+function tfRenderActions() {
+  const box = $('tfActions'); if (!box) return
+  box.innerHTML = TF_WRITE.map(([db, label]) => {
+    const x = _tf.data.dbs[db] || {}
+    const msg = _tf.msg[db] ? `<div style="margin-top:8px;font-size:0.78rem;color:${_tf.msg[db].ok ? 'var(--green)' : 'var(--red)'}">${esc(_tf.msg[db].text)}</div>` : ''
+    const card = inner => `<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:var(--bg-card)"><strong>${label}</strong>${inner}${msg}</div>`
+    if (!x.ok) return card(`<div style="color:var(--red);margin-top:6px">✗ ${esc(x.error || 'unavailable')}</div>`)
+    if (!x.present && db === 'mam' && x.albumMissing) return card(`<div style="color:var(--muted);margin-top:6px">This album isn't in MAM at all, so a single track can't go in yet.</div>`)
+    if (!x.present && db !== 'mam' && x.albumMissing) return card(`<div style="color:var(--muted);margin-top:6px">No tracks of this album in ${label} to copy the album details from.</div>`)
+    const ch = tfChanges(db)
+    if (x.present && !ch.length) return card(`<div style="color:var(--green);margin-top:6px">✓ Matches the Use column</div>`)
+    const list = ch.map(c => `<label style="display:flex;gap:6px;align-items:flex-start;margin:3px 0;font-size:0.78rem">
+        <input type="checkbox" data-db="${db}" data-key="${c.key}" ${c.clear ? '' : 'checked'}>
+        <span><b>${esc(c.label)}</b>${c.audio ? ' <span style="color:var(--amber)">⚠</span>' : ''}: ${x.present ? `<s style="color:var(--muted)">${esc(c.now || 'empty')}</s> → ` : ''}${c.clear ? '<i style="color:var(--red)">clear it</i>' : esc(c.want)}</span></label>`).join('')
+    const note = x.present ? '' : `<div style="color:var(--muted);font-size:0.74rem;margin:6px 0">Creates a new record. Album details (catalogue, album title, label…) are copied from another track of this album in ${label}.${db !== 'gallo' && !_tf.use.mp3 ? ' With no MP3 link given, it uses this album\'s S3 folder + the Filename — only if that MP3 exists.' : ''}</div>`
+    return card(`${note}<div style="margin:6px 0">${list}</div>
+      <button class="btn btn-gold" style="padding:5px 12px" onclick="tfApply('${db}', this)">${x.present ? `Update ${label} record ${esc(x.recordId)}` : `Create in ${label}`}</button>`)
+  }).join('')
+}
+
+async function tfApply(db, btn) {
+  const x = _tf.data.dbs[db]
+  const label = TF_WRITE.find(w => w[0] === db)[1]
+  const keys = [...document.querySelectorAll(`#tfActions input[data-db="${db}"]:checked`)].map(i => i.dataset.key)
+  if (!keys.length) { _tf.msg[db] = { ok: false, text: 'Tick at least one field.' }; return tfRenderActions() }
+  const fields = _tf.data.fields.filter(f => keys.includes(f.key))
+  const lines = fields.map(f => `  ${f.label}: ${_tf.use[f.key] || '(clear)'}`).join('\n')
+  if (!confirm(`${x.present ? `Update ${label} record ${x.recordId}` : `Create a new ${label} record`} on ${_tf.cat}:\n\n${lines}\n\nWrite this to ${label} now?`)) return
+  btn.disabled = true; btn.textContent = 'Writing…'
+  try {
+    const values = Object.fromEntries(keys.map(k => [k, _tf.use[k] ?? '']))
+    const seen   = Object.fromEntries(keys.map(k => [k, x.values?.[k] || '']))
+    const res = await api(`/api/ingest/catalogue/${encodeURIComponent(_tf.cat)}/track-fix/apply`, 'POST', { db, recordId: x.present ? x.recordId : null, values, seen })
+    const out = await res.json()
+    if (!res.ok) throw new Error(out.error || `HTTP ${res.status}`)
+    _tf.msg[db] = { ok: true, text: `✓ ${out.action} record ${out.recordId} — ${out.written.length} field(s)${out.dropped?.length ? ` · not on the layout: ${out.dropped.join(', ')}` : ''}` }
+    if (!x.present) _tf.picks[db] = out.recordId
+    await tfLoad()
+    checkDbSyncStatus()          // refresh the ticks behind the panel
+  } catch (e) {
+    _tf.msg[db] = { ok: false, text: '✗ ' + e.message }
+    tfRenderActions()
+  }
 }
 
 function dbSyncReplicate() {

@@ -72,6 +72,7 @@ import { artworkState, artworkImage, copyArtwork } from '../lib/artwork-compare.
 import { setAlbumCover } from '../lib/album-cover.js'
 import { syncMamEdit } from '../lib/mam-streamer-sync.js'
 import { contentDisposition } from '../lib/content-disposition.js'
+import { readTrack, applyFix } from '../lib/track-fix.js'
 
 // Load metadata on startup (non-blocking — portal works even if file is missing)
 loadMetadata()
@@ -4679,6 +4680,31 @@ router.get('/catalogue/:catNo/status', adminAuth, async (req, res) => {
     metadata,
     matrix:       matrixArr,
   })
+})
+
+// ── Track fix: one track side by side in every DB, fixed one database at a time ──
+// The status matrix shows where a track is missing; clicking a row opens this.
+// Writes go to exactly the database and record the person chose — see lib/track-fix.js.
+router.get('/catalogue/:catNo/track-fix', adminAuth, async (req, res) => {
+  try {
+    const q = req.query
+    res.json(await readTrack(req.params.catNo, {
+      isrc: q.isrc || null, filename: q.filename || null,
+      picks: { gallo: q.gallo_id || null, streamer: q.streamer_id || null, mam: q.mam_id || null, cms2024: q.cms2024_id || null },
+    }))
+  } catch (err) {
+    console.error('[track-fix] read', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+router.post('/catalogue/:catNo/track-fix/apply', adminAuth, express.json(), async (req, res) => {
+  try {
+    res.json(await applyFix(req.params.catNo, req.body))
+  } catch (err) {
+    console.error('[track-fix] apply', err.message)
+    res.status(err.status || 500).json({ error: err.message })
+  }
 })
 
 /**
