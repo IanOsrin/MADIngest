@@ -7865,7 +7865,7 @@ async function suRead(file) {
     $('suStep1').style.display = 'none'
     $('suFileLabel').innerHTML = `<b>${esc(data.file)}</b> · sheet “${esc(data.sheetName)}” · ${data.rowCount.toLocaleString()} rows`
     $('suMatchKey').innerHTML = data.matchKeys
-      .map(k => `<option value="${esc(k.key)}"${k.key === data.suggestedKey ? ' selected' : ''}>${esc(k.label)}</option>`).join('')
+      .map(k => `<option value="${esc(k.key)}"${k.key === data.suggestedKey ? ' selected' : ''}>${esc(k.key === 'catalogue' ? 'Catalogue number — ALBUM-WIDE: copies each row onto every track of the album' : k.label)}</option>`).join('')
     const options = ['<option value="">— ignore —</option>']
       .concat(data.fields.map(f => `<option value="${esc(f.key)}">${esc(f.label)}</option>`)).join('')
     $('suMapRows').innerHTML = data.columns.map(c => `
@@ -7902,6 +7902,15 @@ function suClose() {
 
 async function suPreview() {
   if (!_suToken) return
+  // Album-wide copies a row onto every track of its album — right for an album title or label,
+  // wrong for anything that differs per track (2026-10-02: Track versions nearly went album-wide).
+  if ($('suMatchKey').value === 'catalogue') {
+    const trackLevel = suUpdateFields().filter(f => !XV_ALBUM_KEYS.includes(f))
+    const warn = trackLevel.length
+      ? `ALBUM-WIDE match with track-level fields (${trackLevel.map(f => XV_KEY_LABEL[f] || f).join(', ')}).\n\nEach of his rows will be copied onto EVERY track of its album. That is almost never right for these fields — match by ISRC or catalogue number + track # instead.\n\nPreview album-wide anyway?`
+      : 'ALBUM-WIDE match: each of his rows will be copied onto every track of its album.\n\nPreview?'
+    if (!confirm(warn)) return
+  }
   const status = $('suStatus')
   status.textContent = '⟳ Comparing against the cache…'
   $('suResult').style.display = 'none'
@@ -7918,22 +7927,22 @@ async function suPreview() {
     let html = ''
     if (_suEdits.length) {
       html += `<div style="display:flex;gap:10px;align-items:center;margin-bottom:8px">
-        <button class="btn" style="color:var(--gold);border-color:rgba(212,175,55,0.5)" onclick="suApply()">Apply ticked to cache</button>
-        <label style="font-size:0.78rem;color:var(--muted);cursor:pointer"><input type="checkbox" checked onchange="document.querySelectorAll('.su-cb').forEach(c => c.checked = this.checked)"> tick all</label>
+        <button class="btn" id="suApplyBtn" style="color:var(--gold);border-color:rgba(212,175,55,0.5)" onclick="suApply()">Apply ${_suEdits.length.toLocaleString()} to cache</button>
+        <label style="font-size:0.78rem;color:var(--muted);cursor:pointer"><input type="checkbox" id="suTickAll" checked onchange="document.querySelectorAll('.su-cb').forEach(c => c.checked = this.checked); suApplyLabel()"> tick all</label>
       </div>`
       html += _suEdits.slice(0, 500).map((e, i) => {
         const label = `${e.catalogue ? `[${e.catalogue}] ` : ''}${e.seq != null ? `#${e.seq} ` : ''}${e.title || '(no title)'}${e.artist ? ' — ' + e.artist : ''}`
         const diffs = Object.entries(e.changes).map(([k, c]) =>
           `<div style="margin-left:2px">${esc(XV_KEY_LABEL[k] || k)}: ${c.from == null || c.from === '' ? '<span style="color:var(--muted)">—</span>' : esc(String(c.from))} <span style="color:var(--muted)">→</span> ${esc(String(c.to ?? ''))}</div>`).join('')
         return `<label style="display:flex;gap:10px;align-items:flex-start;padding:7px 10px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px;cursor:pointer">
-          <input type="checkbox" class="su-cb" data-i="${i}" checked style="margin-top:3px">
+          <input type="checkbox" class="su-cb" data-i="${i}" checked style="margin-top:3px" onchange="suApplyLabel()">
           <div style="min-width:0">
             <div>${esc(label)} <span style="color:var(--muted);font-size:0.76rem"> · his row ${e.sheetRow}, matched by ${esc(e.matchedBy)}</span></div>
             <div style="font-size:0.8rem;margin-top:2px">${diffs}</div>
           </div>
         </label>`
       }).join('')
-      if (_suEdits.length > 500) html += `<div style="color:var(--muted);font-size:0.8rem">Showing the first 500 of ${_suEdits.length} — applying covers every ticked row shown.</div>`
+      if (_suEdits.length > 500) html += `<div style="color:var(--muted);font-size:0.8rem">Showing the first 500 of ${_suEdits.length.toLocaleString()}. Apply writes ALL of them except any you untick here (untick “tick all” to leave out the ones not shown).</div>`
     } else {
       html += '<div style="color:var(--muted);padding:6px 0">Nothing to change — the cache already matches his sheet.</div>'
     }
@@ -7941,7 +7950,7 @@ async function suPreview() {
     if (data.ambiguous.length) {
       html += `<details style="margin-top:10px"><summary style="cursor:pointer;color:var(--amber);font-size:0.8rem">${data.ambiguous.length} of his rows matched more than one cache row — left alone</summary>
         <div style="font-size:0.78rem;color:var(--muted);margin-top:6px">Pick a more specific way of matching, or fix the duplicates in the cache.<br>` +
-        data.ambiguous.slice(0, 30).map(u => `<div>row ${u.sheetRow}: ${esc(u.key)} → ${u.matches} cache rows</div>`).join('') + `</div></details>`
+        data.ambiguous.slice(0, 30).map(u => `<div>row ${u.sheetRow}: ${esc(u.key)} → ${u.reason ? esc(u.reason) : u.matches + ' cache rows'}</div>`).join('') + `</div></details>`
     }
 
     if (_suUnmatched.length) {
@@ -7967,9 +7976,23 @@ async function suPreview() {
   }
 }
 
+// What Apply will write: every previewed change except the ones unticked on screen. Only the first
+// 500 are drawn, so the rest follow "tick all" (it used to send only the drawn ones — 500 a run).
+function suPicked() {
+  const unticked = new Set([...document.querySelectorAll('.su-cb:not(:checked)')].map(cb => Number(cb.dataset.i)))
+  const drawn = document.querySelectorAll('.su-cb').length
+  const rest = $('suTickAll')?.checked !== false
+  return _suEdits.filter((e, i) => i < drawn ? !unticked.has(i) : rest)
+}
+function suApplyLabel() {
+  const b = $('suApplyBtn'); if (b) b.textContent = `Apply ${suPicked().length.toLocaleString()} to cache`
+}
+
 async function suApply() {
-  const picked = [...document.querySelectorAll('.su-cb:checked')].map(cb => _suEdits[Number(cb.dataset.i)]).filter(Boolean)
+  const picked = suPicked()
   if (!picked.length) { showToast('Nothing ticked', 'error'); return }
+  const tracks = new Set(picked.map(e => e.index)).size
+  if (!confirm(`Write ${picked.length.toLocaleString()} change(s) to ${tracks.toLocaleString()} track(s) in the cache?\n\nMatched by: ${$('suMatchKey').selectedOptions[0]?.textContent || ''}`)) return
   const status = $('suStatus')
   status.textContent = `⟳ Writing ${picked.length} row(s) to the cache…`
   try {
