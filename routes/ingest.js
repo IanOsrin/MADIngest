@@ -4451,6 +4451,17 @@ router.post('/cms2024/pull-to-gallo', adminAuth, express.json(), async (req, res
  *     matrix:  [{ sequence_no, isrc, title, in_gallo, in_cms2024, in_streamer }]
  *   }
  */
+// Two tracks with the same title but different versions are different tracks — keep them apart in
+// the status matrix's fuzzy-title fallback. A missing version on either side proves nothing.
+const _normVersion = v => String(v ?? '').trim().toLowerCase()
+// Against a whole row: a clash only if the row has versions and NONE of them matches (MadStreamer
+// and MAM can disagree; the metadata may agree with either).
+const _versionConflicts = (row, v) => {
+  const nv = _normVersion(v)
+  const have = Object.values(row.versions || {}).map(_normVersion).filter(Boolean)
+  return !!nv && have.length > 0 && !have.includes(nv)
+}
+
 router.get('/catalogue/:catNo/status', adminAuth, async (req, res) => {
   const catalogueNo = req.params.catNo
   if (!catalogueNo) return res.status(400).json({ error: 'catalogue_no required' })
@@ -4477,6 +4488,7 @@ router.get('/catalogue/:catNo/status', adminAuth, async (req, res) => {
     ? { ok: true, error: null,
         tracks: (mamRes.value?.tracks || []).map(t => ({
           isrc: t.isrc, sequence_no: t.sequence_no, title: t.title,
+          version: t.fieldData?.['Version'] || null,
           artist: t.fieldData?.['Track Artist'] || null,
           filename: t.fieldData?.['Filename'] || null,
           fm_record_id: t.recordId,
@@ -4539,6 +4551,9 @@ router.get('/catalogue/:catNo/status', adminAuth, async (req, res) => {
     const fname = _normFilename(_firstFilename(track))
     const seq   = track.sequence_no ?? null
     const title = track.title || track.title_name || null
+    // Version is what tells two same-titled tracks apart ("Sketch" vs "Sketch" — Acoustic, SSCD 507).
+    // Only MadStreamer and MAM hold one; Gallo and CMS 2024 have no Version field (2026-10-02).
+    const version = String(track.version ?? track.version_title ?? '').trim() || null
     // Look up an existing row by any shared identifier.
     let row = (isrc  && byIsrc.get(isrc))
            || (fname && byFilename.get(fname))
@@ -4558,6 +4573,7 @@ router.get('/catalogue/:catNo/status', adminAuth, async (req, res) => {
       for (const candidate of allRows) {
         if (candidate.sequence_no !== seq) continue
         if (candidate[`in_${db}`]) continue // same-DB rows never merge
+        if (_versionConflicts(candidate, version)) continue // same title, different version ≠ same track
         const score = _fuzzyScore(candidate.title || '', title)
         if (score > bestScore && score >= _FUZZY_TITLE_THRESHOLD) {
           bestScore = score
@@ -4571,6 +4587,8 @@ router.get('/catalogue/:catNo/status', adminAuth, async (req, res) => {
         key:           isrc || (fname && `f:${fname}`) || `seq:${track.sequence_no ?? '?'}:${(track.title || '').toLowerCase()}`,
         isrc:          null,
         title:         null,
+        version:       null,
+        versions:      {},     // per DB that holds one: { streamer, mam, metadata }
         artist:        null,
         sequence_no:   null,
         filename:      null,
@@ -4596,6 +4614,7 @@ router.get('/catalogue/:catNo/status', adminAuth, async (req, res) => {
     row[`${db}_id`] = track.fm_record_id || track.recordId || null
     row.isrc        ||= isrc
     row.title       ||= track.title || track.title_name || null
+    if (version) { row.versions[db] = version; row.version ||= version }
     row.artist      ||= track.artist || track.artist_name || null
     row.sequence_no  ??= track.sequence_no ?? null
     row.filename    ||= _firstFilename(track) || null
@@ -4625,6 +4644,7 @@ router.get('/catalogue/:catNo/status', adminAuth, async (req, res) => {
         if (candidate.in_metadata) continue // same-source rows never merge
         if (candidate.sequence_no == null || m.seq == null) continue
         if (candidate.sequence_no !== m.seq) continue
+        if (_versionConflicts(candidate, m.version)) continue
         const score = _fuzzyScore(candidate.title || '', m.track_name || '')
         if (score > bestScore && score >= _FUZZY_TITLE_THRESHOLD) {
           bestScore = score
@@ -4640,6 +4660,8 @@ router.get('/catalogue/:catNo/status', adminAuth, async (req, res) => {
         key:           isrc || `meta:seq:${m.seq ?? '?'}:${_normTitle(m.track_name || '')}`,
         isrc:          null,
         title:         null,
+        version:       null,
+        versions:      {},     // per DB that holds one: { streamer, mam, metadata }
         artist:        null,
         sequence_no:   null,
         filename:      null,
@@ -4665,6 +4687,9 @@ router.get('/catalogue/:catNo/status', adminAuth, async (req, res) => {
     row.title       ||= m.track_name  || null
     row.artist      ||= m.track_artist || m.album_artist || null
     row.sequence_no  ??= m.seq ?? null
+    // The metadata extract is the source of truth for Version (Ian, 2026-10-02): it wins the display;
+    // MadStreamer/MAM values stay in row.versions so a disagreement can be flagged.
+    if (m.version) { row.versions.metadata = String(m.version).trim(); row.version = row.versions.metadata }
   }
 
   const matrixArr = allRows.sort((a, b) =>
@@ -4696,7 +4721,7 @@ router.get('/catalogue/:catNo/track-fix', adminAuth, async (req, res) => {
   try {
     const q = req.query
     res.json(await readTrack(req.params.catNo, {
-      isrc: q.isrc || null, filename: q.filename || null,
+      isrc: q.isrc || null, filename: q.filename || null, metaIsrc: q.meta_isrc || null, seq: q.seq || null,
       picks: { gallo: q.gallo_id || null, streamer: q.streamer_id || null, mam: q.mam_id || null, cms2024: q.cms2024_id || null },
     }))
   } catch (err) {
