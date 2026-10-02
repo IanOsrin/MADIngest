@@ -10967,6 +10967,22 @@ function lsRender(d) {
       <div><span>Last activity</span><b>${n.lastActivity ? esc(n.lastActivity) : '—'}</b><span>${n.minutesSinceLast == null ? 'no recent listening' : n.minutesSinceLast === 0 ? 'just now' : n.minutesSinceLast + ' minutes ago'}</span></div>
     </div>`
 
+  // Who can listen (lib/subscriber-count.js) — independent of the period picked.
+  const sb = d.subscribers || {}
+  const subsHtml = sb.error ? `<div class="ls-card"><h4>Subscribers</h4><p style="color:var(--red)">Couldn't count: ${esc(sb.error)}</p></div>`
+    : !sb.now ? '' : `<div class="ls-card ls-subs">
+      <h4>Subscribers</h4>
+      <p class="ls-sub">Access codes that can listen right now. Doesn't change with the period above.</p>
+      <div class="ls-kpis">
+        <div class="ls-kpi"><b>${lsNum(sb.now.total)}</b><span>can listen now</span></div>
+        <div class="ls-kpi" title="Bought through Paystack (subscription or pass)"><b>${lsNum(sb.now.paying)}</b><span>paying</span></div>
+        <div class="ls-kpi" title="7-day free trials"><b>${lsNum(sb.now.trial)}</b><span>on a free trial</span></div>
+        <div class="ls-kpi" title="Codes handed out by name: staff, friends, review accounts — no payment"><b>${lsNum(sb.now.free)}</b><span>given free</span></div>
+        <div class="ls-kpi" title="${lsNum(sb.newThisWeek.paying)} paying · ${lsNum(sb.newThisWeek.trial)} trial · ${lsNum(sb.newThisWeek.free)} given free"><b>${lsNum(sb.newThisWeek.total)}</b><span>new in the last 7 days</span></div>
+        <div class="ls-kpi" title="${lsNum(sb.endedLast30.paying)} paying · ${lsNum(sb.endedLast30.trial)} trial · ${lsNum(sb.endedLast30.free)} given free"><b>${lsNum(sb.endedLast30.total)}</b><span>ended in the last 30 days${sb.endedLast30.paying ? ` · ${lsNum(sb.endedLast30.paying)} paying` : ''}</span></div>
+      </div>
+    </div>`
+
   const kpi = (v, l) => `<div class="ls-kpi"><b>${v}</b><span>${l}</span></div>`
   const kpis = `<div class="ls-kpis">
     ${kpi(esc(t.duration), 'listening time')}
@@ -11029,7 +11045,7 @@ function lsRender(d) {
     </tbody></table>` : '<p style="color:var(--muted)">No listens in this period.</p>'}
   </div>`
 
-  $('lsBody').innerHTML = nowHtml + kpis + chart + `<div class="ls-grid2">${devices}${why}</div><div class="ls-grid2">${listeners}${songs}</div>` + recent
+  $('lsBody').innerHTML = nowHtml + subsHtml + kpis + chart + `<div class="ls-grid2">${devices}${why}</div><div class="ls-grid2">${listeners}${songs}</div>` + recent
 
   // Hover tooltip for the bars.
   const tip = $('lsTip')

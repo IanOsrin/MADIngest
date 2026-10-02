@@ -12,6 +12,7 @@ import { Router } from 'express'
 import { adminAuth } from '../lib/admin-auth.js'
 import { buildStreamReport } from '../lib/stream-report.js'
 import { buildStreamDashboard } from '../lib/stream-dashboard.js'
+import { subscriberCount } from '../lib/subscriber-count.js'
 
 const router = Router()
 
@@ -57,6 +58,9 @@ router.get('/dashboard', adminAuth, async (req, res, next) => {
     const hit = dashCache.get(key)
     if (hit && Date.now() - hit.at < 60 * 1000 && req.query.fresh !== '1') return res.json({ ok: true, ...hit.value })
     const value = await buildStreamDashboard({ from: p.from, to: p.to })
+    // Subscribers don't depend on the period; a failure here must not sink the listening numbers.
+    try { value.subscribers = await subscriberCount({ fresh: req.query.fresh === '1' }) }
+    catch (e) { value.subscribers = { error: e.message } }
     dashCache.set(key, { at: Date.now(), value })
     if (dashCache.size > 30) dashCache.delete(dashCache.keys().next().value)
     res.json({ ok: true, ...value })
