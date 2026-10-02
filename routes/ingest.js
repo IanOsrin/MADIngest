@@ -2405,21 +2405,28 @@ router.post('/metadata/ingrooves-sync/preview', adminAuth, uploadIngrooves.array
 // client-spreadsheet update: both produce the same { index, expect, changes }
 // shape, and both fan album-level keys out album-wide via updateRow.
 async function applyCacheEdits(edits, label) {
-  const applied = [], failed = []
+  // ONE bulk write for the whole batch (2026-10-02). Row-by-row updateRow rebuilt the cache's
+  // indexes over all ~82k rows after EVERY edit and queued a full-file save each time; applying
+  // 3,159 Track versions from a sheet ran Render out of memory and restarted GalloIngest after the
+  // first 500. updateRowsBulk keeps the same per-row expect-guard and album-wide fan-out, but
+  // rebuilds and saves once.
+  const failed = [], ok = []
   for (const e of edits) {
     if (!Number.isInteger(e?.index) || !e.changes || !Object.keys(e.changes).length) {
       failed.push({ index: e?.index ?? null, error: 'malformed edit' }); continue
     }
     const patch = {}
     for (const [k, c] of Object.entries(e.changes)) patch[k] = c?.to ?? null
-    try {
-      // expect (cache snapshot from the diff) guards against index drift
-      // between preview and apply.
-      const result = await updateMetadataRow(e.index, patch, e.expect || {}, { albumWide: true })
-      applied.push({ index: e.index, changes: e.changes, albumRows: result.albumRows || 0 })
-    } catch (err) {
-      failed.push({ index: e.index, title: e.title || null, error: err.message })
-    }
+    ok.push({ e, patch })
+  }
+  const applied = []
+  if (ok.length) {
+    const res = await updateMetadataRowsBulk(ok.map(({ e, patch }) => ({ index: e.index, patch, expect: e.expect || {} })), { albumWide: true })
+    res.results.forEach((r, i) => {
+      const e = ok[i].e
+      if (r.ok) applied.push({ index: e.index, changes: e.changes, albumRows: r.albumRows || 0 })
+      else failed.push({ index: e.index, title: e.title || null, error: r.error })
+    })
   }
   console.log(`[${label}] apply: ${applied.length} row(s) updated, ${failed.length} failed`)
   return { ok: true, applied, failed }
