@@ -58,7 +58,16 @@ app.use(cors())
 // a FileMaker container and runs to several MB. Skip those paths so the route's
 // own express.json({ limit: … }) is the one that parses them; a parser mounted
 // here would otherwise reject the body before the route is ever reached.
-const BIG_JSON_PATHS = ['/api/gallo/artwork-upload']
+// Bulk cache actions set 2–10 MB on their own routes too (2026-10-02: applying 3,159 Track versions
+// from a sheet failed "request entity too large" here, at 100kb, before the route's 10mb was reached).
+const BIG_JSON_PATHS = [
+  '/api/gallo/artwork-upload',
+  '/api/ingest/metadata/rows-bulk', '/api/ingest/metadata/rows-delete', '/api/ingest/metadata/bulk-filename-update',
+  '/api/ingest/metadata/db-sync/preview', '/api/ingest/metadata/db-sync/apply',
+  '/api/ingest/metadata/ingrooves-sync/apply',
+  '/api/ingest/metadata/sheet-update/preview', '/api/ingest/metadata/sheet-update/apply', '/api/ingest/metadata/sheet-update/add',
+  '/api/mam/db-fill/apply',
+]
 app.use((req, res, next) =>
   BIG_JSON_PATHS.includes(req.path) ? next() : express.json()(req, res, next))
 
