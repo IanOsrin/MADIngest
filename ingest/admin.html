@@ -1487,21 +1487,14 @@
       <div class="import-section">
         <h3>Mad Mixer HQ stems</h3>
         <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
-          The original studio stems of a Mad Mixer song. Put them in the <strong>HQ stems folder on Vision</strong> (one folder per song),
-          pick the song, then that folder. <strong>Publish</strong> writes one record per stem in <strong>MADMixer</strong> (table HQ_Stems)
+          Sets of original studio stems — each set stands on its own, like a loop pack. Put each set in its own folder inside the
+          <strong>HQ stems folder on Vision</strong> and pick that folder; the set is named after it (you can change the name).
+          <strong>Publish</strong> writes one record per stem in <strong>MADMixer</strong> (table HQ_Stems)
           — nothing is copied: the stems stay on Vision and Mad Mixer subscribers stream them from there (through MAD) under
           <strong>🎚 Load HQ Stems</strong>, within a minute or two. Vision is only read here. Nothing is deleted; a stem you hid in
           FileMaker (Visible = 0) stays hidden.
         </p>
-        <h4 style="margin:6px 0">1 · Song</h4>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <input id="hqSongQ" class="btn-browse" style="min-width:260px" placeholder="Song title or artist…" onkeydown="if(event.key==='Enter')hqSongSearch()">
-          <button class="btn btn-ghost" onclick="hqSongSearch()">Search</button>
-          <span id="hqSongSel" style="font-size:0.85rem"></span>
-        </div>
-        <div id="hqSongList" style="max-height:220px;overflow:auto;margin-top:8px;font-size:0.82rem"></div>
-
-        <h4 style="margin:16px 0 6px">2 · Vision folder with the stems</h4>
+        <h4 style="margin:6px 0">1 · The set's folder on Vision</h4>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:0.82rem">
           <button class="btn btn-ghost" id="hqUpBtn" onclick="hqBrowseUp()" style="font-size:0.78rem">↑ Up</button>
           <code id="hqPath">/</code>
@@ -1511,6 +1504,11 @@
         <div id="hqBrowseList" style="max-height:220px;overflow:auto;margin-top:6px"></div>
 
         <div id="hqStemsWrap" style="display:none;margin-top:16px">
+          <h4 style="margin:0 0 6px">2 · Set</h4>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:0.84rem;margin-bottom:10px">
+            Name in Mad Mixer: <input id="hqSetTitle" maxlength="120" style="min-width:280px" onchange="hqRender()">
+            <span style="color:var(--muted)">id <code id="hqSetId"></code></span>
+          </div>
           <h4 style="margin:0 0 6px">3 · Stems</h4>
           <div style="overflow-x:auto;border:1px solid var(--border);border-radius:6px">
             <table style="width:100%;border-collapse:collapse;font-size:0.8rem">
@@ -1534,7 +1532,7 @@
         </div>
       </div>
       <div class="import-section" style="margin-top:18px">
-        <h3>Songs with HQ stems in Mad Mixer now</h3>
+        <h3>HQ stem sets in Mad Mixer now</h3>
         <div id="hqNow" style="font-size:0.84rem;color:var(--muted)">Loading…</div>
       </div>
     </div>
@@ -3108,12 +3106,12 @@ function showTab(name) {
 }
 
 // ── HQ Stems tab (2026-10-08): a catalogue song's studio stems, Vision → S3 hqstems/ + MADMixer HQ_Stems ──
-let _hqSong = null, _hqPath = '/', _hqStems = [], _hqInited = false
+let _hqSet = null, _hqPath = '/', _hqStems = [], _hqInited = false
 const hqEsc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
 const hqFmt = sec => sec ? `${Math.floor(sec / 60)}:${String(Math.round(sec % 60)).padStart(2, '0')}` : '—'
 async function hqInit() {
   hqLoadNow()
-  if (!_hqInited) { _hqInited = true; hqBrowse('/') }
+  if (!_hqInited) { _hqInited = true; hqBrowse('/gallo-music-files-wavs/Stems') }
 }
 async function hqLoadNow() {
   const el = $('hqNow'); if (!el) return
@@ -3121,29 +3119,11 @@ async function hqLoadNow() {
     const r = await api('/api/hq-stems'), j = await r.json()
     if (!j.ok) { el.textContent = 'Couldn’t read MADMixer: ' + (j.error || r.status); return }
     if (!j.layout.ok) { el.innerHTML = `<span style="color:var(--gold)">${hqEsc(j.layout.error)}</span>`; return }
-    el.innerHTML = j.songs.length ? '<table style="width:100%;border-collapse:collapse;font-size:0.82rem">' + j.songs.map(s =>
-      `<tr><td style="padding:4px 8px"><strong>${hqEsc(s.title || 'song ' + s.songId)}</strong> <span style="color:var(--muted)">#${hqEsc(s.songId)}</span></td>
+    el.innerHTML = j.sets.length ? '<table style="width:100%;border-collapse:collapse;font-size:0.82rem">' + j.sets.map(s =>
+      `<tr><td style="padding:4px 8px"><strong>${hqEsc(s.title)}</strong> <span style="color:var(--muted)">${hqEsc(s.setId)}</span></td>
        <td style="padding:4px 8px">${s.stems} stems${s.hidden ? ` (${s.hidden} hidden)` : ''}</td><td style="padding:4px 8px;color:var(--muted)">${s.labels.map(hqEsc).join(', ')}</td></tr>`).join('') + '</table>'
       : 'No HQ stems yet.'
   } catch (e) { el.textContent = 'Couldn’t read MADMixer: ' + e.message }
-}
-async function hqSongSearch() {
-  const q = $('hqSongQ').value.trim(), list = $('hqSongList')
-  if (q.length < 2) { list.textContent = 'Type at least 2 letters.'; return }
-  list.textContent = 'Searching MADMixer…'
-  try {
-    const j = await (await api('/api/hq-stems/songs?q=' + encodeURIComponent(q))).json()
-    if (!j.ok) throw new Error(j.error)
-    list.innerHTML = j.songs.length ? j.songs.map((s, i) => `<div style="padding:4px 6px;border-bottom:1px solid var(--border);cursor:pointer" onclick="hqPickSong(${i})">
-      <strong>${hqEsc(s.title)}</strong> — ${hqEsc(s.artist)} <span style="color:var(--muted)">· ${hqEsc(s.album)} · ${hqEsc(s.duration)} · #${hqEsc(s.songId)}${s.hasMp3 ? '' : ' · no MP3 yet'}</span></div>`).join('') : 'No Mad Mixer songs match.'
-    window._hqSongResults = j.songs
-  } catch (e) { list.textContent = 'Search failed: ' + e.message }
-}
-function hqPickSong(i) {
-  _hqSong = window._hqSongResults[i]
-  $('hqSongSel').innerHTML = `Song: <strong>${hqEsc(_hqSong.title)}</strong> — ${hqEsc(_hqSong.artist)} <span style="color:var(--muted)">#${hqEsc(_hqSong.songId)}</span>`
-  $('hqSongList').innerHTML = ''
-  if ($('hqStemsWrap').style.display !== 'none') hqUseFolder()
 }
 async function hqBrowse(p) {
   $('hqBrowseStatus').textContent = 'Loading…'
@@ -3160,12 +3140,13 @@ async function hqBrowse(p) {
 }
 function hqBrowseUp() { const p = _hqPath.replace(/\/[^/]*$/, '') || '/'; hqBrowse(p) }
 async function hqUseFolder() {
-  if (!_hqSong) { $('hqBrowseStatus').textContent = 'Choose the song first (step 1).'; return }
-  if (_hqPath === '/') { $('hqBrowseStatus').textContent = 'Open the folder that holds the stems.'; return }
+  if (_hqPath.split('/').filter(Boolean).length < 2) { $('hqBrowseStatus').textContent = 'Open the folder that holds the stems.'; return }
   $('hqStemsWrap').style.display = ''; $('hqBody').innerHTML = '<tr><td colspan="7" style="padding:8px">Reading the WAVs on Vision…</td></tr>'; $('hqWarn').textContent = ''
   try {
-    const j = await (await api(`/api/hq-stems/preview?path=${encodeURIComponent(_hqPath)}&song=${encodeURIComponent(_hqSong.songId)}`)).json()
+    const j = await (await api(`/api/hq-stems/preview?path=${encodeURIComponent(_hqPath)}`)).json()
     if (!j.ok) throw new Error(j.error)
+    _hqSet = { setId: j.setId, origTitle: j.title }
+    $('hqSetTitle').value = j.title; $('hqSetId').textContent = j.setId
     _hqStems = j.stems.map(s => ({ ...s, pick: s.status !== 'published' }))
     const warns = []
     if (j.warning) warns.push(...j.warning.split('\n'))
@@ -3173,8 +3154,6 @@ async function hqUseFolder() {
     if (j.others) warns.push(`${j.others} other file(s) here are not WAVs and are left out.`)
     const lens = [...new Set(_hqStems.map(s => Math.round(s.seconds)))]
     if (lens.length > 1) warns.push(`The stems aren't all the same length (${lens.map(hqFmt).join(', ')}) — they will still line up at the start.`)
-    const songSec = String(_hqSong.duration || '').split(':').map(Number).reduce((a, n) => a * 60 + n, 0)
-    if (songSec && lens.length && Math.abs(lens[0] - songSec) > 3) warns.push(`The stems are ${hqFmt(lens[0])} long but the song is ${hqFmt(songSec)} — is this the right folder?`)
     $('hqWarn').innerHTML = warns.map(hqEsc).join('<br>')
     hqRender()
   } catch (e) { $('hqBody').innerHTML = `<tr><td colspan="7" style="padding:8px;color:#ef4444">${hqEsc(e.message)}</td></tr>` }
@@ -3192,21 +3171,27 @@ function hqRender() {
     <td style="padding:4px 10px;${/published|updated/.test(s.status) ? 'color:var(--green,#22c55e)' : /failed/.test(s.status) ? 'color:#ef4444' : ''}">${hqEsc(label[s.status] || s.status)}</td></tr>`).join('')
   const todo = _hqStems.filter(s => can(s) && s.pick)
   const all = $('hqAll'); const c = _hqStems.filter(can); all.checked = c.length > 0 && c.every(s => s.pick); all.disabled = !c.length
-  const btn = $('hqPublishBtn'); btn.disabled = !todo.length
-  btn.textContent = todo.length ? `Publish ${todo.length} ${todo.length === 1 ? 'stem' : 'stems'}` : 'Nothing to publish'
+  const renamed = _hqSet && $('hqSetTitle').value.trim() && $('hqSetTitle').value.trim() !== _hqSet.origTitle
+  const btn = $('hqPublishBtn'); btn.disabled = !todo.length && !renamed
+  btn.textContent = todo.length ? `Publish ${todo.length} ${todo.length === 1 ? 'stem' : 'stems'}` : renamed ? 'Rename the set' : 'Nothing to publish'
 }
 function hqTickAll(on) { _hqStems.forEach(s => { if (s.status === 'new' || s.status === 'changed' || /^failed/.test(s.status)) s.pick = on }); hqRender() }
 async function hqPublish() {
   const todo = _hqStems.filter(s => (s.status === 'new' || s.status === 'changed' || /^failed/.test(s.status)) && s.pick)
-  if (!todo.length || !_hqSong) return
+  const title = $('hqSetTitle').value.trim()
+  // a new name goes on every stem of the set, published ones too
+  if (_hqSet && title && title !== _hqSet.origTitle) _hqStems.forEach(s => { if (!todo.includes(s) && !/^failed/.test(s.status)) todo.push(s) })
+  if (!todo.length || !_hqSet) return
+  if (!title) { $('hqStatus').textContent = 'Give the set a name first.'; return }
   $('hqPublishBtn').disabled = true; $('hqStatus').textContent = 'Writing MADMixer…'
   try {
     const sorted = _hqStems.map((s, i) => ({ s, sort: i + 1 })).filter(x => todo.includes(x.s))
-    const j = await (await api('/api/hq-stems/publish', 'POST', { songId: _hqSong.songId, songTitle: _hqSong.title,
+    const j = await (await api('/api/hq-stems/publish', 'POST', { setId: _hqSet.setId, setTitle: title,
       stems: sorted.map(({ s, sort }) => ({ path: s.path, file: s.file, label: s.label, bytes: s.bytes, seconds: s.seconds, sort })) })).json()
     if (!j.ok) throw new Error(j.error)
     for (const r of j.results) { const s = _hqStems.find(x => x.file === r.file); if (s) s.status = r.error ? 'failed: ' + r.error : (r.action === 'created' ? 'published' : 'updated') }
     const failed = j.results.filter(r => r.error).length
+    if (!failed) _hqSet.origTitle = title
     $('hqStatus').textContent = `Done: ${j.results.length - failed} published${failed ? `, ${failed} failed` : ''}. Mad Mixer shows them within a minute or two.`
   } catch (e) { $('hqStatus').textContent = 'Publishing failed: ' + e.message }
   hqRender()
