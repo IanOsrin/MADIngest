@@ -8,6 +8,7 @@ import healthRouter from './routes/health.js'
 import podcastsRouter from './routes/podcasts.js'
 import youtubeRouter from './routes/youtube.js'
 import reportsRouter from './routes/reports.js'
+import packsRouter from './routes/packs.js'
 import genreFixRouter from './routes/genre-fix.js'
 import galloGenreRouter from './routes/gallo-genre.js'
 import { CANONICAL_GENRES } from './lib/genre-taxonomy.js'
@@ -192,6 +193,7 @@ app.use('/api/tags', tagsRouter)
 app.use('/api/vision-util', visionUtilityRouter)  // browser-based file ops — works hosted too, unlike vision-upload
 app.use('/api/gallo', galloAudioRouter)
 app.use('/api/reports', reportsRouter)
+app.use('/api/packs', packsRouter)   // Mad Mixer loop packs → S3 packs/ + MADMixer (browser-read folders, works hosted)
 if (YOUTUBE_ENABLED) app.use('/api/youtube', youtubeRouter)   // local-only — see YOUTUBE_ENABLED above
 
 // Health check — youtubeEnabled lets the admin UI hide the tab on hosted

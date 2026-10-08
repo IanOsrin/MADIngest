@@ -329,6 +329,7 @@
       <button class="tab-btn" data-tab="biography" onclick="showTab('biography')">Biography</button>
       <button class="tab-btn" data-tab="artwork" onclick="showTab('artwork')">Artwork</button>
       <button class="tab-btn" data-tab="s3upload" onclick="showTab('s3upload')">S3 Upload</button>
+      <button class="tab-btn" data-tab="packs" onclick="showTab('packs')">Packs</button>
       <button class="tab-btn" data-tab="playlists" onclick="showTab('playlists')">Playlists</button>
       <button class="tab-btn" data-tab="playlistart" onclick="showTab('playlistart')">Playlist Art</button>
       <button class="tab-btn" data-tab="hero" onclick="showTab('hero')">Hero Banner</button>
@@ -1432,6 +1433,52 @@
         </div>
 
         <div id="s3Results" style="display:none;margin-top:16px"></div>
+      </div>
+    </div>
+
+    <div id="tab-packs" class="tab-panel">
+      <div class="import-section">
+        <h3>Mad Mixer loop packs</h3>
+        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
+          Choose a folder on any drive: your <strong>Packs</strong> folder (one sub-folder per pack) or one pack's own folder.
+          The loops should be WAVs exported from Mad Mixer — they carry their exact tempo and length.
+          <strong>Publish</strong> uploads each WAV to S3 (<code>packs/</code>) and writes its record in
+          <strong>MADMixer</strong> (table Pack_Loops, layout Packs). Mad Mixer subscribers see them under
+          📦 Packs within 5 minutes. A loop already published is skipped; a loop whose audio changed is uploaded
+          under a new name and its record updated. Nothing is deleted, and a loop you hid in FileMaker
+          (Visible = 0) stays hidden.
+        </p>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+          <input type="file" id="pkFolder" webkitdirectory directory multiple style="display:none" onchange="pkFolderChosen(this.files)">
+          <button class="btn btn-ghost" onclick="document.getElementById('pkFolder').click()">Choose folder…</button>
+          <span id="pkPicked" style="font-size:0.82rem;color:var(--muted)"></span>
+        </div>
+        <div id="pkListWrap" style="display:none">
+          <div style="overflow-x:auto;max-height:420px;border:1px solid var(--border);border-radius:6px">
+            <table style="width:100%;border-collapse:collapse;font-size:0.8rem">
+              <thead><tr style="background:var(--surface);position:sticky;top:0">
+                <th style="padding:6px 10px;text-align:center;color:var(--muted)"><input type="checkbox" id="pkAll" title="Tick / untick every loop that can be published" onchange="pkTickAll(this.checked)"></th>
+                <th style="padding:6px 10px;text-align:left;color:var(--muted)">Pack</th>
+                <th style="padding:6px 10px;text-align:left;color:var(--muted)">Loop</th>
+                <th style="padding:6px 10px;text-align:right;color:var(--muted)">BPM</th>
+                <th style="padding:6px 10px;text-align:right;color:var(--muted)">Bars</th>
+                <th style="padding:6px 10px;text-align:right;color:var(--muted)">Length</th>
+                <th style="padding:6px 10px;text-align:right;color:var(--muted)">Size</th>
+                <th style="padding:6px 10px;text-align:left;color:var(--muted)">Status</th>
+              </tr></thead>
+              <tbody id="pkBody"></tbody>
+            </table>
+          </div>
+          <div id="pkWarn" style="font-size:0.8rem;color:var(--gold);margin-top:8px"></div>
+          <div style="display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap">
+            <button class="btn btn-blue" id="pkPublishBtn" onclick="pkPublish()">Publish</button>
+            <span id="pkStatus" style="font-size:0.82rem;color:var(--muted)"></span>
+          </div>
+        </div>
+      </div>
+      <div class="import-section" style="margin-top:18px">
+        <h3>In Mad Mixer now</h3>
+        <div id="pkNow" style="font-size:0.84rem;color:var(--muted)">Loading…</div>
       </div>
     </div>
 
@@ -2999,6 +3046,144 @@ function showTab(name) {
   if (name === 'playlistart') playlistArtInit()
   if (name === 'youtube') youtubeInit()
   if (name === 'ddex') ccaInit()   // CCA Import lives on the DDEX tab now
+  if (name === 'packs') pkLoadNow()
+}
+
+// ── Packs tab (2026-10-08): Mad Mixer loop packs → S3 packs/ + MADMixer ─────────────────────
+// The browser reads the folder. Names, keys and order follow the Mad Mixer repo's
+// scripts/packs-folder.mjs exactly, so either tool publishes a pack the same way:
+// key = packs/<pack>/<first 10 hex of the SHA-256>-<file name>.
+const PK_S3 = 'https://mass-music-audio-files.s3.eu-north-1.amazonaws.com/'
+const PK_ORDER = ['Drums', 'Kick', 'Percussion', 'Bass', 'Guitar', 'Piano', 'Keys', 'Synth', 'Strings', 'Brass', 'Vocals', 'Other']
+let _pkLoops = [], _pkNow = []
+const pkClean = s => s.normalize('NFC').replace(/[\s.]+$/, '').replace(/^\s+/, '')
+const pkSlug = s => pkClean(s).normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'pack'
+const pkSafe = s => s.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Za-z0-9 ._-]+/g, '').replace(/\s+/g, ' ').trim()
+const pkUrl = key => PK_S3 + key.split('/').map(encodeURIComponent).join('/')
+const pkEsc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+function pkWavInfo(ab) {
+  const v = new DataView(ab), u = new Uint8Array(ab), id = p => String.fromCharCode(u[p], u[p + 1], u[p + 2], u[p + 3])
+  if (ab.byteLength < 44 || id(0) !== 'RIFF' || id(8) !== 'WAVE') throw new Error('not a WAV file')
+  let rate = 0, ch = 0, bits = 0, data = 0, tempo = 0, beats = 0
+  for (let p = 12; p + 8 <= ab.byteLength;) {
+    const c = id(p), size = v.getUint32(p + 4, true), b = p + 8
+    if (c === 'fmt ') { ch = v.getUint16(b + 2, true); rate = v.getUint32(b + 4, true); bits = v.getUint16(b + 14, true) }
+    else if (c === 'data') data = Math.min(size, ab.byteLength - b)
+    else if (c === 'acid' && size >= 24) { beats = v.getUint32(b + 12, true); tempo = v.getFloat32(b + 20, true) }
+    p = b + size + (size & 1)
+  }
+  if (!rate || !ch || !bits || !data) throw new Error('WAV has no audio')
+  return { seconds: data / (rate * ch * (bits / 8)), tempo: tempo > 0 ? Math.round(tempo * 1000) / 1000 : 0, beats }
+}
+async function pkLoadNow() {
+  const el = $('pkNow'); if (!el) return
+  try {
+    const r = await api('/api/packs'), j = await r.json()
+    if (!j.ok) { el.textContent = 'Couldn’t read MADMixer: ' + (j.error || r.status); return }
+    if (!j.layout.ok) { el.innerHTML = `<span style="color:var(--gold)">${pkEsc(j.layout.error)}</span>`; return }
+    _pkNow = j.packs
+    el.innerHTML = j.packs.length ? '<table style="width:100%;border-collapse:collapse;font-size:0.82rem">' + j.packs.map(p =>
+      `<tr><td style="padding:4px 8px"><strong>${pkEsc(p.title)}</strong>${p.song && p.song !== p.title ? ' · ' + pkEsc(p.song) : ''}</td>
+       <td style="padding:4px 8px;text-align:right">${p.loops} loops${p.hidden ? ` (${p.hidden} hidden)` : ''}</td>
+       <td style="padding:4px 8px;text-align:right">${p.bars} bars</td><td style="padding:4px 8px;text-align:right">${p.bpm} BPM</td></tr>`).join('') + '</table>'
+      : 'No packs yet.'
+  } catch (e) { el.textContent = 'Couldn’t read MADMixer: ' + e.message }
+}
+async function pkFolderChosen(files) {
+  const wavs = [...files].filter(f => /\.wav$/i.test(f.name) && !f.name.startsWith('.'))
+  $('pkPicked').textContent = wavs.length ? `Reading ${wavs.length} WAVs…` : 'No WAV files in that folder.'
+  $('pkListWrap').style.display = 'none'; _pkLoops = []
+  if (!wavs.length) return
+  const groups = new Map()
+  for (const f of wavs) {
+    const parts = (f.webkitRelativePath || f.name).split('/')
+    const folder = parts.length >= 2 ? parts[parts.length - 2] : 'Pack'
+    if (!groups.has(folder)) groups.set(folder, [])
+    groups.get(folder).push(f)
+  }
+  const warns = [], loops = []
+  if (!_pkNow.length) await pkLoadNow()
+  let nextBase = Math.max(0, ..._pkNow.map(p => p.sortBase || 0)) + 100
+  for (const folder of [...groups.keys()].sort((a, b) => a.localeCompare(b))) {
+    const id = pkSlug(folder), title = pkClean(folder), rows = []
+    for (const f of groups.get(folder)) {
+      try {
+        const ab = await f.arrayBuffer(), info = pkWavInfo(ab)
+        const sha = [...new Uint8Array(await crypto.subtle.digest('SHA-256', ab))].map(b => b.toString(16).padStart(2, '0')).join('')
+        const nm = f.name.replace(/\.wav$/i, '').split(' - ')
+        rows.push({ f, file: f.name, song: pkClean(nm[0] || ''), track: pkClean(nm[1] || 'Loop'), bytes: f.size, seconds: Math.round(info.seconds * 1000) / 1000,
+          tempo: info.tempo, beats: info.beats, key: `packs/${id}/${sha.slice(0, 10)}-${pkSafe(f.name)}` })
+      } catch (e) { warns.push(`${folder}/${f.name}: ${e.message} — skipped`) }
+    }
+    if (!rows.length) continue
+    const songs = [...new Set(rows.map(r => r.song))]
+    rows.sort((a, b) => songs.indexOf(a.song) - songs.indexOf(b.song) || ((PK_ORDER.indexOf(a.track) + 1 || 99) - (PK_ORDER.indexOf(b.track) + 1 || 99)) || a.track.localeCompare(b.track))
+    const seen = new Map(); for (const r of rows) { const n = (seen.get(r.track) || 0) + 1; seen.set(r.track, n); r.label = n > 1 ? `${r.track} ${n}` : r.track }
+    const tempos = [...new Set(rows.map(r => r.tempo).filter(Boolean))], beats = [...new Set(rows.map(r => r.beats).filter(Boolean))]
+    if (tempos.length > 1) warns.push(`${title}: the loops have different tempos (${tempos.join(', ')}) — the pack shows the first`)
+    if (!tempos.length) warns.push(`${title}: no tempo in the files (not exported from Mad Mixer?) — the Mixer will measure it`)
+    const bpm = tempos[0] ? Math.round(tempos[0] * 10) / 10 : 0, bars = beats[0] ? Math.round(beats[0] / 4 * 100) / 100 : 0
+    const base = (_pkNow.find(p => p.id === id) || {}).sortBase || (nextBase += 0, nextBase)
+    if (!_pkNow.find(p => p.id === id)) nextBase += 100
+    rows.forEach((r, i) => loops.push({ ...r, packId: id, title, packSong: songs[0] || '', bpm, bars, sort: base + i + 1, status: 'checking' }))
+  }
+  _pkLoops = loops
+  $('pkWarn').innerHTML = warns.map(pkEsc).join('<br>')
+  $('pkPicked').textContent = `${groups.size} ${groups.size === 1 ? 'pack' : 'packs'}, ${loops.length} loops — checking S3 and MADMixer…`
+  pkRender(); $('pkListWrap').style.display = ''
+  try {
+    const r = await api('/api/packs/check', 'POST', { loops: loops.map(l => ({ key: l.key, packId: l.packId, file: l.file })) }), j = await r.json()
+    if (!j.ok) throw new Error(j.error || r.status)
+    j.loops.forEach((c, i) => {
+      const l = loops[i]; l.onS3 = c.onS3 && c.s3Bytes === l.bytes; l.record = c.record
+      l.status = c.error ? 'error: ' + c.error : (l.record && l.record.url === pkUrl(l.key) && l.onS3) ? 'published' : l.record ? 'new audio' : 'new'
+      l.pick = l.status === 'new' || l.status === 'new audio'   // untick any you took out of MADMixer on purpose
+    })
+  } catch (e) { loops.forEach(l => { l.status = 'unknown' }); $('pkWarn').innerHTML += (warns.length ? '<br>' : '') + 'Couldn’t check S3 / MADMixer: ' + pkEsc(e.message) }
+  $('pkPicked').textContent = `${groups.size} ${groups.size === 1 ? 'pack' : 'packs'}, ${loops.length} loops`
+  pkRender()
+}
+function pkRender() {
+  const label = { checking: '…', published: '✓ published', 'new audio': '↻ new audio — will replace', new: '＋ new', unknown: '?' }
+  const can = l => l.status === 'new' || l.status === 'new audio' || /^failed/.test(l.status)
+  $('pkBody').innerHTML = _pkLoops.map((l, i) => `<tr style="border-top:1px solid var(--border)">
+    <td style="padding:4px 10px;text-align:center">${can(l) ? `<input type="checkbox" ${l.pick ? 'checked' : ''} onchange="_pkLoops[${i}].pick = this.checked; pkRender()">` : ''}</td>
+    <td style="padding:4px 10px">${i === 0 || _pkLoops[i - 1].packId !== l.packId ? `<strong>${pkEsc(l.title)}</strong>` : ''}</td>
+    <td style="padding:4px 10px">${pkEsc(l.label)}</td><td style="padding:4px 10px;text-align:right">${l.bpm || '—'}</td>
+    <td style="padding:4px 10px;text-align:right">${l.bars || '—'}</td><td style="padding:4px 10px;text-align:right">${l.seconds.toFixed(2)} s</td>
+    <td style="padding:4px 10px;text-align:right">${(l.bytes / 1e6).toFixed(1)} MB</td>
+    <td style="padding:4px 10px;${l.status === 'published' ? 'color:var(--green,#22c55e)' : /error|failed/.test(l.status) ? 'color:#ef4444' : ''}">${pkEsc(label[l.status] || l.status)}</td></tr>`).join('')
+  const todo = _pkLoops.filter(l => can(l) && l.pick).length
+  const all = $('pkAll'); if (all) { const c = _pkLoops.filter(can); all.checked = c.length > 0 && c.every(l => l.pick); all.disabled = !c.length }
+  const btn = $('pkPublishBtn'); btn.disabled = !todo; btn.textContent = todo ? `Publish ${todo} ${todo === 1 ? 'loop' : 'loops'}` : 'Nothing to publish'
+}
+function pkTickAll(on) { _pkLoops.forEach(l => { if (l.status === 'new' || l.status === 'new audio' || /^failed/.test(l.status)) l.pick = on }); pkRender() }
+async function pkPublish() {
+  const todo = _pkLoops.filter(l => (l.status === 'new' || l.status === 'new audio' || /^failed/.test(l.status)) && l.pick)
+  if (!todo.length) return
+  const btn = $('pkPublishBtn'); btn.disabled = true
+  let done = 0, failed = 0
+  for (const l of todo) {
+    $('pkStatus').textContent = `${done + failed + 1} of ${todo.length}: ${l.title} — ${l.label}…`
+    try {
+      if (!l.onS3) {
+        l.status = 'uploading…'; pkRender()
+        const p = await (await api('/api/packs/presign', 'POST', { key: l.key })).json()
+        if (!p.ok) throw new Error(p.error)
+        const put = await fetch(p.uploadUrl, { method: 'PUT', headers: { 'Content-Type': 'audio/wav' }, body: l.f })
+        if (!put.ok) throw new Error('S3 upload HTTP ' + put.status)
+        l.onS3 = true
+      }
+      l.status = 'writing MADMixer…'; pkRender()
+      const r = await (await api('/api/packs/record', 'POST', { key: l.key, Pack_ID: l.packId, Pack_Title: l.title, Pack_Song: l.packSong, Loop_Label: l.label,
+        File_Name: l.file, BPM: l.bpm, Bars: l.bars, Seconds: l.seconds, Bytes: l.bytes, Sort: l.sort })).json()
+      if (!r.ok) throw new Error(r.error)
+      l.status = 'published'; done++
+    } catch (e) { l.status = 'failed: ' + e.message; failed++ }
+    pkRender()
+  }
+  $('pkStatus').textContent = `Published ${done}${failed ? `, ${failed} failed` : ''}. Mad Mixer shows them within 5 minutes.`
+  pkLoadNow()
 }
 
 // YouTube rendering and the "Generate DDEX" build are both LOCAL-ONLY batch jobs
