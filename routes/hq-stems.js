@@ -14,7 +14,7 @@ import { Router } from 'express'
 import { adminAuth } from '../lib/admin-auth.js'
 import { visionList, visionStatus } from '../lib/vision-drive.js'
 import { readVisionWavInfo } from '../lib/wav-info.js'
-import { checkHqLayout, listHqStems, groupHq, searchSongs, upsertHqStem, labelFor, ORDER, hqVisionPrefix } from '../lib/madmixer-hq.js'
+import { checkHqLayout, listHqStems, groupHq, searchSongs, upsertHqStem, labelFor, byStemOrder, hqVisionPrefix } from '../lib/madmixer-hq.js'
 
 const router = Router()
 const fail = (res, status, error) => res.status(status).json({ ok: false, error })
@@ -64,7 +64,7 @@ router.get('/preview', adminAuth, async (req, res) => {
       const status = !rec ? 'new' : (rec.Vision_Path === vp && Number(rec.Bytes) === w.size ? 'published' : 'changed')
       stems.push({ path: vp, file: w.name, label: rec?.Stem_Label || labelFor(w.name), bytes: w.size, seconds, format, status })
     }
-    stems.sort((a, b) => ((ORDER.indexOf(a.label) + 1 || 99) - (ORDER.indexOf(b.label) + 1 || 99)) || a.file.localeCompare(b.file))
+    stems.sort(byStemOrder)
     res.json({ ok: true, path, stems, warning: warnings.join('\n'), others: (listing.entries || []).filter((e) => e.type !== 'dir').length - wavs.length })
   } catch (err) { fail(res, 502, err.message) }
 })
