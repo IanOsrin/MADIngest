@@ -1487,11 +1487,11 @@
       <div class="import-section">
         <h3>Mad Mixer HQ stems</h3>
         <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
-          The original studio stems of a Mad Mixer song. Pick the song, then the Vision folder that holds its stem WAVs.
-          <strong>Publish</strong> copies each WAV from Vision to S3 (<code>hqstems/</code>) and writes its record in
-          <strong>MADMixer</strong> (table HQ_Stems). Subscribers then find the song under <strong>🎚 Load HQ Stems</strong> within a minute or two.
-          Vision is only read — the masters stay where they are. Copying runs at Vision's speed (about 5 MB/s), so a song's stems take a minute or more.
-          Nothing is deleted; a stem you hid in FileMaker (Visible = 0) stays hidden.
+          The original studio stems of a Mad Mixer song. Put them in the <strong>HQ stems folder on Vision</strong> (one folder per song),
+          pick the song, then that folder. <strong>Publish</strong> writes one record per stem in <strong>MADMixer</strong> (table HQ_Stems)
+          — nothing is copied: the stems stay on Vision and Mad Mixer subscribers stream them from there (through MAD) under
+          <strong>🎚 Load HQ Stems</strong>, within a minute or two. Vision is only read here. Nothing is deleted; a stem you hid in
+          FileMaker (Visible = 0) stays hidden.
         </p>
         <h4 style="margin:6px 0">1 · Song</h4>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -3168,7 +3168,7 @@ async function hqUseFolder() {
     if (!j.ok) throw new Error(j.error)
     _hqStems = j.stems.map(s => ({ ...s, pick: s.status !== 'published' }))
     const warns = []
-    if (j.warning) warns.push(j.warning)
+    if (j.warning) warns.push(...j.warning.split('\n'))
     if (!_hqStems.length) warns.push('No WAV files in this folder.')
     if (j.others) warns.push(`${j.others} other file(s) here are not WAVs and are left out.`)
     const lens = [...new Set(_hqStems.map(s => Math.round(s.seconds)))]
@@ -3180,8 +3180,8 @@ async function hqUseFolder() {
   } catch (e) { $('hqBody').innerHTML = `<tr><td colspan="7" style="padding:8px;color:#ef4444">${hqEsc(e.message)}</td></tr>` }
 }
 function hqRender() {
-  const label = { published: '✓ published', new: '＋ new', 'new audio': '↻ new audio — will replace', updated: '✓ updated' }
-  const can = s => s.status === 'new' || s.status === 'new audio' || /^failed/.test(s.status)
+  const label = { published: '✓ published', new: '＋ new', changed: '↻ changed on Vision — will update', updated: '✓ updated' }
+  const can = s => s.status === 'new' || s.status === 'changed' || /^failed/.test(s.status)
   $('hqBody').innerHTML = _hqStems.map((s, i) => `<tr style="border-top:1px solid var(--border)">
     <td style="padding:4px 10px;text-align:center">${can(s) ? `<input type="checkbox" ${s.pick ? 'checked' : ''} onchange="_hqStems[${i}].pick=this.checked;hqRender()">` : ''}</td>
     <td style="padding:4px 10px"><input value="${hqEsc(s.label)}" maxlength="40" style="width:150px" onchange="_hqStems[${i}].label=this.value.trim()||_hqStems[${i}].label" ${can(s) ? '' : 'disabled'}></td>
@@ -3192,35 +3192,24 @@ function hqRender() {
     <td style="padding:4px 10px;${/published|updated/.test(s.status) ? 'color:var(--green,#22c55e)' : /failed/.test(s.status) ? 'color:#ef4444' : ''}">${hqEsc(label[s.status] || s.status)}</td></tr>`).join('')
   const todo = _hqStems.filter(s => can(s) && s.pick)
   const all = $('hqAll'); const c = _hqStems.filter(can); all.checked = c.length > 0 && c.every(s => s.pick); all.disabled = !c.length
-  const mb = todo.reduce((n, s) => n + s.bytes, 0) / 1e6
   const btn = $('hqPublishBtn'); btn.disabled = !todo.length
-  btn.textContent = todo.length ? `Publish ${todo.length} ${todo.length === 1 ? 'stem' : 'stems'} (${mb.toFixed(0)} MB, about ${Math.max(1, Math.round(mb / 5 / 60))} min)` : 'Nothing to publish'
+  btn.textContent = todo.length ? `Publish ${todo.length} ${todo.length === 1 ? 'stem' : 'stems'}` : 'Nothing to publish'
 }
-function hqTickAll(on) { _hqStems.forEach(s => { if (s.status === 'new' || s.status === 'new audio' || /^failed/.test(s.status)) s.pick = on }); hqRender() }
+function hqTickAll(on) { _hqStems.forEach(s => { if (s.status === 'new' || s.status === 'changed' || /^failed/.test(s.status)) s.pick = on }); hqRender() }
 async function hqPublish() {
-  const todo = _hqStems.filter(s => (s.status === 'new' || s.status === 'new audio' || /^failed/.test(s.status)) && s.pick)
+  const todo = _hqStems.filter(s => (s.status === 'new' || s.status === 'changed' || /^failed/.test(s.status)) && s.pick)
   if (!todo.length || !_hqSong) return
-  $('hqPublishBtn').disabled = true; $('hqStatus').textContent = 'Starting…'
+  $('hqPublishBtn').disabled = true; $('hqStatus').textContent = 'Writing MADMixer…'
   try {
     const sorted = _hqStems.map((s, i) => ({ s, sort: i + 1 })).filter(x => todo.includes(x.s))
     const j = await (await api('/api/hq-stems/publish', 'POST', { songId: _hqSong.songId, songTitle: _hqSong.title,
-      stems: sorted.map(({ s, sort }) => ({ path: s.path, file: s.file, label: s.label, bytes: s.bytes, seconds: s.seconds, key: s.key, sort })) })).json()
+      stems: sorted.map(({ s, sort }) => ({ path: s.path, file: s.file, label: s.label, bytes: s.bytes, seconds: s.seconds, sort })) })).json()
     if (!j.ok) throw new Error(j.error)
-    for (;;) {
-      await new Promise(r => setTimeout(r, 1500))
-      const st = await (await api('/api/hq-stems/job/' + j.jobId)).json()
-      if (!st.ok) throw new Error(st.error)
-      st.steps.forEach((step, k) => { const s = _hqStems.find(x => x.file === step.file); if (s) s.status = step.status })
-      hqRender()
-      const done = st.steps.filter(x => /published|updated|failed/.test(x.status)).length
-      $('hqStatus').textContent = `${done} of ${st.steps.length} done…`
-      if (st.done) {
-        const failed = st.steps.filter(x => /failed/.test(x.status)).length
-        $('hqStatus').textContent = `Done: ${st.steps.length - failed} published${failed ? `, ${failed} failed` : ''}. Mad Mixer shows them within a minute or two.`
-        break
-      }
-    }
-  } catch (e) { $('hqStatus').textContent = 'Publishing failed: ' + e.message; hqRender() }
+    for (const r of j.results) { const s = _hqStems.find(x => x.file === r.file); if (s) s.status = r.error ? 'failed: ' + r.error : (r.action === 'created' ? 'published' : 'updated') }
+    const failed = j.results.filter(r => r.error).length
+    $('hqStatus').textContent = `Done: ${j.results.length - failed} published${failed ? `, ${failed} failed` : ''}. Mad Mixer shows them within a minute or two.`
+  } catch (e) { $('hqStatus').textContent = 'Publishing failed: ' + e.message }
+  hqRender()
   hqLoadNow()
 }
 
