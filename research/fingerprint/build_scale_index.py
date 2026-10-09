@@ -55,7 +55,8 @@ def fetch_and_fingerprint(args):
         if x.size < SR * 5:
             return idx, filename, None, None, "too short"
         h, t = hashes(peaks(spectrogram(x)))
-        return idx, filename, h.astype(np.uint32), t.astype(np.uint16), None
+        ok = t < 65536                      # time is stored in 16 bits (~25 min); never let a long track wrap
+        return idx, filename, h[ok].astype(np.uint32), t[ok].astype(np.uint16), None
     except Exception as e:
         return idx, filename, None, None, str(e)[:60]
     finally:
@@ -64,7 +65,8 @@ def fetch_and_fingerprint(args):
 
 def choose_tracks(target=10_000):
     """The 10,000: every track already in the small index, none of the held-back
-    negatives, the rest a random spread. Keeping the 178 means the existing
+    negatives, the rest a random spread. (2026-10-09: the first list was NOT random — DISTINCT ON
+    ordered by Filename, so LIMIT took the alphabetically first files: 7,335 GCAT + 2,486 numeric.) Keeping the 178 means the existing
     2,572 queries still have a right answer to find."""
     picked = SCALE / "tracks.json"
     if picked.exists():
@@ -85,9 +87,9 @@ def choose_tracks(target=10_000):
       dotenv.config({{ path: '/Users/ianosrin/Desktop/GalloIngestV1.2/.env', quiet: true }});
       const {{ mirrorQuery }} = await import('/Users/ianosrin/Desktop/GalloIngestV1.2/lib/mirror-db.js');
       const {{ rows }} = await mirrorQuery(`
-        SELECT DISTINCT ON (raw->>'Filename') raw->>'Filename' AS f
-          FROM tracks WHERE COALESCE(raw->>'S3_URL','') <> '' AND COALESCE(raw->>'Filename','') <> ''
-         ORDER BY raw->>'Filename', random() LIMIT {target * 2}`);
+        SELECT f FROM (SELECT DISTINCT raw->>'Filename' AS f
+          FROM tracks WHERE COALESCE(raw->>'S3_URL','') <> '' AND COALESCE(raw->>'Filename','') <> '') x
+         ORDER BY random() LIMIT {target * 2}`);
       writeFileSync('{pool_path}', JSON.stringify(rows.map(r => r.f)));
       process.exit(0);
     """], capture_output=True, text=True, cwd="/Users/ianosrin/Desktop/GalloIngestV1.2", timeout=300)
