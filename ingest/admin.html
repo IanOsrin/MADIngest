@@ -338,6 +338,7 @@
       <button class="tab-btn" data-tab="gallogenre" onclick="showTab('gallogenre')">Gallo Genre</button>
       <button class="tab-btn" data-tab="youtube" onclick="showTab('youtube')">YouTube</button>
       <button class="tab-btn" data-tab="download" onclick="showTab('download')">Download</button>
+      <button class="tab-btn" data-tab="fpcheck" onclick="showTab('fpcheck')">Check Audio</button>
       <button class="tab-btn" data-tab="vision" onclick="showTab('vision')">Vision</button>
       <button class="tab-btn" data-tab="addalbum" onclick="showTab('addalbum')">Add Album</button>
       <button class="tab-btn" data-tab="visionupload" onclick="showTab('visionupload')">To Vision</button>
@@ -1434,6 +1435,36 @@
         </div>
 
         <div id="s3Results" style="display:none;margin-top:16px"></div>
+      </div>
+    </div>
+
+    <div id="tab-fpcheck" class="tab-panel">
+      <div class="import-section">
+        <h3>Check Audio — is there a Gallo recording in it?</h3>
+        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
+          Drop in any song or clip, or paste a link (a direct audio file, or a YouTube / TikTok / SoundCloud page).
+          The whole thing is compared with the fingerprints of the Gallo catalogue, pitched up and down two semitones,
+          and every stretch that holds a Gallo recording is listed — where it is in your audio, where it comes from in
+          the original, and whether it was pitched. Play both to confirm by ear before acting on a match.
+          Works on the office Mac with the Bandlab drive plugged in (that is where the fingerprints are).
+        </p>
+        <div id="fpStatus" style="font-size:0.8rem;color:var(--muted);margin-bottom:12px">Checking…</div>
+        <div id="fpDrop" onclick="document.getElementById('fpFile').click()"
+             ondragover="event.preventDefault();this.style.borderColor='var(--gold)'" ondragleave="this.style.borderColor=''"
+             ondrop="event.preventDefault();this.style.borderColor='';fpPick(event.dataTransfer.files)"
+             style="border:2px dashed var(--border);border-radius:8px;padding:22px;text-align:center;cursor:pointer;font-size:0.88rem;color:var(--muted);margin-bottom:12px">
+          <strong style="color:var(--text)">Drop an audio file here</strong> or click to choose one (mp3, wav, m4a, flac, video files too · up to 300 MB · the first 20 minutes are checked)
+        </div>
+        <input type="file" id="fpFile" accept="audio/*,video/*,.mp3,.wav,.m4a,.aac,.flac,.ogg,.opus,.aif,.aiff,.mp4,.mov,.webm" style="display:none" onchange="fpPick(this.files);this.value=''">
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+          <input type="url" id="fpLink" placeholder="…or paste a link: https://www.youtube.com/watch?v=…  or  https://…/song.mp3"
+                 onkeydown="if(event.key==='Enter')fpCheckLink()"
+                 style="flex:1;padding:8px 10px;border-radius:5px;border:1px solid var(--border);background:var(--surface);color:var(--text);font:inherit;font-size:0.85rem">
+          <button class="btn btn-gold" id="fpLinkBtn" onclick="fpCheckLink()">Check link</button>
+        </div>
+        <p style="font-size:0.72rem;color:var(--muted);margin-bottom:14px">Links to YouTube, TikTok and similar sites are fetched with yt-dlp — downloading from those sites is against their terms of service, so use it for checking, not keeping.</p>
+        <div id="fpProgress" style="display:none;font-size:0.88rem;margin:10px 0"></div>
+        <div id="fpResults"></div>
       </div>
     </div>
 
@@ -3102,7 +3133,110 @@ function showTab(name) {
   if (name === 'youtube') youtubeInit()
   if (name === 'ddex') ccaInit()   // CCA Import lives on the DDEX tab now
   if (name === 'packs') pkLoadNow()
+  if (name === 'fpcheck') fpInit()
   if (name === 'hqstems') hqInit()
+}
+
+// ── Check Audio tab (2026-10-11): which Gallo recordings are in this audio? ─────────────────────────
+// The upload / link becomes a job on the server (routes/fingerprint.js); the page polls it and lists
+// every stretch the matcher found, with players for the suspect and the Gallo original side by side.
+let _fpFile = null, _fpJob = null, _fpPoll = null, _fpSuspect = null, _fpAudio = null, _fpStopAt = 0
+const fpTime = (s) => { s = Math.max(0, Math.round(s)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}` }
+async function fpInit() {
+  try {
+    const j = await (await api('/api/fingerprint/status')).json()
+    const m = j.matcher || {}
+    $('fpStatus').innerHTML = !j.available ? `<span style="color:var(--red)">⚠ ${esc(j.reason || 'Not available here.')}</span>`
+      : m.state === 'ready' ? `✓ Ready — ${Number(m.tracks || 0).toLocaleString()} Gallo recordings fingerprinted so far.`
+      : m.state === 'loading' ? 'Loading the catalogue fingerprints…'
+      : '✓ Ready. The first check loads the catalogue fingerprints (about 30 seconds); after that a song takes a few seconds.'
+    for (const id of ['fpDrop', 'fpLink', 'fpLinkBtn']) $(id).style.opacity = j.available ? '' : '0.4'
+    $('fpDrop').style.pointerEvents = j.available ? '' : 'none'; $('fpLink').disabled = $('fpLinkBtn').disabled = !j.available
+  } catch (e) { $('fpStatus').textContent = 'Could not reach the server.' }
+}
+function fpBusy(on, text) {
+  $('fpProgress').style.display = on || text ? 'block' : 'none'
+  $('fpProgress').innerHTML = on ? `<span class="spin">⟳</span> ${esc(text || 'Working…')}` : (text || '')
+  $('fpLinkBtn').disabled = on; $('fpDrop').style.pointerEvents = on ? 'none' : ''
+}
+async function fpPick(files) {
+  const f = files && files[0]; if (!f) return
+  if (f.size > 300 * 1024 * 1024) { fpBusy(false, '<span style="color:var(--red)">That file is over 300 MB.</span>'); return }
+  _fpFile = f; $('fpResults').innerHTML = ''
+  fpBusy(true, `Uploading ${f.name}…`)
+  try {
+    const r = await fetch('/api/fingerprint/upload?name=' + encodeURIComponent(f.name), { method: 'POST', headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/octet-stream' }, body: f })
+    const j = await r.json(); if (!j.ok) throw new Error(j.error || r.status)
+    fpWatch(j.job)
+  } catch (e) { fpBusy(false, `<span style="color:var(--red)">Upload failed: ${esc(e.message)}</span>`) }
+}
+async function fpCheckLink() {
+  const url = $('fpLink').value.trim(); if (!url) return
+  _fpFile = null; $('fpResults').innerHTML = ''
+  fpBusy(true, 'Starting…')
+  try {
+    const j = await (await api('/api/fingerprint/link', 'POST', { url })).json()
+    if (!j.ok) throw new Error(j.error)
+    fpWatch(j.job)
+  } catch (e) { fpBusy(false, `<span style="color:var(--red)">${esc(e.message)}</span>`) }
+}
+function fpWatch(job) {
+  _fpJob = job; clearTimeout(_fpPoll)
+  const tick = async () => {
+    try {
+      const j = await (await api('/api/fingerprint/job/' + job.id)).json()
+      if (!j.ok) throw new Error(j.error)
+      _fpJob = j.job
+      if (j.job.status === 'working') { fpBusy(true, j.job.stage); _fpPoll = setTimeout(tick, 1000); return }
+      if (j.job.status === 'error') { fpBusy(false, `<span style="color:var(--red)">${esc(j.job.error)}</span>`); return }
+      fpBusy(false); fpRender(j.job); fpInit()
+    } catch (e) { fpBusy(false, `<span style="color:var(--red)">${esc(e.message)}</span>`) }
+  }
+  tick()
+}
+function fpRender(job) {
+  const r = job.result, m = r.matches, src = job.source.title || job.source.url || 'your audio'
+  const head = `<div style="font-size:0.85rem;margin:6px 0 12px"><strong>${esc(src)}</strong> · ${fpTime(r.seconds)} long${r.scanned < r.seconds ? ` (first ${fpTime(r.scanned)} checked)` : ''} · compared with ${Number(r.indexTracks || 0).toLocaleString()} Gallo recordings in ${(r.ms / 1000).toFixed(1)} s</div>`
+  if (!m.length) {
+    $('fpResults').innerHTML = head + `<div class="empty-state" style="padding:22px">No Gallo recording found in this audio.<br><span style="font-size:0.78rem">Only the ${Number(r.indexTracks || 0).toLocaleString()} recordings fingerprinted so far can be found, and a sample buried quietly under other sound can be missed.</span></div>`
+    return
+  }
+  $('fpResults').innerHTML = head + m.map((x, i) => {
+    const t = x.track || {}, strong = x.votes >= 30
+    const pitch = x.semitones ? `${x.semitones > 0 ? '+' : ''}${x.semitones} semitone${Math.abs(x.semitones) === 1 ? '' : 's'}` : 'same pitch'
+    return `<div style="border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div><div style="font-weight:700">${esc(t.title || x.file)}</div>
+          <div style="font-size:0.82rem;color:var(--gold)">${esc(t.artist || '')}</div>
+          <div style="font-size:0.75rem;color:var(--muted)">${esc([t.album, t.catalogue, t.year, t.isrc ? 'ISRC ' + t.isrc : '', x.file].filter(Boolean).join(' · '))}</div></div>
+        <div style="text-align:right;font-size:0.78rem"><span style="padding:2px 8px;border-radius:999px;background:${strong ? 'rgba(92,184,92,0.15);color:var(--green)' : 'rgba(240,173,78,0.15);color:#f0ad4e'}">${strong ? 'Strong match' : 'Likely match — listen'}</span>
+          <div style="color:var(--muted);margin-top:4px">${x.votes.toLocaleString()} matching points · ${pitch}</div></div>
+      </div>
+      <div style="font-size:0.84rem;margin:8px 0">In your audio <strong>${fpTime(x.q_start)}–${fpTime(x.q_end)}</strong> ⟷ in the original from <strong>${fpTime(x.ref_start)}</strong></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-ghost" onclick="fpPlay('suspect', ${i})">▶ Your audio at ${fpTime(x.q_start)}</button>
+        <button class="btn btn-ghost" onclick="fpPlay('original', ${i})">▶ Gallo original at ${fpTime(x.ref_start)}</button>
+        <button class="btn btn-ghost" onclick="fpStop()">■ Stop</button>
+      </div></div>`
+  }).join('')
+}
+function fpStop() { if (_fpAudio) { _fpAudio.pause(); _fpAudio = null } }
+async function fpPlay(which, i) {
+  const x = _fpJob.result.matches[i]; fpStop()
+  let src
+  if (which === 'original') src = x.audioUrl
+  else {
+    if (!_fpSuspect || _fpSuspect.job !== _fpJob.id) {
+      if (_fpSuspect) URL.revokeObjectURL(_fpSuspect.url)
+      const blob = _fpFile ? _fpFile : await (await api('/api/fingerprint/job/' + _fpJob.id + '/audio')).blob()
+      _fpSuspect = { job: _fpJob.id, url: URL.createObjectURL(blob) }
+    }
+    src = _fpSuspect.url
+  }
+  const from = which === 'original' ? x.ref_start : x.q_start, len = Math.min(20, Math.max(6, x.q_end - x.q_start + 2))
+  const a = new Audio(src); _fpAudio = a
+  a.addEventListener('loadedmetadata', () => { a.currentTime = Math.max(0, from - 1); a.play().catch(() => {}) }, { once: true })
+  a.addEventListener('timeupdate', () => { if (a.currentTime > from - 1 + len) a.pause() })
 }
 
 // ── HQ Stems tab (2026-10-08): a catalogue song's studio stems, Vision → S3 hqstems/ + MADMixer HQ_Stems ──
