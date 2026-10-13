@@ -9165,6 +9165,9 @@ function renderDbSyncStatus(data) {
     // Re-issue rename: cache album found through the barcode, not this catalogue
     (data.metadata?.via && data.metadata.via.startsWith('barcode'))
       ? `<span style="padding:5px 10px;font-size:0.74rem;color:var(--amber)">metadata matched via ${esc(data.metadata.via)}</span>` : '',
+    // Barcode leads to a cache album with different songs: a wrong barcode, not a re-issue — not merged
+    ...(data.metadata?.barcodeMismatches || []).map(m =>
+      `<span style="padding:5px 10px;border:1px solid var(--red);border-radius:14px;font-size:0.74rem;color:var(--red)">⚠ Barcode ${esc(m.barcode)} belongs to ${esc(m.catalogue)}${m.album ? ` “${esc(m.album)}”` : ''} in the metadata cache — only ${m.shared} of ${m.cacheTracks} song titles match, so its tracks are not shown here. Check this album’s barcode.</span>`),
   ].join(' ')
   countsEl.style.display = 'flex'
 

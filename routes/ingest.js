@@ -4508,25 +4508,43 @@ router.get('/catalogue/:catNo/status', adminAuth, async (req, res) => {
   }
   let metaTracks = metadataLoading ? [] : (lookupAlbumTracks(catalogueNo) || [])
   let metaVia = metaTracks.length ? 'catalogue' : null
-  // Barcode fallback: re-issues rename the catalogue (CDPS 004 is the CD of
-  // TGE 105) but keep the barcode. When the catalogue lookup finds nothing,
+  // Barcode fallback: re-issues rename the catalogue (EMMLP 273 → EMM 273)
+  // but keep the barcode. When the catalogue lookup finds nothing,
   // reach the cache album through the FM tracks' barcodes instead — otherwise
   // every renamed re-issue shows ✗ metadata despite being in the cache.
+  // A barcode can be WRONG though (QBH 1056 carried ZQBH 1162's barcode in CMS 2024, 2026-10-13): then a
+  // different album's songs got interleaved into this one. So a cache album reached by barcode is used only
+  // when at least half of the shorter track list shares titles; otherwise it is reported, not merged.
+  const barcodeMismatches = []
   if (!metaTracks.length && !metadataLoading) {
-    const barcodes = new Set(
-      [...gallo.tracks, ...cms2024.tracks, ...streamer.tracks]
-        .map(t => String(t.barcode || '').trim()).filter(Boolean))
-    const cats = new Set()
-    for (const bc of barcodes) for (const c of lookupCataloguesByBarcode(bc)) cats.add(c)
-    const seenRows = new Set()
-    for (const c of cats) for (const row of lookupAlbumTracks(c)) {
-      if (!seenRows.has(row)) { seenRows.add(row); metaTracks.push(row) }
+    const fmTracks = [...gallo.tracks, ...cms2024.tracks, ...streamer.tracks, ...mam.tracks]
+    const normTitle = s => String(s || '').normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase()
+      .replace(/\(.*?\)|\[.*?\]/g, ' ').replace(/[^a-z0-9]+/g, '')
+    const fmTitles = new Set(fmTracks.map(t => normTitle(t.title || t.title_name)).filter(Boolean))
+    const catBarcode = new Map()
+    for (const t of [...gallo.tracks, ...cms2024.tracks, ...streamer.tracks]) {
+      const bc = String(t.barcode || '').trim()
+      if (bc) for (const c of lookupCataloguesByBarcode(bc)) if (!catBarcode.has(c)) catBarcode.set(c, bc)
     }
-    if (metaTracks.length) metaVia = `barcode (cache catalogue: ${[...cats].join(', ')})`
+    const cats = []
+    const seenRows = new Set()
+    for (const [c, bc] of catBarcode) {
+      const rows = lookupAlbumTracks(c) || []
+      const titles = new Set(rows.map(r => normTitle(r.track_name)).filter(Boolean))
+      const shared = [...titles].filter(t => fmTitles.has(t)).length
+      const smaller = Math.min(titles.size, fmTitles.size)
+      if (!smaller || shared / smaller < 0.5) {
+        barcodeMismatches.push({ catalogue: c, album: rows[0]?.album_title || '', barcode: bc, shared, cacheTracks: titles.size, theseTracks: fmTitles.size })
+        continue
+      }
+      cats.push(c)
+      for (const row of rows) if (!seenRows.has(row)) { seenRows.add(row); metaTracks.push(row) }
+    }
+    if (metaTracks.length) metaVia = `barcode (cache catalogue: ${cats.join(', ')})`
   }
   const metadata = metadataLoading
     ? { ok: false, error: 'cache still loading (~2½ min after a restart) — re-check shortly', count: 0, tracks: [] }
-    : { ok: true, count: metaTracks.length, tracks: metaTracks, via: metaVia }
+    : { ok: true, count: metaTracks.length, tracks: metaTracks, via: metaVia, barcodeMismatches }
 
   // Build the per-track matrix. Key on ISRC where possible; fall back to
   // sequence number + filename. The three DBs use slightly different track
