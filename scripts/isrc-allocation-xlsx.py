@@ -92,9 +92,9 @@ wb = Workbook()
 HEAD = PatternFill('solid', fgColor='6D28D9'); FILL = PatternFill('solid', fgColor='FEF9C3'); FILLHEAD = PatternFill('solid', fgColor='CA8A04')
 thin = Side(style='thin', color='D4D4D4'); box = Border(left=thin, right=thin, top=thin, bottom=thin)
 INFO = ['Catalogue', 'Album', 'Album artist', 'Barcode (UPC)', 'Label', 'Year', 'Track #', 'Song', 'Track artist', 'Version', 'Duration',
-        'Composer(s)', 'Filename', 'Other ISRCs on this album', 'Songs on album / with ISRC', 'MadStreamer record', 'MAM record', 'Note']
+        'Composer(s)', 'Filename', 'Songs on album / with ISRC', 'MadStreamer record', 'MAM record', 'Note']
 FILLS = ['NEW ISRC', 'Allocated by', 'Date allocated', 'Allocator\'s notes']
-IW = [13, 26, 20, 15, 14, 6, 6, 30, 20, 12, 9, 26, 13, 30, 10, 10, 9, 26]
+IW = [13, 26, 20, 15, 14, 6, 6, 30, 20, 12, 9, 26, 13, 10, 10, 9, 26]
 FW = [16, 14, 13, 30]
 
 def sheet(ws, rows, extra=None):
@@ -106,10 +106,9 @@ def sheet(ws, rows, extra=None):
     widths = IW + ([extra[1]] if extra else []) + FW
     for i, w in enumerate(widths, 1): ws.column_dimensions[get_column_letter(i)].width = w
     for s in rows:
-        isr = s['albumIsrcs']; rng = isr[0] if len(isr) == 1 else f'{isr[0]} … {isr[-1]} ({len(isr)})'
         note = 'Album hidden on the website until these ISRCs are in (barcodes removed 13 Oct)' if s['hidden'] else ''
         line = [s['cat'], s['album'], s['album_artist'], s['upc'], s['label'], s['yr'], s['seq'], s['title'], s['artist'], s['version'], s['duration'],
-                s['composer'], s['file'], rng, f"{s['albumSize']} / {s['albumHave']}", int(s['id']), int(s['mam']) if s.get('mam') else '', note]
+                s['composer'], s['file'], f"{s['albumSize']} / {s['albumHave']}", int(s['id']), int(s['mam']) if s.get('mam') else '', note]
         if extra: line.append(s['else'])
         ws.append(line + ['', '', '', ''])
     n = ws.max_row; first_fill = len(cols) - len(FILLS) + 1
@@ -152,7 +151,6 @@ for l in [
     'Songs that need an ISRC allocated: each is on an album (catalogue + album title) where the other songs already have ISRCs, and no ISRC exists for it anywhere — not in MadStreamer (the website\'s database), not in MAM, and not in the metadata cache (Ingrooves extract + ISRC register). Taken 13 Oct 2026.',
     'Fill only the YELLOW columns: NEW ISRC, Allocated by, Date allocated (yyyy-mm-dd), Allocator\'s notes. The other columns are locked so they can\'t be changed by accident (Review ▸ Unprotect Sheet — no password — if you need to). Sorting and filtering work.',
     'NEW ISRC accepts 12 characters (dashes or spaces allowed), e.g. ZAC032600123 or ZA-C03-26-00123. The same ISRC typed twice in the sheet turns red.',
-    '"Other ISRCs on this album" shows the album\'s existing ISRCs (first … last), to help keep the album\'s numbering together.',
     '"Check first": the cache has the same song title by the same artist on ANOTHER catalogue, with an ISRC. That is probably the same recording, which must NOT get a second ISRC — if it is the same recording, write that ISRC in NEW ISRC and say so in the notes; if it is a different recording (re-recording, live, edit), allocate a new one.',
     'Note column: "Album hidden on the website" = we removed this album\'s barcode on 13 Oct because some songs lacked ISRCs; it goes back on the website once these are filled in.',
     'Send the file back as it is — the ISRCs will be loaded into MadStreamer (and MAM, using the record numbers) from it.',
