@@ -47,7 +47,10 @@ for l in up:
     elif d.split('/')[-1] in str(song.get('Audio_Vision_URL')): kind = '5 Song in MAM, linked to this file'
     else: kind = '4 Song in MAM, linked to other audio'
     ftitle = folder.split('_')[1] if folder.count('_') >= 2 else ''
-    other = [a for a in by_title.get(nt(ftitle), []) if cat(a['Album Catalogue Number']) not in keys] if kind[0] in '12' and nt(ftitle) else []
+    fart = set(re.findall(r'[a-z]{3,}', asc(folder.split('_')[0]))) - {'the', 'and', 'his', 'her', 'met', 'van', 'die'}
+    generic = re.fullmatch(r'(unknown|untitled|singles?|various|none|album|\d+)', nt(ftitle) or 'unknown')
+    other = [a for a in by_title.get(nt(ftitle), []) if cat(a['Album Catalogue Number']) not in keys
+             and fart & set(re.findall(r'[a-z]{3,}', asc(a.get('Album Artist'))))] if kind[0] in '12' and not generic else []
     rows.append(dict(kind=kind, elsewhere='; '.join(f"{a['Album Catalogue Number']} ({a['Album Artist']})" for a in other[:3]), cat=raw, folder=folder, title=title, dest=d, mb=round(l['size'] / 1e6, 1), album=(al or {}).get('Album Title') or '',
                      albumCat=(al or {}).get('Album Catalogue Number') or '', albumId=(al or {}).get('id') or '', songId=(song or {}).get('id') or '',
                      songTitle=(song or {}).get('Track Name') or '', isrc=(song or {}).get('ISRC') or '', audio=(song or {}).get('Audio_Vision_URL') or ''))
