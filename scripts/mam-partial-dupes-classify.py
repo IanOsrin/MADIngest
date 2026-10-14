@@ -101,6 +101,7 @@ for (c, t), rs in sorted(groups.items()):
 os.makedirs(outdir, exist_ok=True)
 json.dump({'records': {str(r['id']): r for r in recs}}, open(f'{outdir}/backup-2026-10-14.json', 'w'))
 json.dump(plan, open(f'{outdir}/plan.json', 'w'), indent=1, ensure_ascii=False)
+json.dump(review, open(f'{outdir}/review.json', 'w'), indent=1, ensure_ascii=False)
 
 wb = Workbook(); H = PatternFill('solid', fgColor='6D28D9')
 s = wb.active; s.title = 'Summary'
