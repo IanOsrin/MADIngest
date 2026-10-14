@@ -4580,7 +4580,24 @@ router.get('/catalogue/:catNo/status', adminAuth, async (req, res) => {
     // never intra-DB. Without this, ten Gallo tracks sharing a Filename value
     // (someone reusing the field, duplicate ISRCs, …) collapse into one row
     // and the whole matrix lies.
-    if (row && row[`in_${db}`]) row = null
+    if (row && row[`in_${db}`]) {
+      // …except a true duplicate: the same database holding this very song twice (same ISRC/filename AND
+      // exactly the same title, no version clash — CMS 2024's stray copies on ZQBH 1162, 2026-10-14). That becomes a
+      // note on the row, not a second row. A DIFFERENT title sharing the ISRC keeps its own row: that is a
+      // real fault to see. The copy with a track number stays the row's record for that database.
+      // Exact title only (ignoring case, accents, punctuation) — "Itchy Feet Part One" vs "Part Two" stay apart.
+      const same = row[`${db}_title`] ?? row.title
+      if (title && same && _normTitle(same) === _normTitle(title) && !_versionConflicts(row, version)) {
+        const id = track.fm_record_id || track.recordId || null
+        const dups = ((row.duplicates ||= {})[db] ||= [])
+        if (row[`${db}_seq`] == null && seq != null) {
+          dups.push({ id: row[`${db}_id`], sequence_no: null })
+          row[`${db}_id`] = id; row[`${db}_seq`] = seq; row.sequence_no ??= seq
+        } else dups.push({ id, sequence_no: seq })
+        return
+      }
+      row = null
+    }
     // Fallback for legacy tracks with no ISRC and no filename: match by
     // sequence_no + fuzzy title within this catalogue. Sequence is unique
     // per DB within a catalogue, so a seq + 70% title similarity is a
@@ -4630,6 +4647,8 @@ router.get('/catalogue/:catNo/status', adminAuth, async (req, res) => {
 
     row[`in_${db}`] = true
     row[`${db}_id`] = track.fm_record_id || track.recordId || null
+    row[`${db}_seq`] = seq
+    row[`${db}_title`] = title
     row.isrc        ||= isrc
     row.title       ||= track.title || track.title_name || null
     if (version) { row.versions[db] = version; row.version ||= version }

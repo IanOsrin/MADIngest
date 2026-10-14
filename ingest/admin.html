@@ -9121,6 +9121,16 @@ async function checkDbSyncStatus() {
 // Version beside the title — what tells two same-titled tracks apart. The metadata extract is the
 // source of truth (Ian, 2026-10-02); a MadStreamer/MAM value that disagrees with it (or, with no
 // metadata value, with each other) is flagged. Gallo and CMS 2024 have no Version field.
+// A database holding this same song more than once (same ISRC/filename + title): one row, with a note naming
+// the extra records so they can be removed in FileMaker (ZQBH 1162's CMS 2024 strays, 2026-10-14).
+function dbsDuplicateNote(row) {
+  const names = { gallo: 'Gallo', cms2024: 'CMS 2024', streamer: 'MadStreamer', mam: 'MAM' }
+  return Object.entries(row.duplicates || {}).map(([db, dups]) => {
+    const ids = [row[db + '_id'], ...dups.map(d => d.id)].filter(Boolean)
+    const extra = dups.map(d => d.id).filter(Boolean)
+    return `<div style="font-size:0.72rem;color:var(--amber);margin-top:2px" title="Records ${esc(ids.join(', '))} — the extra one${extra.length > 1 ? 's' : ''} can be removed in FileMaker">⚠ ${names[db] || db} has ${dups.length + 1} records for this song (extra: ${esc(extra.join(', ') || 'no id')})</div>`
+  }).join('')
+}
 function dbsVersionTag(row) {
   const vs = row.versions || {}
   const names = { metadata: 'Metadata', streamer: 'MadStreamer', mam: 'MAM' }
@@ -9183,7 +9193,7 @@ function renderDbSyncStatus(data) {
     return `<tr style="border-bottom:1px solid var(--border)">
       <td style="padding:6px 8px">${row.sequence_no ?? ''}</td>
       <td style="padding:6px 8px;font-family:ui-monospace,Menlo,monospace;font-size:0.78rem;${isrcColour}" title="${row.in_metadata && !row.in_cms2024 && !row.in_gallo && !row.in_streamer ? 'ISRC backfilled from Gallo_Metadata_Extract.xlsx' : ''}">${esc(row.isrc || '')}</td>
-      <td style="padding:6px 8px">${esc(row.title || '')}${dbsVersionTag(row)}</td>
+      <td style="padding:6px 8px">${esc(row.title || '')}${dbsVersionTag(row)}${dbsDuplicateNote(row)}</td>
       <td style="padding:6px 8px;color:var(--muted)">${esc(row.artist || '')}</td>
       <td style="padding:6px 8px;text-align:center">${tick(row.in_gallo)}</td>
       <td style="padding:6px 8px;text-align:center">${tick(row.in_cms2024)}</td>
