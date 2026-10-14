@@ -15,6 +15,7 @@
 import 'dotenv/config'
 import fs from 'node:fs'
 import { renderStyled, styleFor } from '../lib/cover-styles.js'
+import { isRealCatalogue } from '../lib/cover-template.js'
 import { setAlbumCover } from '../lib/album-cover.js'
 
 const ids = JSON.parse(fs.readFileSync(process.argv[2], 'utf8')).map(String)
@@ -45,6 +46,7 @@ try {
       Object.assign(rec, { cat: a['Album Catalogue Number'], title: a['Album Title'], artist: a['Album Artist'], genre: a.Genre })
       if (!blank(a.Artwork_S3_URL) || !blank(a.Artwork_Vision_URL)) { rec.result = 'skipped — has a cover now'; continue }
       if (blank(a['Album Catalogue Number'])) { rec.result = 'skipped — no catalogue number'; continue }
+      if (!isRealCatalogue(a['Album Catalogue Number']) && !process.env.ALLOW_ODD_CATALOGUE) { rec.result = 'skipped — catalogue number looks like Artist_Title (data fault)'; continue }
       const same = (await call('POST', '/layouts/Albums/_find', { query: [{ 'Album Catalogue Number': '==' + a['Album Catalogue Number'] }], limit: 5 })).data || []
       if (same.length !== 1) { rec.result = `skipped — ${same.length} MAM albums share this catalogue`; continue }
       rec.style = styleFor(a.Genre) || 'vinyl'
