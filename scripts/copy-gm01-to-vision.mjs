@@ -23,6 +23,7 @@
 import 'dotenv/config'
 import fs from 'node:fs'
 import path from 'node:path'
+import { Transform } from 'node:stream'
 import { visionUploadFile, visionStat } from '../lib/vision-drive.js'
 import { letterGroup } from '../lib/vision-destination.js'
 
@@ -42,6 +43,34 @@ function plan([rel, size]) {
 }
 const jobs = list.map(plan).sort((a, b) => (b.standard - a.standard) || a.rel.localeCompare(b.rel))
 const say = (m) => { const l = `${new Date().toISOString().slice(0, 19)} ${m}`; console.log(l); fs.appendFileSync(PROGRESS, l + '\n') }
+
+// ── Speed limit (Ian, 2026-10-14: "do it in a way that it does not use all my bandwidth") ──────────────────────
+// The first run went at ~16 MB/s and jammed the office internet. Uploads now pass through one shared limiter:
+// office hours (Mon–Fri 07:00–19:00) use `day`, every other hour `night`, in MB/s. tmp/gm01-speed.json holds the
+// numbers and is re-read every 30 s, so they can be changed while the copy runs, e.g. {"day": 2, "night": 12}.
+const SPEED = 'tmp/gm01-speed.json'
+if (!fs.existsSync(SPEED)) fs.writeFileSync(SPEED, JSON.stringify({ day: 3, night: 12, dayFrom: 7, dayTo: 19 }, null, 1) + '\n')
+let speed, speedAt = 0
+function rateNow() {
+  if (Date.now() - speedAt > 30000) {
+    try { speed = { day: 3, night: 12, dayFrom: 7, dayTo: 19, ...JSON.parse(fs.readFileSync(SPEED, 'utf8')) } } catch { speed ||= { day: 3, night: 12, dayFrom: 7, dayTo: 19 } }
+    speedAt = Date.now()
+  }
+  const d = new Date(), wd = d.getDay() >= 1 && d.getDay() <= 5, h = d.getHours()
+  const office = wd && h >= speed.dayFrom && h < speed.dayTo
+  return { mbps: Math.max(0.2, Number(office ? speed.day : speed.night) || 1), office }
+}
+let bucket = 0, last = Date.now()
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+async function take(n) {                              // token bucket, at most 1 s of burst
+  for (;;) {
+    const rate = rateNow().mbps * 1e6, now = Date.now()
+    bucket = Math.min(rate, bucket + ((now - last) / 1000) * rate); last = now
+    if (bucket >= n) { bucket -= n; return }
+    await sleep(Math.min(1000, Math.ceil(((n - bucket) / rate) * 1000)))
+  }
+}
+const throttled = (src) => src.pipe(new Transform({ transform(chunk, _e, cb) { take(chunk.length).then(() => cb(null, chunk), cb) } }))
 
 const cmd = process.argv[2]
 if (cmd === 'plan') {
@@ -63,7 +92,7 @@ if (cmd === 'remaining') {             // what is still to copy, for copying ano
 }
 const todo = jobs.filter((j) => !done.has(j.rel)).slice(0, Number(process.argv[3]) || Infinity)
 const total = todo.reduce((n, j) => n + j.size, 0)
-say(`START ${todo.length} files (${(total / 1e9).toFixed(1)} GB) to copy · ${done.size} already handled`)
+say(`START ${todo.length} files (${(total / 1e9).toFixed(1)} GB) to copy · ${done.size} already handled · speed limit ${JSON.stringify(rateNow())} (${SPEED})`)
 let n = 0, bytes = 0, copied = 0, skipped = 0, conflicts = 0, failed = 0
 const t0 = Date.now()
 const log = (j, result, extra = {}) => fs.appendFileSync(LOG, JSON.stringify({ at: new Date().toISOString(), rel: j.rel, dest: j.dest, size: j.size, result, ...extra }) + '\n')
@@ -76,7 +105,7 @@ async function one(j) {
       if (there.size === j.size) { skipped++; log(j, 'already there') } else { conflicts++; log(j, 'conflict — left alone', { visionSize: there.size }) }
       return
     }
-    await visionUploadFile(j.dest, local, 'audio/wav')
+    await visionUploadFile(j.dest, local, 'audio/wav', null, { wrap: throttled, queueSize: 1 })
     const back = await visionStat(j.dest)
     if (back && back.size === j.size) { copied++; log(j, 'copied') } else { failed++; log(j, 'failed', { error: `size after upload ${back?.size ?? 'none'}` }) }
   } catch (e) { failed++; log(j, 'failed', { error: String(e.message || e).slice(0, 200) }) }
@@ -84,7 +113,8 @@ async function one(j) {
     n++; bytes += j.size
     if (n % 25 === 0 || n === todo.length) {
       const mbps = bytes / 1e6 / ((Date.now() - t0) / 1000)
-      say(`PROGRESS ${n}/${todo.length} · ${(bytes / 1e9).toFixed(1)}/${(total / 1e9).toFixed(1)} GB · ${mbps.toFixed(1)} MB/s · about ${((total - bytes) / 1e6 / Math.max(mbps, 0.01) / 3600).toFixed(1)} h left · copied ${copied}, already there ${skipped}, conflicts ${conflicts}, failed ${failed}`)
+      const r = rateNow()
+      say(`PROGRESS ${n}/${todo.length} · ${(bytes / 1e9).toFixed(1)}/${(total / 1e9).toFixed(1)} GB · ${mbps.toFixed(1)} MB/s average · limit now ${r.mbps} MB/s (${r.office ? 'office hours' : 'after hours'}) · copied ${copied}, already there ${skipped}, conflicts ${conflicts}, failed ${failed}`)
     }
   }
 }
