@@ -44,7 +44,7 @@ for l in up:
     if not al and not song: kind = '1 Album not in MAM'
     elif not song: kind = '2 Album in MAM, song not'
     elif not str(song.get('Audio_Vision_URL') or '').strip(): kind = '3 Song in MAM, no audio linked'
-    elif d.split('/')[-1] in str(song.get('Audio_Vision_URL')): kind = '5 Song in MAM, linked to this file'
+    elif '/'.join(d.split('/')[-2:]) in str(song.get('Audio_Vision_URL')): kind = '5 Song in MAM, linked to this file'
     else: kind = '4 Song in MAM, linked to other audio'
     ftitle = folder.split('_')[1] if folder.count('_') >= 2 else ''
     fart = set(re.findall(r'[a-z]{3,}', asc(folder.split('_')[0]))) - {'the', 'and', 'his', 'her', 'met', 'van', 'die'}
