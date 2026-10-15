@@ -734,14 +734,104 @@ fn buildtrip(index: &str, names_path: &str, out_dir: &str) {
     eprintln!("[buildtrip] {} rows written ({:.1} GB) · {:.0} s", rows.len(), rows.len() as f64 * 8.0 / 1e9, t0.elapsed().as_secs_f64());
 }
 
+// ── The full catalogue's triplet index (2026-10-15) ─────────────────────────────────────────
+// buildtrip keeps every row in memory and packs the track in 16 bits; the full catalogue has 65,586
+// recordings (> 65,536) and ~3.7 billion rows (~30 GB, the Mac has 16 GB). So buildfull reads the
+// peaks store full_catalogue.py writes (peaks.idx · peaks.dat · names.json) and builds in passes, each
+// pass one slice of the 2^24 buckets. A row needs only the word's low 8 bits — its bucket already says
+// the top 24 — which leaves 40 bits for the track:
+//   rows.u64  = word low 8 (bits 56–63) | track (16–55) | time (0–15), sorted within each bucket
+//   bucket.u64 = 2^24 + 1 row offsets (a u32 would overflow past 4.29 billion rows)
+//   fp_match buildfull <peaks dir> <out dir> [passes, default 32 — ~1 GB of rows per pass]
+fn buildfull(peaks_dir: &str, out_dir: &str, passes: usize) {
+    use std::io::Write;
+    let t0 = Instant::now();
+    assert!(passes.is_power_of_two() && (2..=1 << 12).contains(&passes), "passes must be a power of two, 2 or more");
+    let idx: Vec<usize> = fs::read(format!("{peaks_dir}/peaks.idx")).expect("peaks.idx").chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap()) as usize).collect();
+    let dat: Vec<u16> = fs::read(format!("{peaks_dir}/peaks.dat")).expect("peaks.dat").chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+    let names_path = format!("{peaks_dir}/names.json");
+    let nt = read_strings(&names_path).len();
+    assert_eq!(nt + 1, idx.len(), "names.json and peaks.idx disagree");
+    assert_eq!(idx[nt] * 2, dat.len(), "peaks.idx does not end where peaks.dat does");
+    assert!(nt < 1 << 17, "the pass key packs the track in 17 bits");
+    eprintln!("[buildfull] {nt} recordings · {} peaks read in {:.0} s", dat.len() / 2, t0.elapsed().as_secs_f64());
+    fs::create_dir_all(out_dir).expect("out dir");
+    let shift = 32 - passes.trailing_zeros();          // a word's pass = its top log2(passes) bits
+    let per_pass = (1usize << 24) / passes;            // buckets per pass
+    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let mut bucket = vec![0u64; (1 << 24) + 1];
+    let mut w = std::io::BufWriter::with_capacity(1 << 24, fs::File::create(format!("{out_dir}/rows.u64")).unwrap());
+    let mut total = 0u64;
+    for pass in 0..passes {
+        let tp = Instant::now();
+        let b0 = pass * per_pass;
+        let next = AtomicUsize::new(0);
+        let parts: Vec<Vec<u64>> = std::thread::scope(|sc| {
+            let hs: Vec<_> = (0..threads).map(|_| sc.spawn(|| {
+                let (mut pk, mut hh, mut mine): (Vec<(i32, i32)>, Vec<(u32, i32)>, Vec<u64>) = (Vec::new(), Vec::new(), Vec::new());
+                loop {
+                    let tr = next.fetch_add(1, Ordering::Relaxed);
+                    if tr >= nt { break; }
+                    pk.clear();
+                    pk.extend((idx[tr]..idx[tr + 1]).map(|k| (dat[2 * k] as i32, dat[2 * k + 1] as i32)));
+                    design_hashes(&pk, Design::TripQ, &mut hh);
+                    for &(h, t) in &hh {
+                        if (h >> shift) as usize != pass || !(0..65536).contains(&t) { continue; }
+                        // pass key: bucket within the pass (≤ 23 bits) | word low 8 | track 17 | time 16
+                        let bl = ((h >> 8) as usize - b0) as u64;
+                        mine.push((bl << 41) | (((h & 0xff) as u64) << 33) | ((tr as u64) << 16) | t as u64);
+                    }
+                }
+                mine
+            })).collect();
+            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let mut keys: Vec<u64> = Vec::with_capacity(parts.iter().map(|p| p.len()).sum());
+        for p in parts { keys.extend(p); }
+        let th = tp.elapsed().as_secs_f64();
+        keys.sort_unstable();
+        for &k in &keys {
+            bucket[b0 + (k >> 41) as usize + 1] += 1;
+            let row = (((k >> 33) & 0xff) << 56) | (k & 0x1_ffff_ffff);
+            w.write_all(&row.to_le_bytes()).unwrap();
+        }
+        total += keys.len() as u64;
+        eprintln!("[buildfull] pass {}/{passes}: {} rows · words {:.0} s · sort+write {:.0} s · {:.1} GB so far · {:.0} min in",
+            pass + 1, keys.len(), th, tp.elapsed().as_secs_f64() - th, total as f64 * 8.0 / 1e9, t0.elapsed().as_secs_f64() / 60.0);
+    }
+    w.flush().unwrap();
+    for i in 1..bucket.len() { bucket[i] += bucket[i - 1]; }
+    assert_eq!(bucket[1 << 24], total);
+    let mut b = Vec::with_capacity(bucket.len() * 8);
+    for x in &bucket { b.extend_from_slice(&x.to_le_bytes()); }
+    fs::write(format!("{out_dir}/bucket.u64"), b).unwrap();
+    fs::copy(&names_path, format!("{out_dir}/names.json")).unwrap();
+    eprintln!("[buildfull] DONE {total} rows ({:.1} GB) for {nt} recordings · {:.0} min", total as f64 * 8.0 / 1e9, t0.elapsed().as_secs_f64() / 60.0);
+}
+
 /// Where a check gets a word's postings from: the rows in memory, or read from the file on disk.
 enum RowSource { Memory(Vec<u64>), Disk(fs::File) }
 
-struct TripIndex { bucket: Vec<u32>, src: RowSource }
+/// `wide`: the buildfull layout (bucket.u64; rows hold the word's low 8 bits and a 40-bit track);
+/// otherwise buildtrip's (bucket.u32; rows hold the whole word and a 16-bit track).
+struct TripIndex { bucket: Vec<u64>, src: RowSource, wide: bool }
 
 impl TripIndex {
+    /// Does row r hold word h's posting — compared as the sort order within a bucket sees it.
+    #[inline]
+    fn word_key(&self, h: u32) -> u64 { if self.wide { (h & 0xff) as u64 } else { h as u64 } }
+    #[inline]
+    fn row_word(&self, r: u64) -> u64 { if self.wide { r >> 56 } else { r >> 32 } }
+    #[inline]
+    fn row_track(&self, r: u64) -> u64 { if self.wide { (r >> 16) & 0xff_ffff_ffff } else { (r >> 16) & 0xffff } }
+
     fn open(dir: &str, memory: bool) -> TripIndex {
-        let bucket: Vec<u32> = fs::read(format!("{dir}/bucket.u32")).unwrap().chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let wide = std::path::Path::new(&format!("{dir}/bucket.u64")).exists();
+        let bucket: Vec<u64> = if wide {
+            fs::read(format!("{dir}/bucket.u64")).unwrap().chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect()
+        } else {
+            fs::read(format!("{dir}/bucket.u32")).unwrap().chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]) as u64).collect()
+        };
         let path = format!("{dir}/rows.u64");
         let src = if memory {
             RowSource::Memory(fs::read(&path).unwrap().chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect())
@@ -751,7 +841,7 @@ impl TripIndex {
             unsafe { extern "C" { fn fcntl(fd: i32, cmd: i32, ...) -> i32; } use std::os::unix::io::AsRawFd; fcntl(f.as_raw_fd(), 48, 1); } // F_NOCACHE: time the disk, not the Mac's cache
             RowSource::Disk(f)
         };
-        TripIndex { bucket, src }
+        TripIndex { bucket, src, wide }
     }
     /// The rows of every bucket the words fall in. Disk: nearby buckets are merged into one read (a gap
     /// under 64 KB costs less than a second read) and the reads run in parallel (an SSD serves many at once).
@@ -813,12 +903,13 @@ fn trip_scan_pitch(pk: &[(i32, i32)], ratio: f64, semis: f64, ix: &TripIndex) ->
     for &(h, t) in &hh {
         if !(0..=MAX_FRAMES).contains(&t) { continue; }
         let Some(bucket) = rows.get(&(h >> 8)) else { continue };
-        let lo = bucket.partition_point(|&r| ((r >> 32) as u32) < h);
-        let hi = bucket.partition_point(|&r| ((r >> 32) as u32) <= h);
+        let wk = ix.word_key(h);
+        let lo = bucket.partition_point(|&r| ix.row_word(r) < wk);
+        let hi = bucket.partition_point(|&r| ix.row_word(r) <= wk);
         if lo == hi || hi - lo > stop_postings() { continue; }
         for &r in &bucket[lo..hi] {
             let off = (r & 0xffff) as i32 - t + 65_536;
-            v.push((((r >> 16) & 0xffff) << 33) | ((off as u64) << 16) | t as u64);
+            v.push((ix.row_track(r) << 33) | ((off as u64) << 16) | t as u64);
         }
     }
     v.sort_unstable();
@@ -892,6 +983,10 @@ fn diskscan(dir: &str, names_path: &str, memory: bool, files: &[String]) {
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     if a.get(1).map(|s| s.as_str()) == Some("buildtrip") && a.len() >= 5 { buildtrip(&a[2], &a[3], &a[4]); return; }
+    if a.get(1).map(|s| s.as_str()) == Some("buildfull") && a.len() >= 4 {
+        buildfull(&a[2], &a[3], a.get(4).and_then(|s| s.parse().ok()).unwrap_or(32));
+        return;
+    }
     if a.get(1).map(|s| s.as_str()) == Some("diskscan") && a.len() >= 6 { diskscan(&a[2], &a[3], a[4] == "memory", &a[5..]); return; }
     if a.get(1).map(|s| s.as_str()) == Some("design") && a.len() >= 8 {
         let d = match a[7].as_str() { "trip" => Design::Trip, "tripq" => Design::TripQ, _ => Design::Pairs };

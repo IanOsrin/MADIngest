@@ -8,6 +8,11 @@ never kept: each track is fetched from the CDN, decoded, its peaks found, then d
 
   python3 full_catalogue.py run          # resumable — run again after any stop and it carries on
   python3 full_catalogue.py status
+  python3 full_catalogue.py repair       # → full/clean/: one trusted copy per recording, re-fetch the rest (resumable)
+
+A lock file (full/run.lock) makes a second start refuse: on 2026-10-12 the run was started three times
+within two minutes, the copies appended to peaks.dat at once and ~9,500 bookmarks pointed at the wrong
+place. `repair` writes a fresh store in full/clean/ and never changes the original files.
 
 Out, in $FP_LAB/full/:
   list.json        every distinct audio Filename in the mirror that has an S3 file
@@ -118,8 +123,21 @@ def fetch(filename):
         except OSError: pass
 
 
-def run():
+def lock():
+    """Refuse to start while another copy runs; the lock goes away by itself when the process ends."""
+    import fcntl
     OUT.mkdir(parents=True, exist_ok=True)
+    fh = open(OUT / "run.lock", "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit("Another fingerprint run is already going on this folder — not starting a second copy.")
+    fh.write(str(os.getpid())); fh.flush()
+    return fh
+
+
+def run():
+    _lock = lock()
     names = catalogue_list()
     done, failed, end = done_files()
     with open(OUT / "peaks.dat", "ab") as fh:
@@ -147,6 +165,130 @@ def run():
     log(f"DONE {n_ok:,} new recordings fingerprinted, {n_fail:,} failed, in {(time.time() - t0) / 3600:.1f} h")
 
 
+CLEAN = OUT / "clean"
+
+
+def trusted_copies():
+    """One trustworthy (off, n, seconds, src) per recording in the original peaks.dat, or none.
+
+    peaks.dat holds whole recordings back to back and each recording's frames only rise, so a new
+    recording starts wherever the frame number drops. A bookmark is sound when it lands exactly on one
+    of those recordings. Inside the stretch where overlapping writers left bad bookmarks, even an exact
+    one can sit on a neighbour with the same peak count, so there it counts only when a second copy of
+    the same recording is byte-identical. Everything else is fetched again.
+    """
+    rows = [json.loads(l) for l in (OUT / "tracks.jsonl").read_text().splitlines() if l.strip()]
+    d = np.memmap(OUT / "peaks.dat", dtype="<u2", mode="r").reshape(-1, 2)
+    starts, prev, CH = [0], None, 50_000_000
+    for a in range(0, d.shape[0], CH):
+        t = np.asarray(d[a:a + CH, 0], dtype=np.int32)
+        if prev is not None and t[0] < prev:
+            starts.append(a)
+        starts.extend((np.nonzero(np.diff(t) < 0)[0] + 1 + a).tolist())
+        prev = int(t[-1])
+    ends = starts[1:] + [d.shape[0]]
+    seg = dict(zip(starts, (e - s for s, e in zip(starts, ends))))
+    bad = [i for i, r in enumerate(rows) if seg.get(r["off"]) != r["n"]]
+    lo = hi = -1
+    if bad:                                   # the stretch where bad bookmarks keep turning up
+        lo = hi = bad[0]
+        for i in bad[1:]:
+            if i - hi > 1000: break
+            hi = i
+    copies = {}
+    for i, r in enumerate(rows):
+        if seg.get(r["off"]) == r["n"]:
+            copies.setdefault(r["file"], []).append((i, r))
+    keep = {}
+    for f, v in copies.items():
+        outside = [r for i, r in v if not lo <= i <= hi]
+        if outside:
+            keep[f] = outside[0]
+        elif len(v) >= 2:
+            a = np.asarray(d[v[0][1]["off"]:v[0][1]["off"] + v[0][1]["n"]])
+            if all(np.array_equal(a, np.asarray(d[r["off"]:r["off"] + r["n"]])) for _, r in v[1:]):
+                keep[f] = v[0][1]
+    return keep, d, (lo, hi), len(rows), len({r["file"] for r in rows})
+
+
+def write_clean(fh, file, pk, seconds, src):
+    pk = pk[(pk[:, 0] >= 0) & (pk[:, 0] < 65536)]
+    off = fh.tell() // 4
+    fh.write(np.ascontiguousarray(pk, "<u2").tobytes())
+    fh.flush()
+    with open(CLEAN / "tracks.jsonl", "a") as t:
+        t.write(json.dumps({"file": file, "off": off, "n": int(len(pk)), "seconds": seconds, "src": src}) + "\n")
+
+
+def clean_log(msg):
+    line = f"{time.strftime('%H:%M:%S')} {msg}"
+    print(line, flush=True)
+    with open(CLEAN / "progress.log", "a") as f:
+        f.write(line + "\n")
+
+
+def repair():
+    _lock = lock()
+    CLEAN.mkdir(exist_ok=True)
+    names = json.loads((OUT / "list.json").read_text())
+    if not (CLEAN / "tracks.jsonl").exists():
+        keep, d, (lo, hi), n_lines, n_files = trusted_copies()
+        clean_log(f"CHECK {n_lines:,} bookmarks for {n_files:,} recordings · bad stretch = lines {lo:,}–{hi:,} · "
+                  f"{len(keep):,} recordings have a trusted copy")
+        tmp = CLEAN / "tracks.jsonl.tmp"
+        tmp.unlink(missing_ok=True)
+        with open(CLEAN / "peaks.dat", "wb") as fh, open(tmp, "w") as t:
+            for f in names:
+                r = keep.get(f)
+                if r:
+                    pk = np.asarray(d[r["off"]:r["off"] + r["n"]])
+                    off = fh.tell() // 4
+                    fh.write(np.ascontiguousarray(pk, "<u2").tobytes())
+                    t.write(json.dumps({"file": f, "off": off, "n": int(len(pk)), "seconds": r["seconds"], "src": r["src"]}) + "\n")
+        tmp.rename(CLEAN / "tracks.jsonl")            # only now does the seeding count as done
+        clean_log(f"SEEDED {len(keep):,} recordings copied into clean/peaks.dat")
+    done, end = set(), 0
+    for line in (CLEAN / "tracks.jsonl").read_text().splitlines():
+        if line.strip():
+            r = json.loads(line); done.add(r["file"]); end = max(end, (r["off"] + r["n"]) * 4)
+    fp = CLEAN / "failures.jsonl"
+    failed = {json.loads(l)["file"] for l in fp.read_text().splitlines() if l.strip()} if fp.exists() else set()
+    todo = [n for n in names if n not in done and n not in failed]
+    with open(CLEAN / "peaks.dat", "ab") as fh:
+        fh.truncate(end)
+        fh.seek(end)
+        clean_log(f"START {len(names):,} in the catalogue · {len(done):,} done · {len(failed):,} failed before · "
+                  f"{len(todo):,} to fetch · {WORKERS} at a time")
+        t0, n_fail = time.time(), 0
+        with ProcessPoolExecutor(max_workers=WORKERS) as ex:
+            for i, (file, pk, seconds, err) in enumerate(ex.map(fetch, todo, chunksize=1), 1):
+                if err:
+                    n_fail += 1
+                    with open(fp, "a") as f:
+                        f.write(json.dumps({"file": file, "error": err}) + "\n")
+                else:
+                    write_clean(fh, file, pk, round(seconds, 2), "cdn")
+                if i % 500 == 0 or i == len(todo):
+                    rate = i / max(1e-6, time.time() - t0) * 60
+                    clean_log(f"PROGRESS {i:,} / {len(todo):,} fetched ({i / len(todo):.0%}) · {rate:.0f}/min · "
+                              f"about {(len(todo) - i) / max(rate, 1e-6) / 60:.1f} h left · {n_fail:,} failed")
+    export_clean()
+
+
+def export_clean():
+    """peaks.idx (u64 start per recording, plus the end) + names.json, the layout fp_match buildfull reads."""
+    rows = [json.loads(l) for l in (CLEAN / "tracks.jsonl").read_text().splitlines() if l.strip()]
+    pos = 0
+    for r in rows:
+        assert r["off"] == pos, f"clean/peaks.dat is not back to back at {r['file']}"
+        pos += r["n"]
+    assert pos * 4 == (CLEAN / "peaks.dat").stat().st_size, "clean/peaks.dat size does not match tracks.jsonl"
+    idx = np.array([r["off"] for r in rows] + [pos], dtype="<u8")
+    idx.tofile(CLEAN / "peaks.idx")
+    (CLEAN / "names.json").write_text(json.dumps([r["file"] for r in rows]))
+    clean_log(f"DONE clean store: {len(rows):,} recordings · {pos:,} peaks · {pos * 4 / 1e9:.2f} GB")
+
+
 def status():
     names = json.loads((OUT / "list.json").read_text()) if (OUT / "list.json").exists() else []
     done, failed, end = done_files()
@@ -154,4 +296,4 @@ def status():
 
 
 if __name__ == "__main__":
-    {"run": run, "status": status}.get(sys.argv[1] if len(sys.argv) > 1 else "status", status)()
+    {"run": run, "status": status, "repair": repair, "export": export_clean}.get(sys.argv[1] if len(sys.argv) > 1 else "status", status)()
