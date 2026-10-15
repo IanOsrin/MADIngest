@@ -3330,7 +3330,7 @@ async function mkSave() {
     if (!j.ok) throw new Error(j.error)
     const r = j.result, tick = (ok) => ok ? '<span style="color:var(--green)">✓</span>' : '<span style="color:var(--red)">✗</span>'
     $('mkSaveMsg').innerHTML = `<div>${r.checked ? '<strong style="color:var(--green)">Saved.</strong>' : '<strong style="color:var(--red)">Saved with problems — check below.</strong>'} ${esc(r.gmvi)}</div>
-      <div>MAM ${tick(r.mam === 'updated')} ${esc(r.mam)} · MADStreamer ${tick(r.madstreamer === 'updated')} ${esc(r.madstreamer)} · Comment ${tick(r.comment === 'Artwork Done')} ${esc(r.comment)}</div>
+      <div>MAM ${tick(r.mam === 'updated')} ${esc(r.mam)} · Website (MADStreamer) ${r.madstreamer === 'not on the website yet' ? '–' : tick(r.madstreamer === 'updated')} ${esc(r.madstreamer)} · Comment ${tick(r.comment === 'Artwork Done')} ${esc(r.comment)}</div>
       <div style="color:var(--muted);font-size:0.75rem">Vision: ${esc(r.vision)}</div>`
     a.cover = { s3: r.url, vision: '', generated: true }
   } catch (e) { $('mkSaveMsg').innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; $('mkSaveBtn').disabled = false }
