@@ -27,6 +27,7 @@ import tagsRouter from './routes/tags.js'
 import visionUtilityRouter, { VISION_DELETE_ENABLED } from './routes/vision-utility.js'
 import galloAudioRouter from './routes/gallo-audio.js'
 import heroBannerRouter from './routes/hero-banner.js'
+import coversRouter from './routes/covers.js'
 import { getValueList } from './lib/fm-gallo.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -184,6 +185,7 @@ app.use('/api/genre-fix', genreFixRouter)
 app.use('/api/gallo-genre', galloGenreRouter)   // Gallo album-at-a-time Local Genre tagging
 app.use('/api/download-track', downloadTrackRouter)
 app.use('/api/hero', heroBannerRouter)
+app.use('/api/covers', coversRouter)   // Make Cover tab: generated covers through the cover pipeline
 app.use('/api/vision', visionRouter)
 app.use('/api/vision-import', visionImportRouter)
 app.use('/api/cca-import', ccaImportRouter)

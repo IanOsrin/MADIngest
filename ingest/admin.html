@@ -329,6 +329,7 @@
       <button class="tab-btn" data-tab="podcasts" onclick="showTab('podcasts')">Podcasts</button>
       <button class="tab-btn" data-tab="biography" onclick="showTab('biography')">Biography</button>
       <button class="tab-btn" data-tab="artwork" onclick="showTab('artwork')">Artwork</button>
+      <button class="tab-btn" data-tab="makecover" onclick="showTab('makecover')">Make Cover</button>
       <button class="tab-btn" data-tab="s3upload" onclick="showTab('s3upload')">S3 Upload</button>
       <button class="tab-btn" data-tab="packs" onclick="showTab('packs')">Packs</button>
       <button class="tab-btn" data-tab="hqstems" onclick="showTab('hqstems')">HQ Stems</button>
@@ -1387,6 +1388,27 @@
     </div>
 
     <!-- Public Playlists -->
+    <div id="tab-makecover" class="tab-panel">
+      <div class="import-section">
+        <h3>Make Cover — a generated cover for an album with no artwork</h3>
+        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
+          Find the album, pick a style and look at the preview. <strong>Save cover</strong> puts it on the album in MAM and on the
+          website (MADStreamer), keeps a copy in Vision's <em>Generated covers</em> folder, and writes <strong>Artwork Done</strong>
+          in the album's MAM Comment. The words on the cover come from MAM — if a title or artist is wrong, fix it in MAM first.
+          The website shows a new cover after the nightly 01:00 update.
+        </p>
+        <div id="mkStatus" style="font-size:0.8rem;color:var(--muted);margin-bottom:12px"></div>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px">
+          <input id="mkSearch" type="text" placeholder="Catalogue number or album title, e.g. GALP 1065"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();mkFind()}"
+            style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:7px 12px;color:var(--text);font-family:inherit;font-size:0.88rem;outline:none">
+          <button class="btn btn-gold" id="mkFindBtn" onclick="mkFind()">Find album</button>
+        </div>
+        <div id="mkResults"></div>
+        <div id="mkAlbum"></div>
+      </div>
+    </div>
+
     <div id="tab-s3upload" class="tab-panel">
       <div class="import-section">
         <h3>Folder &rarr; S3</h3>
@@ -3159,6 +3181,7 @@ function showTab(name) {
   if (name === 'ddex') ccaInit()   // CCA Import lives on the DDEX tab now
   if (name === 'packs') pkLoadNow()
   if (name === 'fpcheck') fpInit()
+  if (name === 'makecover') mkInit()
   if (name === 'mcomments') mcLoad()
   if (name === 'hqstems') hqInit()
 }
@@ -3213,6 +3236,104 @@ async function mcBlock(i, block) {
   const j = await (await api(`/api/comments-admin/author/${block ? 'block' : 'unblock'}`, 'POST', { email: c.email, hideAll })).json()
   if (!j.ok) { alert(j.error || 'That didn’t work.'); return }
   mcLoad()
+}
+
+// ── Make Cover tab (2026-10-15): a generated cover for one album, saved through the cover pipeline ─────
+// routes/covers.js → lib/cover-maker.js → lib/album-cover.js setAlbumCover (MAM + MADStreamer + Vision), then
+// MAM Comment "Artwork Done" — the same steps as the batch runner, one album at a time.
+const MK_STYLES = { vinyl: 'Vinyl', jazz: 'Jazz', gospel: 'Gospel', vintage: 'Vintage' }
+let _mkAlbums = [], _mkAlbum = null, _mkStyle = null, _mkPreviewUrl = null, _mkFonts = { ok: true }
+async function mkInit() {
+  try {
+    const j = await (await api('/api/covers/status')).json()
+    _mkFonts = j.fonts || { ok: true }
+    $('mkStatus').innerHTML = _mkFonts.ok ? ''
+      : `<span style="color:var(--red)">⚠ This server doesn’t have the fonts the covers are drawn with, so covers can only be saved from GalloIngest on the office Mac. Previews here will look wrong.</span>`
+  } catch { $('mkStatus').textContent = 'Could not reach the server.' }
+  $('mkSearch').focus()
+}
+const mkCoverNote = (a) => !a.cover ? '<span style="color:var(--green)">No cover</span>'
+  : a.cover.generated ? '<span style="color:#f0ad4e">Generated cover</span>' : '<span style="color:var(--red)">Has a cover</span>'
+async function mkFind() {
+  const q = $('mkSearch').value.trim(); if (q.length < 2) return
+  $('mkAlbum').innerHTML = ''
+  $('mkResults').innerHTML = '<div class="loading-state"><span class="spin">⟳</span> Searching MAM…</div>'
+  try {
+    const j = await (await api('/api/covers/search?q=' + encodeURIComponent(q))).json()
+    if (!j.ok) throw new Error(j.error)
+    _mkAlbums = j.albums
+    // One album, or exactly one whose catalogue is what was typed (BL 30 also finds BL 300…): open it straight away.
+    const exact = _mkAlbums.map((a, i) => a.catalogue.toLowerCase() === q.toLowerCase() ? i : -1).filter(i => i >= 0)
+    if (_mkAlbums.length === 1 || exact.length === 1) { $('mkResults').innerHTML = ''; mkOpen(exact.length === 1 ? exact[0] : 0); return }
+    $('mkResults').innerHTML = !_mkAlbums.length ? '<div class="empty-state">No MAM album has that catalogue number or title.</div>'
+      : `<div style="font-size:0.8rem;color:var(--muted);margin-bottom:6px">${_mkAlbums.length}${_mkAlbums.length >= 60 ? '+' : ''} albums — click one</div>
+        <table style="width:100%;border-collapse:collapse;font-size:0.85rem"><thead><tr style="background:var(--surface)">${['Catalogue', 'Title', 'Artist', 'Genre', 'Cover'].map(h => `<th style="padding:6px 8px;text-align:left;color:var(--muted)">${h}</th>`).join('')}</tr></thead><tbody>` +
+        _mkAlbums.map((a, i) => `<tr style="border-top:1px solid var(--border);cursor:pointer" onclick="mkOpen(${i})">
+          <td style="padding:6px 8px;white-space:nowrap">${esc(a.catalogue)}</td><td style="padding:6px 8px">${esc(a.title)}</td>
+          <td style="padding:6px 8px">${esc(a.artist)}</td><td style="padding:6px 8px">${esc(a.genre)}</td><td style="padding:6px 8px">${mkCoverNote(a)}</td></tr>`).join('') + '</tbody></table>'
+  } catch (e) { $('mkResults').innerHTML = `<div class="empty-state" style="color:var(--red)">${esc(e.message)}</div>` }
+}
+function mkFromMam(cat) {
+  showTab('makecover'); $('mkSearch').value = cat || ''; if (cat) mkFind()
+}
+function mkOpen(i) {
+  _mkAlbum = _mkAlbums[i]; _mkStyle = _mkAlbum.suggestedStyle
+  const a = _mkAlbum, c = a.cover
+  const warn = !c ? '' : `<div style="border:1px solid var(--red);border-radius:6px;padding:10px 12px;margin:10px 0;font-size:0.84rem">
+      <strong style="color:var(--red)">⚠ This album already has ${c.generated ? 'a generated cover' : 'a cover — possibly the real sleeve'}.</strong>
+      Saving will replace it in MAM and on the website. The old picture is not deleted (it stays on S3 and Vision), but the album will stop showing it.
+      ${c.s3 ? `<div style="margin-top:8px"><img src="${esc(c.s3)}" alt="current cover" style="width:160px;height:160px;object-fit:cover;border:1px solid var(--border)" onerror="this.replaceWith(document.createTextNode('(current cover could not be shown)'))"></div>` : ''}
+      ${c.vision ? `<div style="color:var(--muted);font-size:0.75rem;margin-top:4px">Vision: ${esc(c.vision)}</div>` : ''}
+      <label style="display:block;margin-top:8px"><input type="checkbox" id="mkReplace"> Yes, replace the existing cover</label></div>`
+  $('mkAlbum').innerHTML = `<div style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px">
+    <div style="font-weight:700;font-size:1rem">${esc(a.title || '(no title)')}</div>
+    <div style="color:var(--gold)">${esc(a.artist || '(no artist)')}</div>
+    <div style="font-size:0.78rem;color:var(--muted)">${esc([a.catalogue, a.year, a.label, a.genre ? 'Genre: ' + a.genre : 'No genre'].filter(Boolean).join(' · '))}${a.comment ? ' · Comment: ' + esc(a.comment) : ''}</div>
+    ${a.problem ? `<div style="color:var(--red);margin-top:10px;font-size:0.85rem">⚠ ${esc(a.problem)}</div>` : `
+    ${warn}
+    <div style="margin:12px 0 8px;font-size:0.84rem">Style: ${Object.entries(MK_STYLES).map(([k, v]) =>
+      `<button class="btn ${k === _mkStyle ? 'btn-gold' : 'btn-ghost'}" data-mkstyle="${k}" onclick="mkPick('${k}')">${v}${k === a.suggestedStyle ? ' ★' : ''}</button>`).join(' ')}
+      <span style="color:var(--muted);font-size:0.75rem">★ = suggested from the genre</span></div>
+    <div id="mkPreview" style="width:420px;max-width:100%;aspect-ratio:1;border:1px solid var(--border);display:flex;align-items:center;justify-content:center;color:var(--muted)"></div>
+    <div style="margin-top:12px;display:flex;gap:10px;align-items:center">
+      <button class="btn btn-green" id="mkSaveBtn" onclick="mkSave()" ${_mkFonts.ok ? '' : 'disabled title="Only on the office Mac"'}>Save cover</button>
+      <span id="mkSaveMsg" style="font-size:0.84rem"></span></div>`}
+  </div>`
+  if (!a.problem) mkPreview()
+}
+function mkPick(style) {
+  _mkStyle = style
+  document.querySelectorAll('[data-mkstyle]').forEach(b => { b.classList.toggle('btn-gold', b.dataset.mkstyle === style); b.classList.toggle('btn-ghost', b.dataset.mkstyle !== style) })
+  mkPreview()
+}
+async function mkPreview() {
+  const box = $('mkPreview'), want = _mkStyle
+  box.innerHTML = '<span class="spin">⟳</span>&nbsp;Drawing…'
+  try {
+    const r = await api(`/api/covers/preview/${encodeURIComponent(_mkAlbum.recordId)}?style=${want}`)
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.status)
+    const blob = await r.blob()
+    if (want !== _mkStyle) return             // a newer style was picked meanwhile
+    if (_mkPreviewUrl) URL.revokeObjectURL(_mkPreviewUrl)
+    _mkPreviewUrl = URL.createObjectURL(blob)
+    box.innerHTML = `<img src="${_mkPreviewUrl}" alt="preview" style="width:100%;height:100%">`
+  } catch (e) { box.innerHTML = `<span style="color:var(--red)">Preview failed: ${esc(e.message)}</span>` }
+}
+async function mkSave() {
+  const a = _mkAlbum, replace = !!a.cover
+  if (replace && !$('mkReplace')?.checked) { $('mkSaveMsg').innerHTML = '<span style="color:var(--red)">Tick “Yes, replace the existing cover” first.</span>'; return }
+  if (!confirm(`Save the ${MK_STYLES[_mkStyle]} cover for ${a.catalogue} — ${a.title}?\n\nThis writes to MAM and the website (MADStreamer)${replace ? ' and REPLACES the cover the album has now' : ''}, and marks the album “Artwork Done”.`)) return
+  $('mkSaveBtn').disabled = true
+  $('mkSaveMsg').innerHTML = '<span class="spin">⟳</span> Saving — this takes about half a minute…'
+  try {
+    const j = await (await api('/api/covers/save', 'POST', { recordId: a.recordId, style: _mkStyle, replace })).json()
+    if (!j.ok) throw new Error(j.error)
+    const r = j.result, tick = (ok) => ok ? '<span style="color:var(--green)">✓</span>' : '<span style="color:var(--red)">✗</span>'
+    $('mkSaveMsg').innerHTML = `<div>${r.checked ? '<strong style="color:var(--green)">Saved.</strong>' : '<strong style="color:var(--red)">Saved with problems — check below.</strong>'} ${esc(r.gmvi)}</div>
+      <div>MAM ${tick(r.mam === 'updated')} ${esc(r.mam)} · MADStreamer ${tick(r.madstreamer === 'updated')} ${esc(r.madstreamer)} · Comment ${tick(r.comment === 'Artwork Done')} ${esc(r.comment)}</div>
+      <div style="color:var(--muted);font-size:0.75rem">Vision: ${esc(r.vision)}</div>`
+    a.cover = { s3: r.url, vision: '', generated: true }
+  } catch (e) { $('mkSaveMsg').innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; $('mkSaveBtn').disabled = false }
 }
 
 // ── Check Audio tab (2026-10-11): which Gallo recordings are in this audio? ─────────────────────────
@@ -6108,6 +6229,8 @@ function abRenderPage() {
         </label>
         <button class="btn btn-ghost" style="margin-top:6px;width:100%" onclick="abPickVisionCover()"
           title="Pick a cover image already sitting in this album's Vision folder">🔍 Cover from Vision</button>
+        <button class="btn btn-ghost" style="margin-top:6px;width:100%" onclick="mkFromMam(_abAlbum.catalogue)"
+          title="Make a generated cover (jazz · gospel · vintage · vinyl) from this album's details">🎨 Make cover</button>
       </div>
       <div style="flex:1;min-width:280px">
         <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:10px">
