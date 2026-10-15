@@ -18,11 +18,15 @@ RUN node scripts/convert-metadata.js Gallo_Metadata_Extract.xlsx data/metadata.j
 FROM node:22-slim
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ffmpeg fonts-liberation \
+  && apt-get install -y --no-install-recommends ffmpeg fonts-liberation fontconfig \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY --from=build /app .
+
+# Generated covers (Make Cover tab) are designed with macOS fonts; here each of those names is pointed at a free
+# look-alike bundled in fonts/cover-fonts (see gallo-covers.conf there).
+RUN cp /app/fonts/cover-fonts/gallo-covers.conf /etc/fonts/conf.d/60-gallo-covers.conf && fc-cache -f
 
 ENV NODE_ENV=production
 ENV METADATA_FILE=/app/data/metadata.json
