@@ -70,6 +70,7 @@ import { readVisionWavInfo, buildSoundInfoBlock } from '../lib/wav-info.js'
 import { getXrefStatus, getXrefRows, startXrefRebuild } from '../lib/catalogue-xref.js'
 import { artworkState, artworkImage, copyArtwork } from '../lib/artwork-compare.js'
 import { setAlbumCover } from '../lib/album-cover.js'
+import { fetchCover } from '../lib/cover-url.js'
 import { syncMamEdit } from '../lib/mam-streamer-sync.js'
 import { contentDisposition } from '../lib/content-disposition.js'
 import { readTrack, applyFix } from '../lib/track-fix.js'
@@ -1750,11 +1751,11 @@ router.get('/album/cover', adminAuth, async (req, res) => {
     const af = album.fieldData || {}
     const s3 = String(af['Artwork_S3_URL'] || '').trim()
     if (s3) {
-      const r = await fetch(s3)
-      if (!r.ok) return res.status(502).json({ error: `artwork fetch failed: HTTP ${r.status}` })
-      res.setHeader('Content-Type', r.headers.get('content-type') || 'image/jpeg')
+      // Media edge first, then S3, each with a time limit — some S3 servers crawl from the office (lib/cover-url.js).
+      const { buffer, contentType } = await fetchCover(s3)
+      res.setHeader('Content-Type', contentType)
       res.setHeader('Cache-Control', 'private, max-age=300')
-      return res.end(Buffer.from(await r.arrayBuffer()))
+      return res.end(buffer)
     }
     const vision = String(af['Artwork_Vision_URL'] || '').trim()
     if (vision) {
