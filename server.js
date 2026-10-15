@@ -15,7 +15,6 @@ import hqStemsRouter from './routes/hq-stems.js'
 import genreFixRouter from './routes/genre-fix.js'
 import galloGenreRouter from './routes/gallo-genre.js'
 import { CANONICAL_GENRES } from './lib/genre-taxonomy.js'
-import downloadTrackRouter from './routes/download-track.js'
 import visionRouter from './routes/vision.js'
 import { startVisionIndexAutoRefresh, startVisionNewAlbumSweep } from './lib/gallo-vision-link.js'
 import visionImportRouter from './routes/vision-import.js'
@@ -183,7 +182,6 @@ app.use('/api/ingest', ingestRouter)
 app.use('/api/podcasts', podcastsRouter)
 app.use('/api/genre-fix', genreFixRouter)
 app.use('/api/gallo-genre', galloGenreRouter)   // Gallo album-at-a-time Local Genre tagging
-app.use('/api/download-track', downloadTrackRouter)
 app.use('/api/hero', heroBannerRouter)
 app.use('/api/covers', coversRouter)   // Make Cover tab: generated covers through the cover pipeline
 app.use('/api/vision', visionRouter)

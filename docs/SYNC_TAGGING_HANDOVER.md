@@ -200,8 +200,8 @@ Live at **gallo-ingest.onrender.com → Tags**.
 
 ## 8. House rules that outlive any machine
 
-- **Covers only through the pipeline** (`lib/album-cover.js`) — MAM tab, Artwork
-  tab or S3 Upload. Never straight into `artwork/`.
+- **Covers only through the pipeline** (`lib/album-cover.js`) — MAM, Artwork or
+  Make Cover tab. Never straight into `artwork/`.
 - **Tracks match on catalogue + Filename**, never track order or title.
 - **Deleting records is done by a person** in FileMaker, after checking.
 - **Vision has no trash.** Nothing overwrites a master unless "overwrite" is ticked.

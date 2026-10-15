@@ -330,7 +330,6 @@
       <button class="tab-btn" data-tab="biography" onclick="showTab('biography')">Biography</button>
       <button class="tab-btn" data-tab="artwork" onclick="showTab('artwork')">Artwork</button>
       <button class="tab-btn" data-tab="makecover" onclick="showTab('makecover')">Make Cover</button>
-      <button class="tab-btn" data-tab="s3upload" onclick="showTab('s3upload')">S3 Upload</button>
       <button class="tab-btn" data-tab="packs" onclick="showTab('packs')">Packs</button>
       <button class="tab-btn" data-tab="hqstems" onclick="showTab('hqstems')">HQ Stems</button>
       <button class="tab-btn" data-tab="playlists" onclick="showTab('playlists')">Playlists</button>
@@ -339,7 +338,6 @@
       <button class="tab-btn" data-tab="genrefix" onclick="showTab('genrefix')">Genre Fix</button>
       <button class="tab-btn" data-tab="gallogenre" onclick="showTab('gallogenre')">Gallo Genre</button>
       <button class="tab-btn" data-tab="youtube" onclick="showTab('youtube')">YouTube</button>
-      <button class="tab-btn" data-tab="download" onclick="showTab('download')">Download</button>
       <button class="tab-btn" data-tab="fpcheck" onclick="showTab('fpcheck')">Check Audio</button>
       <button class="tab-btn" data-tab="vision" onclick="showTab('vision')">Vision</button>
       <button class="tab-btn" data-tab="addalbum" onclick="showTab('addalbum')">Add Album</button>
@@ -707,64 +705,6 @@
 
         <div id="ccaDetail" style="display:none;margin-top:16px"></div>
         <div id="ccaResults" style="display:none;margin-top:16px"></div>
-      </div>
-
-    
-
-      <!-- XML preview section -->
-      <div class="import-section" style="margin-bottom:24px">
-        <h3>⬇ DDEX XML Preview</h3>
-        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">Drop a DDEX NewReleaseMessage XML file here to see exactly what metadata it contains before doing anything with it.</p>
-
-        <div id="ddexXmlDropZone" onclick="$('ddexXmlInput').click()"
-          style="border:2px dashed var(--border-hi);border-radius:var(--radius);padding:28px;text-align:center;cursor:pointer;margin-bottom:14px;transition:background 0.15s"
-          ondragover="event.preventDefault();this.style.background='var(--gold-glow)'"
-          ondragleave="this.style.background=''"
-          ondrop="ddexXmlDrop(event)">
-          <div style="font-size:1.2rem;margin-bottom:6px">📄</div>
-          <div style="font-size:0.88rem;color:var(--muted)">Drop DDEX XML here or <span style="color:var(--gold);text-decoration:underline">click to browse</span></div>
-          <input type="file" id="ddexXmlInput" accept=".xml" style="display:none" onchange="ddexXmlChosen(this.files[0])">
-        </div>
-
-        <div id="ddexXmlLabel" style="font-size:0.82rem;color:var(--muted);margin-bottom:10px"></div>
-        <div id="ddexXmlPreviewWrap" style="display:none">
-          <div id="ddexXmlMeta" style="font-size:0.78rem;color:var(--muted);padding:8px 0"></div>
-          <div style="overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius)">
-            <div id="ddexXmlContent"></div>
-          </div>
-        </div>
-        <div id="ddexXmlError" style="color:var(--red);font-size:0.82rem;margin-top:8px"></div>
-      </div>
-
-      <!-- ZIP import section -->
-      <div class="import-section">
-        <h3>⬇ DDEX Package Import — single ZIP</h3>
-        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">Upload a DDEX ZIP containing the NewReleaseMessage XML and audio files. Preview tracks before importing.</p>
-
-        <div id="ddexDropZone" onclick="$('ddexFileInput').click()"
-          style="border:2px dashed var(--border-hi);border-radius:var(--radius);padding:32px;text-align:center;cursor:pointer;margin-bottom:14px;transition:background 0.15s"
-          ondragover="event.preventDefault();this.style.background='var(--gold-glow)'"
-          ondragleave="this.style.background=''"
-          ondrop="ddexFileDrop(event)">
-          <div style="font-size:1.4rem;margin-bottom:6px">📦</div>
-          <div style="font-size:0.88rem;color:var(--muted)">Drop DDEX ZIP here or <span style="color:var(--gold);text-decoration:underline">click to browse</span></div>
-          <input type="file" id="ddexFileInput" accept=".zip" style="display:none" onchange="ddexFileChosen(this.files[0])">
-        </div>
-
-        <div id="ddexFileLabel" style="font-size:0.82rem;color:var(--muted);margin-bottom:12px"></div>
-
-        <div class="import-actions">
-          <button class="btn btn-ghost" id="ddexPreviewBtn" onclick="runDdexPreview()" disabled>Preview</button>
-          <button class="btn btn-gold"  id="ddexImportBtn"  onclick="runDdexImport()" disabled>Import Selected</button>
-          <span id="ddexVersionBadge" style="font-size:0.76rem;color:var(--muted)"></span>
-        </div>
-
-        <div id="ddexPreviewWrap" class="preview-table-wrap" style="display:none;max-height:480px">
-          <div style="padding:8px 12px;font-size:0.78rem;color:var(--muted)" id="ddexPreviewMeta"></div>
-          <div id="ddexPreviewContent"></div>
-        </div>
-
-        <div class="import-log" id="ddexLog"></div>
       </div>
 
     </div>
@@ -1409,58 +1349,6 @@
       </div>
     </div>
 
-    <div id="tab-s3upload" class="tab-panel">
-      <div class="import-section">
-        <h3>Folder &rarr; S3</h3>
-        <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px">
-          Pick a folder and upload everything in it. Replaces the <em>Export To S3</em> app, which
-          drove Terminal through AppleScript to run <code>rclone copy</code> — that appeared to hang
-          because rclone lists the whole destination before transferring, and enumerating 7,589
-          objects in <code>artwork/</code> to place a handful of files shows no progress for
-          most of a minute. This writes straight to the keys, so there is nothing to enumerate.
-          <br><br>
-          <strong>Covers</strong> (artwork/) go through the cover pipeline, one album per file: name each
-          file <code>GMVi5595.jpg</code> or by its catalogue number, <code>GALP 1065.jpg</code>. Each becomes a
-          JPEG with the website sizes, and MAM and MadStreamer are both pointed at it. A file whose name
-          matches no album is refused, not uploaded.
-          <br><br>
-          <strong>Audio</strong> (mp3/): same-named files are <strong>overwritten</strong>, as the old script did.
-          Local files are <strong>not deleted</strong>.
-        </p>
-
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
-          <select id="s3Target" class="btn-browse" style="min-width:220px" onchange="_s3Files.length && s3FolderChosen(_s3Files)">
-            <option value="artwork">artwork/ &mdash; cover images</option>
-            <option value="mp3">mp3/ &mdash; audio</option>
-          </select>
-          <input type="file" id="s3Folder" webkitdirectory directory multiple style="display:none" onchange="s3FolderChosen(this.files)">
-          <button class="btn btn-ghost" onclick="document.getElementById('s3Folder').click()">Choose folder…</button>
-          <button class="btn btn-ghost" onclick="document.getElementById('s3Files').click()" style="font-size:0.8rem">or pick files…</button>
-          <input type="file" id="s3Files" multiple style="display:none" onchange="s3FolderChosen(this.files)">
-          <span id="s3Picked" style="font-size:0.82rem;color:var(--muted)"></span>
-        </div>
-
-        <div id="s3ListWrap" style="display:none">
-          <div style="overflow-x:auto;max-height:300px;border:1px solid var(--border);border-radius:6px">
-            <table style="width:100%;border-collapse:collapse;font-size:0.8rem">
-              <thead><tr style="background:var(--surface);position:sticky;top:0">
-                <th style="padding:6px 10px;text-align:left;color:var(--muted)">File</th>
-                <th style="padding:6px 10px;text-align:right;color:var(--muted)">Size</th>
-                <th style="padding:6px 10px;text-align:left;color:var(--muted)">Destination</th>
-              </tr></thead>
-              <tbody id="s3Body"></tbody>
-            </table>
-          </div>
-          <div style="display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap">
-            <button class="btn btn-blue" id="s3UploadBtn" onclick="s3Upload()">Upload to S3</button>
-            <span id="s3Status" style="font-size:0.82rem;color:var(--muted)"></span>
-          </div>
-        </div>
-
-        <div id="s3Results" style="display:none;margin-top:16px"></div>
-      </div>
-    </div>
-
     <div id="tab-mcomments" class="tab-panel">
       <div class="import-section">
         <h3>MAD comments</h3>
@@ -1944,37 +1832,6 @@
               <th style="text-align:left">Local Genre</th><th></th><th style="text-align:left">Status</th>
             </tr></thead>
             <tbody id="ggBody"></tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-
-    <div id="tab-download" class="tab-panel">
-      <div class="card">
-        <h3>Download Track — search &amp; fetch the S3 master</h3>
-        <p class="muted" style="margin:6px 0 14px">
-          Search by artist and/or track name. Download streams the file from S3 through the
-          server with a clean <em>Artist - Title</em> filename. Use either field alone or both
-          together to narrow.
-        </p>
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
-          <input id="dlArtist" placeholder="Artist…" style="min-width:220px" onkeydown="if(event.key==='Enter')dlSearch()">
-          <input id="dlTrack" placeholder="Track name…" style="min-width:220px" onkeydown="if(event.key==='Enter')dlSearch()">
-          <button class="btn" onclick="dlSearch()">Search</button>
-          <span id="dlStatus" class="muted"></span>
-        </div>
-        <div class="table-wrap">
-          <table id="dlTable" style="width:100%">
-            <thead><tr>
-              <th style="text-align:left">Artist</th>
-              <th style="text-align:left">Track</th>
-              <th style="text-align:left">Album</th>
-              <th>Year</th>
-              <th style="text-align:left;min-width:260px">Audition</th>
-              <th></th>
-              <th style="text-align:left">Status</th>
-            </tr></thead>
-            <tbody id="dlBody"></tbody>
           </table>
         </div>
       </div>
@@ -2871,63 +2728,6 @@ async function ccaImport() {
   } finally { btn.disabled = false }
 }
 
-// ── Folder -> S3 ──────────────────────────────────────────────────────────
-let _s3Files = []
-
-function s3FolderChosen(fileList) {
-  // Hidden files come along with a folder pick (.DS_Store especially) and have
-  // no business on S3.
-  _s3Files = [...fileList].filter(f => f.size > 0 && !f.name.startsWith('.'))
-  const skipped = fileList.length - _s3Files.length
-  const total = _s3Files.reduce((n, f) => n + f.size, 0)
-  $('s3Picked').textContent = _s3Files.length
-    ? `${_s3Files.length} file(s), ${viSize(total)}${skipped ? ` · ${skipped} hidden/empty skipped` : ''}`
-    : 'Nothing usable in that folder.'
-  $('s3Results').style.display = 'none'
-  if (!_s3Files.length) { $('s3ListWrap').style.display = 'none'; return }
-  const prefix = $('s3Target').value
-  $('s3Body').innerHTML = _s3Files.map(f => `<tr style="border-top:1px solid var(--border)">
-      <td style="padding:5px 10px">${esc(f.name)}</td>
-      <td style="padding:5px 10px;text-align:right;font-family:monospace">${viSize(f.size)}</td>
-      <td style="padding:5px 10px;font-family:monospace;font-size:0.74rem;color:var(--muted)">${prefix === 'artwork' ? `cover for ${esc(f.name.replace(/\.[^.]+$/, ''))}` : `${esc(prefix)}/${esc(f.name)}`}</td>
-    </tr>`).join('')
-  $('s3ListWrap').style.display = ''
-}
-
-async function s3Upload() {
-  if (!_s3Files.length) return
-  const target = $('s3Target').value
-  const msg = target === 'artwork'
-    ? `Set ${_s3Files.length} album cover(s) through the cover pipeline?\n\nEach file name must be a GMVi number or a catalogue number. An album that already has a cover gets it replaced (the old file is kept).`
-    : `Upload ${_s3Files.length} file(s) to mp3/ on S3?\n\nAny existing file with the same name is overwritten.`
-  if (!confirm(msg)) return
-
-  const btn = $('s3UploadBtn'); btn.disabled = true
-  $('s3Status').textContent = `Uploading ${_s3Files.length} file(s)…`
-  try {
-    const fd = new FormData()
-    fd.append('target', target)
-    for (const f of _s3Files) fd.append('files', f, f.name)
-    const res = await fetch('/api/ingest/s3/upload-folder', {
-      method: 'POST', headers: { Authorization: `Bearer ${adminToken}` }, body: fd,
-    })
-    const j = await res.json()
-    if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`)
-    $('s3Results').style.display = ''
-    $('s3Results').innerHTML =
-      `<div style="font-weight:600;margin-bottom:8px">${j.uploaded} uploaded${j.failed ? `, ${j.failed} FAILED` : ''} to ${esc(j.prefix)}/</div>` +
-      j.results.filter(r => !r.ok).map(r =>
-        `<div style="font-size:0.8rem;color:var(--red)"><code>${esc(r.name)}</code> — ${esc(r.error)}</div>`).join('') +
-      j.results.filter(r => r.ok && r.catalogue).map(r =>
-        `<div style="font-size:0.8rem;color:${r.warnings?.length ? 'var(--amber)' : 'var(--muted)'}"><code>${esc(r.name)}</code> → ${esc(r.catalogue)} · ${esc(r.key)}${r.replaced ? ' (replaced)' : ''}${r.warnings?.length ? ' — ' + esc(r.warnings.join('; ')) : ''}</div>`).join('')
-    $('s3Status').textContent = ''
-    showToast(`${j.uploaded} file(s) uploaded to ${j.prefix}/`, j.failed ? 'warning' : 'success')
-  } catch (e) {
-    $('s3Status').textContent = `Error: ${e.message}`
-    showToast(e.message, 'error')
-  } finally { btn.disabled = false }
-}
-
 // ── Data Health tab ──────────────────────────────────────────────────────────
 // Catalogue-wide data faults from the Postgres mirror. The sweep takes ~90s on
 // a cold start, so the endpoint answers 202 while it runs and we poll — a
@@ -3672,8 +3472,8 @@ async function pkPublish() {
 // (server gates them behind YOUTUBE_ENABLED / DDEX_ENABLED — 1080p ffmpeg encodes
 // and 24-bit WAV packaging OOM/crawl the 512MB hosted plan, and DDEX writes to a
 // local folder that's invisible/ephemeral on Render). Hide their tabs on the
-// hosted instance so they're never offered where they can't run. The lightweight
-// "DDEX" validator tab (data-tab="ddex") only parses uploads, so it stays.
+// hosted instance so they're never offered where they can't run. The rest of the
+// DDEX tab (CCA Import) reads from Vision, so the tab itself stays.
 // /health is unauthenticated.
 function _removeTab(name) {
   const btn = document.querySelector(`.tab-btn[data-tab="${name}"]`)
@@ -5894,183 +5694,6 @@ async function buildIngroovesFolder() {
     }
   })
   // The SSE listeners above handle completion, errors, and button reset.
-}
-
-// ── DDEX XML preview ───────────────────────────────────────────────────────
-function ddexXmlDrop(e) {
-  e.preventDefault()
-  $('ddexXmlDropZone').style.background = ''
-  const file = e.dataTransfer.files[0]
-  if (file) ddexXmlChosen(file)
-}
-
-async function ddexXmlChosen(file) {
-  $('ddexXmlLabel').textContent   = `Selected: ${file.name}`
-  $('ddexXmlError').textContent   = ''
-  $('ddexXmlPreviewWrap').style.display = 'none'
-
-  const fd = new FormData()
-  fd.append('xml', file)
-
-  try {
-    const res  = await fetch('/api/ingest/ddex/xml-preview', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${adminToken}` },
-      body: fd
-    })
-    const data = await res.json()
-    if (!res.ok) throw new Error(data.error || 'Parse failed')
-
-    $('ddexXmlMeta').textContent = `ERN ${data.version} · ${data.count} track(s) found`
-    $('ddexXmlContent').innerHTML = renderDdexXmlTable(data.tracks)
-    $('ddexXmlPreviewWrap').style.display = 'block'
-  } catch(err) {
-    $('ddexXmlError').textContent = `Error: ${err.message}`
-  }
-}
-
-function renderDdexXmlTable(tracks) {
-  if (!tracks.length) return '<div style="padding:12px;color:var(--muted)">No tracks found.</div>'
-  const fields = ['sequence_no','title','artist','isrc','album','year','genre','language','duration_sec','explicit','catalogue_no','barcode']
-  const labels = { sequence_no:'Seq', title:'Title', artist:'Artist', isrc:'ISRC', album:'Album', year:'Year', genre:'Genre', language:'Lang', duration_sec:'Duration', explicit:'Explicit', catalogue_no:'Cat #', barcode:'Barcode' }
-  let html = `<table style="font-size:0.78rem"><thead><tr>`
-  fields.forEach(f => { html += `<th>${labels[f]}</th>` })
-  html += `</tr></thead><tbody>`
-  tracks.forEach(t => {
-    html += '<tr>'
-    fields.forEach(f => {
-      let val = t[f]
-      if (f === 'duration_sec' && val) val = fmtDur(val)
-      if (f === 'explicit') val = val ? 'E' : ''
-      html += `<td style="color:var(--text)">${esc(val ?? '') || '<span style="color:var(--muted)">—</span>'}</td>`
-    })
-    html += '</tr>'
-  })
-  return html + '</tbody></table>'
-}
-
-// ── DDEX ───────────────────────────────────────────────────────────────────
-let ddexFile    = null
-let ddexPreview = []   // last previewed tracks
-
-function ddexFileDrop(e) {
-  e.preventDefault()
-  $('ddexDropZone').style.background = ''
-  const file = e.dataTransfer.files[0]
-  if (file) ddexFileChosen(file)
-}
-
-function ddexFileChosen(file) {
-  if (!file) return
-  ddexFile    = file
-  ddexPreview = []
-  $('ddexFileLabel').textContent = `Selected: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)`
-  $('ddexPreviewBtn').disabled = false
-  $('ddexImportBtn').disabled  = true
-  $('ddexVersionBadge').textContent = ''
-  $('ddexPreviewWrap').style.display = 'none'
-  $('ddexLog').style.display = 'none'
-}
-
-async function runDdexPreview() {
-  if (!ddexFile) return
-  const btn = $('ddexPreviewBtn')
-  btn.disabled = true; btn.textContent = '⟳ Parsing…'
-
-  const fd = new FormData()
-  fd.append('package', ddexFile)
-
-  try {
-    const res  = await fetch('/api/ingest/ddex/preview', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${adminToken}` },
-      body: fd
-    })
-    const data = await res.json()
-    if (!res.ok) throw new Error(data.error || 'Preview failed')
-
-    ddexPreview = data.tracks || []
-    $('ddexVersionBadge').textContent = `ERN ${data.version}`
-    $('ddexPreviewMeta').textContent = `${data.count} track(s) found in ERN ${data.version} package`
-    renderDdexPreviewTable(ddexPreview)
-    $('ddexPreviewWrap').style.display = 'block'
-    $('ddexImportBtn').disabled = ddexPreview.length === 0
-  } catch (err) {
-    showToast(err.message, 'error')
-  } finally {
-    btn.disabled = false; btn.textContent = 'Preview'
-  }
-}
-
-function renderDdexPreviewTable(tracks) {
-  if (!tracks.length) {
-    $('ddexPreviewContent').innerHTML = '<div style="padding:12px;color:var(--muted)">No tracks parsed.</div>'
-    return
-  }
-  let html = `
-    <table style="font-size:0.78rem">
-      <thead><tr>
-        <th style="width:30px"><input type="checkbox" id="ddexSelectAll" onchange="ddexToggleAll(this.checked)" checked></th>
-        <th>Title</th><th>Artist</th><th>ISRC</th><th>Duration</th><th>Audio</th><th>Artwork</th>
-      </tr></thead><tbody>`
-  tracks.forEach((t, i) => {
-    html += `<tr>
-      <td><input type="checkbox" class="ddex-row-cb" data-idx="${i}" checked></td>
-      <td>${esc(t.title)}${t.version_title ? `<br><small style="color:var(--muted)">${esc(t.version_title)}</small>` : ''}</td>
-      <td>${esc(t.artist)}</td>
-      <td style="font-family:monospace;font-size:0.74rem">${esc(t.isrc || '—')}</td>
-      <td>${fmtDur(t.duration_sec)}</td>
-      <td style="text-align:center">${t.has_audio ? '✓' : '<span style="color:var(--muted)">✗</span>'}</td>
-      <td style="text-align:center">${t.has_artwork ? '✓' : '<span style="color:var(--muted)">✗</span>'}</td>
-    </tr>`
-  })
-  html += '</tbody></table>'
-  $('ddexPreviewContent').innerHTML = html
-}
-
-function ddexToggleAll(checked) {
-  document.querySelectorAll('.ddex-row-cb').forEach(cb => { cb.checked = checked })
-}
-
-async function runDdexImport() {
-  if (!ddexFile) return
-  const selectedIdxs = new Set(
-    [...document.querySelectorAll('.ddex-row-cb:checked')].map(cb => parseInt(cb.dataset.idx))
-  )
-  if (!selectedIdxs.size) { showToast('No tracks selected', 'warning'); return }
-
-  const btn = $('ddexImportBtn')
-  const log = $('ddexLog')
-  btn.disabled = true; btn.textContent = '⟳ Importing…'
-  log.style.display = 'block'
-  log.textContent = `Uploading package and importing ${selectedIdxs.size} track(s)…\n`
-
-  const fd = new FormData()
-  fd.append('package', ddexFile)
-  fd.append('selectedIndices', JSON.stringify([...selectedIdxs]))
-
-  try {
-    const res  = await fetch('/api/ingest/ddex', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${adminToken}` },
-      body: fd
-    })
-    const data = await res.json()
-
-    if (!res.ok || !data.ok) throw new Error(data.error || 'Import failed')
-
-    log.textContent += `Done — ${data.created} record(s) created in FileMaker.\n`
-    if (data.errors?.length) {
-      log.textContent += `Errors (${data.errors.length}):\n`
-      data.errors.forEach(e => { log.textContent += `  ${e.title}: ${e.error}\n` })
-    }
-    showToast(`DDEX import complete — ${data.created} record(s) created`)
-  } catch (err) {
-    log.textContent += `\nError: ${err.message}`
-    showToast(err.message, 'error')
-  } finally {
-    btn.disabled = false; btn.textContent = 'Import Selected'
-  }
 }
 
 // ── Album tab — mini FileMaker page over Music Arena Master ─────────────────
@@ -10561,69 +10184,6 @@ async function hbDelete(recordId, title) {
     hbLoad();
   } catch (e) {
     document.getElementById('hbListStatus').innerHTML = `<span style="color:#e66">Delete failed: ${gfEsc(e.message)}</span>`;
-  }
-}
-
-/* ── Download Track tab ─────────────────────────────────────── */
-let dlRows = []
-
-async function dlSearch() {
-  const artist = document.getElementById('dlArtist').value.trim()
-  const track = document.getElementById('dlTrack').value.trim()
-  const status = document.getElementById('dlStatus')
-  const body = document.getElementById('dlBody')
-  if (artist.length < 2 && track.length < 2) { status.textContent = 'Type at least 2 characters of an artist or track name.'; return }
-  status.textContent = 'Searching…'
-  body.innerHTML = ''
-  try {
-    const qs = new URLSearchParams()
-    if (artist) qs.set('artist', artist)
-    if (track) qs.set('track', track)
-    const r = await fetch(`/api/download-track/search?${qs}`,
-      { headers: { Authorization: `Bearer ${adminToken}` } })
-    const j = await r.json()
-    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
-    dlRows = j.tracks || []
-    status.textContent = dlRows.length
-      ? `${dlRows.length} track${dlRows.length === 1 ? '' : 's'} found${dlRows.length >= 300 ? ' (first 300 — narrow the search for more)' : ''}.`
-      : 'No matches.'
-    body.innerHTML = dlRows.map((t, i) => `
-      <tr id="dlRow${i}">
-        <td style="text-align:left">${gfEsc(t.artist)}</td>
-        <td style="text-align:left">${gfEsc(t.title || '')}</td>
-        <td style="text-align:left">${gfEsc(t.album || '')}${t.catalogue ? ` <span class="muted" style="font-size:11px">${gfEsc(t.catalogue)}</span>` : ''}</td>
-        <td style="text-align:center">${gfEsc(t.year || '')}</td>
-        <td style="text-align:left">${t.s3url
-          ? `<audio controls preload="none" style="width:250px;height:30px" src="${gfEsc(t.s3url)}"></audio>`
-          : '<span class="muted">no audio</span>'}</td>
-        <td>${t.s3url ? `<button class="btn" onclick="dlGet(${i})">Download</button>` : ''}</td>
-        <td style="text-align:left" id="dlStat${i}" class="muted"></td>
-      </tr>`).join('')
-  } catch (e) {
-    status.textContent = `Failed: ${e.message}`
-  }
-}
-
-async function dlGet(i) {
-  const t = dlRows[i]
-  const stat = document.getElementById(`dlStat${i}`)
-  stat.textContent = 'preparing…'
-  try {
-    // The server answers with a short-lived presigned S3 URL (filename baked
-    // into its content-disposition) — the download itself comes straight from
-    // S3, not through this service.
-    const r = await fetch(`/api/download-track/file/${encodeURIComponent(t.recordId)}`,
-      { headers: { Authorization: `Bearer ${adminToken}` } })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
-    const a = document.createElement('a')
-    a.href = j.url
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    stat.innerHTML = `<span style="color:var(--gold)">✔ downloading from S3</span>`
-  } catch (e) {
-    stat.textContent = `failed: ${e.message}`
   }
 }
 

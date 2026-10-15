@@ -19,15 +19,14 @@ import { visionOpen } from '../lib/vision-drive.js'
 import { adminAuth } from '../lib/admin-auth.js'
 import { fuzzyScore, normForFuzzy } from '../lib/fuzzy-match.js'
 import { extractAudioMeta, detectAudioFormat, generateWarnings, titleFromFilename } from '../lib/audio-meta.js'
-import { parseDDEXPackage, parseDDEXXml } from '../lib/ddex.js'
 import { parseTrackSheet } from '../lib/excel-ingest.js'
 import { uploadImport, presignImport, presignAudioDownload, downloadImport,
          uploadMp3ByGcat, uploadWavByGcat, uploadPlaylistArt, downloadAnyKey, keyFromS3Url, downloadByUrl,
-         artworkKeyForGmvi, listArtworkKeysForGmvi, headAnyKey, urlForKey, uploadAnyKey } from '../lib/s3-imports.js'
+         artworkKeyForGmvi, listArtworkKeysForGmvi, headAnyKey, urlForKey } from '../lib/s3-imports.js'
 // No uploadArtworkByGmvi / writeArtworkDerivatives here on purpose: every album
 // cover goes through lib/album-cover.js setAlbumCover.
 import { createGalloRecord, createTapeFileRecord, updateGalloRecord, runGalloScript, runScriptOnRecord, pingGallo, findGalloRecordsByCatalogue, searchGalloRecords, fetchContainerData, getGalloTrack, getGalloLayoutFields, getGalloLayoutFieldSet, reloadGalloLayoutFields, getRecentGalloCreates, clearRecentGalloCreates } from '../lib/fm-gallo.js'
-import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, searchMadStreamerRecords, findArtistBio, upsertArtistBio, listArtistBios, deleteArtistBio, findPlaylistArt, upsertPlaylistArt, listPlaylistArt, deletePlaylistArt, PLAYLIST_CATEGORIES, findStreamerSongs, findStreamerSongsByGenre, listPublicPlaylists, findSongsByPlaylist, setPublicPlaylist, getStreamerSongAudioUrl, findArtworkByCatalogue, findArtworkByGmvi, findTapeFileByCatalogue, createArtworkRecord, setTapeFileArtworkUrl, setPublicPlaylistOrder, _config as madStreamerConfig } from '../lib/madstreamer.js'
+import { lookupGmviByCatalogue, upsertMp3Record, upsertTapeFileRecord, pingMadStreamer, getLayoutFields, reloadLayoutFields, findRecordsByCatalogue as findStreamerRecordsByCatalogue, searchMadStreamerRecords, findArtistBio, upsertArtistBio, listArtistBios, deleteArtistBio, findPlaylistArt, upsertPlaylistArt, listPlaylistArt, deletePlaylistArt, PLAYLIST_CATEGORIES, findStreamerSongs, findStreamerSongsByGenre, listPublicPlaylists, findSongsByPlaylist, setPublicPlaylist, getStreamerSongAudioUrl, findArtworkByCatalogue, createArtworkRecord, setTapeFileArtworkUrl, setPublicPlaylistOrder, _config as madStreamerConfig } from '../lib/madstreamer.js'
 import { CANONICAL_GENRES } from '../lib/genre-taxonomy.js'
 import { mergeSourceTracks, selectSources } from '../lib/search-merge.js'
 import { checkDataHealth } from '../lib/data-health.js'
@@ -580,16 +579,6 @@ const upload = multer({
     const allowedMimes = ['audio/wav','audio/wave','audio/x-wav','audio/mpeg','audio/flac','audio/aiff','audio/x-aiff']
     const ok = allowedMimes.includes(file.mimetype) || allowedExts.includes(ext)
     cb(ok ? null : new Error(`File type not accepted: ${file.mimetype}`), ok)
-  }
-})
-
-const uploadZip = multer({
-  storage,
-  limits: { fileSize: 2 * 1024 * 1024 * 1024 }, // 2 GB
-  fileFilter: (req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase()
-    if (ext === '.zip') cb(null, true)
-    else cb(new Error(`Expected ZIP, got: ${file.mimetype}`))
   }
 })
 
@@ -1339,220 +1328,6 @@ router.post('/ddex/build-preview', adminAuth, express.json(), async (req, res) =
   res.json({ track_count: tracks.length, tracks })
 })
 
-// ── DDEX XML-only preview ─────────────────────────────────────────────────────
-const uploadXml = multer({ dest: 'tmp/uploads/', limits: { fileSize: 5 * 1024 * 1024 } })
-
-// ── Bulk folder -> S3 artwork ────────────────────────────────────────────────
-// Replaces the "Export To S3" Automator app, which drove Terminal via
-// AppleScript to run rclone. That looked like it hung: `rclone copy` traverses
-// the whole destination before transferring, and listing 7,589 objects in
-// artwork/ to place 17 files shows no progress for most of a minute.
-// Uploading straight to the keys we already know avoids the traversal entirely.
-const uploadFolder = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 100 * 1024 * 1024, files: 500 },
-})
-
-const S3_FOLDER_TARGETS = {
-  artwork: 'artwork',
-  mp3:     'mp3',
-}
-
-// Only these get derivatives — sharp can't read a PDF or a stray .DS_Store, and
-// a folder pick sweeps up whatever is sitting next to the covers.
-const ARTWORK_IMAGE_RE = /\.(jpe?g|png|webp|tiff?)$/i
-
-router.post('/s3/upload-folder', adminAuth, uploadFolder.array('files', 500), async (req, res) => {
-  const target = String(req.body?.target || 'artwork')
-  const prefix = S3_FOLDER_TARGETS[target]
-  if (!prefix) return res.status(400).json({ error: `target must be one of: ${Object.keys(S3_FOLDER_TARGETS).join(', ')}` })
-
-  const files = req.files || []
-  if (!files.length) return res.status(400).json({ error: 'no files received' })
-
-  const results = []
-  for (const f of files) {
-    // Flatten: a picked folder yields paths like "ArtTemp/cover.jpg", and the
-    // artwork prefix is flat. Basename only, and never a path that could climb.
-    const name = String(f.originalname || '').split('/').pop().replace(/^\.+/, '')
-    if (!name) { results.push({ name: f.originalname, ok: false, error: 'unusable filename' }); continue }
-
-    // Covers go through the cover pipeline, never straight into artwork/.
-    // Writing the file under its own name skipped JPEG conversion, the GMVi
-    // naming, the stamped key a replacement needs, and the MAM + Tape Files
-    // repoint — so an "uploaded" cover often never changed on the site
-    // (2026-09-15). The file name says which album: "GMVi5595.jpg" or the
-    // catalogue number, "GALP 1065.jpg".
-    if (target === 'artwork') {
-      if (!ARTWORK_IMAGE_RE.test(name)) {
-        results.push({ name, ok: false, error: 'not an image (jpg, png, webp or tiff)' }); continue
-      }
-      const stem = name.replace(/\.[^.]+$/, '').trim()
-      try {
-        let cat = null
-        if (/^GMVin?\d+$/i.test(stem)) {
-          const art = await findArtworkByGmvi(stem)
-          if (!art) { results.push({ name, ok: false, error: `no MadStreamer artwork record has ${stem} — name the file by catalogue number instead` }); continue }
-          if (!art.catalogue) { results.push({ name, ok: false, error: `artwork record ${stem} has no catalogue number` }); continue }
-          cat = art.catalogue
-        } else {
-          // A typo must not mint an Artwork record for an album that doesn't exist.
-          const known = (await findMamAlbumByCatalogue(stem)) || (await findTapeFileByCatalogue(stem))
-          if (!known) { results.push({ name, ok: false, error: `no album "${stem}" in MAM or MadStreamer — name the file GMVi<n> or by its exact catalogue number` }); continue }
-          cat = stem
-        }
-        const c = await setAlbumCover(cat, f.buffer, { label: name })
-        const warn = [
-          !c.mam.ok && `MAM not updated: ${c.mam.reason}`,
-          c.madstreamer && !c.madstreamer.ok && `MadStreamer not updated: ${c.madstreamer.reason}`,
-          /^GMVi/i.test(stem) && c.gmvi.toLowerCase() !== stem.toLowerCase() && `album ${cat} uses ${c.gmvi}, not ${stem}`,
-        ].filter(Boolean)
-        results.push({ name, key: c.key, bytes: f.size, ok: true, catalogue: cat, gmvi: c.gmvi, replaced: c.replaced, warnings: warn })
-      } catch (e) {
-        results.push({ name, ok: false, error: e.message })
-      }
-      continue
-    }
-
-    try {
-      const key = `${prefix}/${name}`
-      await uploadAnyKey(f.buffer, key, f.mimetype || 'application/octet-stream')
-      // Artwork is served from artwork/resized/<name>_<size>.webp, never the
-      // master. A cover uploaded without its derivatives showed no cover until
-      // the 05:00 cron caught up — and once the app had asked for the missing
-      // derivative, the CDN cached that 403 and the cover stayed broken even
-      // after the file existed. Generating them in the same breath as the
-      // upload is what stops a 403 ever being served (Ian, 2026-08-06).
-      results.push({ name, key, bytes: f.size, ok: true })
-    } catch (e) {
-      results.push({ name, ok: false, error: e.message })
-    }
-  }
-
-  const ok = results.filter(r => r.ok).length
-  console.log(`[s3-upload] ${target}: ${ok}/${results.length} uploaded`)
-  res.json({ ok: true, target, prefix, uploaded: ok, failed: results.length - ok, results })
-})
-
-router.post('/ddex/xml-preview', adminAuth, uploadXml.single('xml'), async (req, res) => {
-  try {
-    const buf    = await readFile(req.file.path)
-    // Handle UTF-16 LE/BE BOM — many DDEX files from Windows tools are UTF-16
-    let xmlStr
-    if (buf[0] === 0xFF && buf[1] === 0xFE) xmlStr = buf.toString('utf16le')
-    else if (buf[0] === 0xFE && buf[1] === 0xFF) xmlStr = buf.swap16().toString('utf16le')
-    else xmlStr = buf.toString('utf8')
-    xmlStr = xmlStr.replace(/^﻿/, '')  // strip BOM
-    await unlink(req.file.path).catch(() => {})
-    const { version, tracks } = await parseDDEXXml(xmlStr)
-    res.json({
-      version,
-      count: tracks.length,
-      tracks: tracks.map(t => ({
-        sequence_no:  t.track_number,
-        title:        t.track_title,
-        artist:       t.artist_name,
-        album:        t.album_title,
-        isrc:         t.isrc,
-        year:         t.year,
-        genre:        t.genre,
-        language:     t.language,
-        duration_sec: t.duration_sec,
-        explicit:     t.explicit,
-        catalogue_no: t.catalogue_no,
-        barcode:      t.barcode,
-      }))
-    })
-  } catch(err) {
-    res.status(400).json({ error: err.message })
-  }
-})
-
-// ── DDEX preview ──────────────────────────────────────────────────────────────
-router.post('/ddex/preview', adminAuth, uploadZip.single('package'), async (req, res) => {
-  try {
-    const buf = await readFile(req.file.path)
-    await unlink(req.file.path).catch(() => {})
-    const { version, tracks } = await parseDDEXPackage(buf)
-    res.json({
-      version,
-      count: tracks.length,
-      tracks: tracks.map(t => ({
-        title:       t.track_title,
-        artist:      t.artist_name,
-        isrc:        t.isrc,
-        duration_sec: t.duration_sec,
-        has_audio:   !!t.wav_buffer
-      }))
-    })
-  } catch(err) {
-    res.status(400).json({ error: err.message })
-  }
-})
-
-// ── DDEX import ───────────────────────────────────────────────────────────────
-router.post('/ddex', adminAuth, uploadZip.single('package'), async (req, res) => {
-  try {
-    const buf = await readFile(req.file.path)
-    await unlink(req.file.path).catch(() => {})
-    const { version, tracks } = await parseDDEXPackage(buf)
-
-    // Respect track selection from the preview step
-    let selectedIndices = null
-    try { selectedIndices = new Set(JSON.parse(req.body.selectedIndices || 'null')) } catch(_) {}
-    const toImport = selectedIndices
-      ? tracks.filter((_, i) => selectedIndices.has(i))
-      : tracks
-
-    const created = []
-    const errors  = []
-
-    for (const track of toImport) {
-      let s3_url = null
-      // Upload audio to S3 if the ZIP contained the WAV file
-      if (track.wav_buffer) {
-        const { url, key } = await uploadImport(
-          track.wav_buffer,
-          `${track.track_title || 'track'}.wav`,
-          'audio/wav',
-          { artist: track.artist_name, album: track.album_title, title: track.track_title }
-        )
-        s3_url = url
-        track.s3_url = url; track.s3_key = key
-      }
-      // Create FileMaker record
-      try {
-        const fm = await createGalloRecord({
-          title:        track.track_title,
-          artist:       track.artist_name,
-          album:        track.album_title,
-          isrc:         track.isrc,
-          year:         track.year,
-          release_date: track.release_date,
-          genre:        track.genre,
-          language:     track.language,
-          duration:     track.duration_sec,
-          explicit:     track.explicit,
-          sequence_no:  track.track_number,
-          catalogue_no: track.catalogue_no,
-          barcode:      track.barcode,
-          label:        track.label_name,
-          s3_url,
-          s3_key:       track.s3_key
-        })
-        created.push({ title: track.track_title, fmRecordId: fm.fmRecordId })
-        console.log(`[DDEX] FM record created: ${fm.fmRecordId} — ${track.track_title}`)
-      } catch(fmErr) {
-        console.warn('[DDEX] FM record failed for', track.track_title, ':', fmErr.message)
-        errors.push({ title: track.track_title, error: fmErr.message })
-      }
-    }
-
-    res.json({ ok: true, version, created: created.length, results: created, errors })
-  } catch(err) {
-    res.status(400).json({ error: err.message })
-  }
-})
 
 // ── Metadata lookup (from Gallo_Metadata_Extract.xlsx) ───────────────────────
 
