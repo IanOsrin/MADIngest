@@ -742,11 +742,14 @@ fn buildtrip(index: &str, names_path: &str, out_dir: &str) {
 // the top 24 — which leaves 40 bits for the track:
 //   rows.u64  = word low 8 (bits 56–63) | track (16–55) | time (0–15), sorted within each bucket
 //   bucket.u64 = 2^24 + 1 row offsets (a u32 would overflow past 4.29 billion rows)
-//   fp_match buildfull <peaks dir> <out dir> [passes, default 32 — ~1 GB of rows per pass]
-fn buildfull(peaks_dir: &str, out_dir: &str, passes: usize) {
+//   fp_match buildfull <peaks dir> <out dir> [passes, default 32 — ~1 GB of rows per pass] [sample, default 1]
+// sample R keeps only the words in_sample(h, R) — 1 in R, every posting of a kept word — for the
+// in-memory first step of the two-step check (see TwoStep).
+fn buildfull(peaks_dir: &str, out_dir: &str, passes: usize, sample: u32) {
     use std::io::Write;
     let t0 = Instant::now();
     assert!(passes.is_power_of_two() && (2..=1 << 12).contains(&passes), "passes must be a power of two, 2 or more");
+    assert!(sample.is_power_of_two(), "sample must be a power of two (1 = every word)");
     let idx: Vec<usize> = fs::read(format!("{peaks_dir}/peaks.idx")).expect("peaks.idx").chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap()) as usize).collect();
     let dat: Vec<u16> = fs::read(format!("{peaks_dir}/peaks.dat")).expect("peaks.dat").chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
     let names_path = format!("{peaks_dir}/names.json");
@@ -776,7 +779,7 @@ fn buildfull(peaks_dir: &str, out_dir: &str, passes: usize) {
                     pk.extend((idx[tr]..idx[tr + 1]).map(|k| (dat[2 * k] as i32, dat[2 * k + 1] as i32)));
                     design_hashes(&pk, Design::TripQ, &mut hh);
                     for &(h, t) in &hh {
-                        if (h >> shift) as usize != pass || !(0..65536).contains(&t) { continue; }
+                        if (h >> shift) as usize != pass || !in_sample(h, sample) || !(0..65536).contains(&t) { continue; }
                         // pass key: bucket within the pass (≤ 23 bits) | word low 8 | track 17 | time 16
                         let bl = ((h >> 8) as usize - b0) as u64;
                         mine.push((bl << 41) | (((h & 0xff) as u64) << 33) | ((tr as u64) << 16) | t as u64);
@@ -806,7 +809,21 @@ fn buildfull(peaks_dir: &str, out_dir: &str, passes: usize) {
     for x in &bucket { b.extend_from_slice(&x.to_le_bytes()); }
     fs::write(format!("{out_dir}/bucket.u64"), b).unwrap();
     fs::copy(&names_path, format!("{out_dir}/names.json")).unwrap();
+    fs::write(format!("{out_dir}/sample.txt"), format!("{sample}\n")).unwrap();
     eprintln!("[buildfull] DONE {total} rows ({:.1} GB) for {nt} recordings · {:.0} min", total as f64 * 8.0 / 1e9, t0.elapsed().as_secs_f64() / 60.0);
+}
+
+/// A file of little-endian u64s read straight into one Vec (no second copy: a 3.7 GB sample index
+/// would otherwise need 7.4 GB while loading). The Mac is little-endian, like the files.
+fn read_u64s_le(path: &str) -> Vec<u64> {
+    use std::io::Read;
+    let mut f = fs::File::open(path).expect("rows file");
+    let n = (f.metadata().unwrap().len() / 8) as usize;
+    let mut v = vec![0u64; n];
+    let bytes = unsafe { std::slice::from_raw_parts_mut(v.as_mut_ptr() as *mut u8, n * 8) };
+    f.read_exact(bytes).expect("read rows");
+    if cfg!(target_endian = "big") { for x in v.iter_mut() { *x = u64::from_le(*x); } }
+    v
 }
 
 /// Where a check gets a word's postings from: the rows in memory, or read from the file on disk.
@@ -834,7 +851,7 @@ impl TripIndex {
         };
         let path = format!("{dir}/rows.u64");
         let src = if memory {
-            RowSource::Memory(fs::read(&path).unwrap().chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect())
+            RowSource::Memory(read_u64s_le(&path))
         } else {
             let f = fs::File::open(&path).unwrap();
             #[cfg(target_os = "macos")]
@@ -912,6 +929,12 @@ fn trip_scan_pitch(pk: &[(i32, i32)], ratio: f64, semis: f64, ix: &TripIndex) ->
             v.push((ix.row_track(r) << 33) | ((off as u64) << 16) | t as u64);
         }
     }
+    stretches(&mut v, semis)
+}
+
+/// Votes — track << 33 | (offset + 65536) << 16 | query frame — into the stretches that pass the bar:
+/// ≥ MIN votes at one (track, offset), no pause over GAP, and ≥ MIN of them inside WINDOW.
+fn stretches(v: &mut Vec<u64>, semis: f64) -> Vec<Stretch> {
     v.sort_unstable();
     let (mut out, mn, mut i) = (Vec::new(), min_votes(), 0);
     while i < v.len() {
@@ -941,7 +964,12 @@ fn trip_scan_pitch(pk: &[(i32, i32)], ratio: f64, semis: f64, ix: &TripIndex) ->
 
 /// scan_song for the triplet index: 9 pitches one after another (each already reads in parallel).
 fn trip_scan_song(pk: &[(i32, i32)], ix: &TripIndex) -> Vec<Stretch> {
-    let mut all: Vec<Stretch> = SWEEP.iter().flat_map(|&s| trip_scan_pitch(pk, 2f64.powf(-s / 12.0), s, ix)).collect();
+    merge_stretches(SWEEP.iter().flat_map(|&s| trip_scan_pitch(pk, 2f64.powf(-s / 12.0), s, ix)).collect())
+}
+
+/// The same place found at several pitches or offsets: keep the strongest; neighbouring offsets of one
+/// track that touch in the suspect become one stretch (as scan_song).
+fn merge_stretches(mut all: Vec<Stretch>) -> Vec<Stretch> {
     all.sort_by(|a, b| b.votes.cmp(&a.votes).then(a.semis.abs().partial_cmp(&b.semis.abs()).unwrap()));
     let mut kept: Vec<Stretch> = Vec::new();
     for s in all { if !kept.iter().any(|k| k.track == s.track && s.q_start <= k.q_end && k.q_start <= s.q_end) { kept.push(s); } }
@@ -960,6 +988,210 @@ fn trip_scan_song(pk: &[(i32, i32)], ix: &TripIndex) -> Vec<Stretch> {
     }
     merged.sort_by(|a, b| b.votes.cmp(&a.votes));
     merged
+}
+
+// ── Two-step check (2026-10-15): the full catalogue in seconds, not minutes ─────────────────
+// Bandlab serves ~2,700 small reads a second however many are asked at once, and a whole song at 9
+// pitches touches ~670k buckets of the 30 GB index — 4 minutes. Instead:
+//   1. a SAMPLE index in memory — 1 in R words (all their postings), ~3.7 GB at R = 8 — names the
+//      candidate recordings: any (track, offset) with ≥ K sampled votes;
+//   2. each candidate is checked against ALL its words, rebuilt from its peaks (one read each from
+//      the peaks store), with exactly the full index's rules — the same stop words (the full index's
+//      words in more than FP_STOP postings, listed once by `stopwords`), the same stretches.
+// So a recording that step 1 names gets exactly the answer the full on-disk scan gives; only one
+// that step 1 misses is lost — measured with `twoeval` against the full scan.
+//   fp_match stopwords <full index dir> <out stop.u32> [stop, default FP_STOP / 400]
+//   fp_match twoeval <sample dir> <stop.u32> <peaks dir> <queries peaks.bin> <queries.json> <out.tsv> [K | full]
+//   fp_match serve2 <sample dir> <stop.u32> <peaks dir>
+
+/// Is word h in the 1-in-R sample? Its low bits — mix32 spreads them evenly.
+#[inline]
+fn in_sample(h: u32, r: u32) -> bool { h & (r - 1) == 0 }
+
+fn stopwords(dir: &str, out_path: &str, stop: usize) {
+    use std::io::Read;
+    let t0 = Instant::now();
+    let bucket: Vec<u64> = fs::read(format!("{dir}/bucket.u64")).expect("bucket.u64").chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect();
+    let mut f = std::io::BufReader::with_capacity(1 << 26, fs::File::open(format!("{dir}/rows.u64")).unwrap());
+    let mut words: Vec<u32> = Vec::new();
+    let mut buf: Vec<u8> = Vec::new();
+    for b in 0..(1usize << 24) {
+        let n = (bucket[b + 1] - bucket[b]) as usize;
+        buf.resize(n * 8, 0);
+        f.read_exact(&mut buf).unwrap();
+        let mut i = 0;
+        while i < n {
+            let lo8 = buf[i * 8 + 7]; // the row's top byte = the word's low 8 bits
+            let mut j = i;
+            while j < n && buf[j * 8 + 7] == lo8 { j += 1; }
+            if j - i > stop { words.push(((b as u32) << 8) | lo8 as u32); }
+            i = j;
+        }
+        if b % (1 << 21) == 0 && b > 0 { eprintln!("[stopwords] {}/8 · {:.0} s", b >> 21, t0.elapsed().as_secs_f64()); }
+    }
+    let mut b = Vec::with_capacity(words.len() * 4);
+    for w in &words { b.extend_from_slice(&w.to_le_bytes()); }
+    fs::write(out_path, b).unwrap();
+    eprintln!("[stopwords] {} words in more than {stop} postings · {:.0} s", words.len(), t0.elapsed().as_secs_f64());
+}
+
+struct TwoStep { sample: TripIndex, r: u32, stop: Vec<u32>, pidx: Vec<u64>, pdat: fs::File, k: u32 }
+
+impl TwoStep {
+    fn open(sample_dir: &str, stop_path: &str, peaks_dir: &str, k: u32) -> TwoStep {
+        let r: u32 = fs::read_to_string(format!("{sample_dir}/sample.txt")).map(|s| s.trim().parse().unwrap()).unwrap_or(1);
+        let stop = read_u32s(std::path::Path::new(stop_path)); // sorted: written bucket by bucket
+        let pidx: Vec<u64> = fs::read(format!("{peaks_dir}/peaks.idx")).expect("peaks.idx").chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect();
+        let pdat = fs::File::open(format!("{peaks_dir}/peaks.dat")).expect("peaks.dat");
+        TwoStep { sample: TripIndex::open(sample_dir, true), r, stop, pidx, pdat, k }
+    }
+    fn peaks(&self, tr: usize) -> Vec<(i32, i32)> {
+        use std::os::unix::fs::FileExt;
+        let (a, z) = (self.pidx[tr] as usize, self.pidx[tr + 1] as usize);
+        let mut buf = vec![0u8; (z - a) * 4];
+        self.pdat.read_exact_at(&mut buf, a as u64 * 4).unwrap();
+        buf.chunks_exact(4).map(|c| (u16::from_le_bytes([c[0], c[1]]) as i32, u16::from_le_bytes([c[2], c[3]]) as i32)).collect()
+    }
+}
+
+/// Returns the stretches and how many candidates step 1 named.
+fn two_scan_song(pk: &[(i32, i32)], ts: &TwoStep, threads: usize) -> (Vec<Stretch>, usize) {
+    // every pitch's query words, minus the full index's stop words, sorted by word for the join
+    let mut qw: Vec<(f64, Vec<(u32, i32)>)> = Vec::new();
+    let mut sp = Vec::new();
+    for &s in &SWEEP {
+        let mut hh = Vec::new();
+        scaled(pk, 2f64.powf(-s / 12.0), &mut sp);
+        design_hashes(&sp, Design::TripQ, &mut hh);
+        hh.retain(|&(h, t)| (0..=MAX_FRAMES).contains(&t) && ts.stop.binary_search(&h).is_err());
+        hh.sort_unstable();
+        qw.push((s, hh));
+    }
+    // step 1: candidates from the in-memory sample
+    let mut cand: Vec<u32> = Vec::new();
+    for (_, hh) in &qw {
+        let words: Vec<u32> = hh.iter().filter(|x| in_sample(x.0, ts.r)).map(|x| x.0).collect();
+        let rows = ts.sample.fetch(&words);
+        let mut v: Vec<u64> = Vec::new();
+        for &(h, t) in hh.iter().filter(|x| in_sample(x.0, ts.r)) {
+            let Some(bucket) = rows.get(&(h >> 8)) else { continue };
+            let wk = ts.sample.word_key(h);
+            let lo = bucket.partition_point(|&r| ts.sample.row_word(r) < wk);
+            let hi = bucket.partition_point(|&r| ts.sample.row_word(r) <= wk);
+            for &r in &bucket[lo..hi] {
+                v.push((ts.sample.row_track(r) << 17) | ((r & 0xffff) as i32 - t + 65_536) as u64);
+            }
+        }
+        v.sort_unstable();
+        let mut i = 0;
+        while i < v.len() {
+            let mut j = i;
+            while j < v.len() && v[j] == v[i] { j += 1; }
+            if (j - i) as u32 >= ts.k { cand.push((v[i] >> 17) as u32); }
+            i = j;
+        }
+    }
+    cand.sort_unstable(); cand.dedup();
+    // step 2: each candidate against all its words, at every pitch
+    let next = AtomicUsize::new(0);
+    let found: Vec<Stretch> = std::thread::scope(|sc| {
+        let hs: Vec<_> = (0..threads.max(1)).map(|_| sc.spawn(|| {
+            let (mut mine, mut cw) = (Vec::new(), Vec::new());
+            loop {
+                let c = next.fetch_add(1, Ordering::Relaxed);
+                if c >= cand.len() { break; }
+                let tr = cand[c];
+                design_hashes(&ts.peaks(tr as usize), Design::TripQ, &mut cw);
+                cw.retain(|&(_, t)| (0..65536).contains(&t));
+                cw.sort_unstable();
+                for (s, hh) in &qw {
+                    let mut v: Vec<u64> = Vec::new();
+                    let (mut a, mut b) = (0, 0);
+                    while a < hh.len() && b < cw.len() {
+                        let (ha, hb) = (hh[a].0, cw[b].0);
+                        if ha < hb { a += 1; } else if hb < ha { b += 1; } else {
+                            let b_end = cw[b..].partition_point(|x| x.0 == ha) + b;
+                            while a < hh.len() && hh[a].0 == ha {
+                                let t = hh[a].1;
+                                for &(_, ti) in &cw[b..b_end] { v.push(((tr as u64) << 33) | ((ti - t + 65_536) as u64) << 16 | t as u64); }
+                                a += 1;
+                            }
+                            b = b_end;
+                        }
+                    }
+                    mine.extend(stretches(&mut v, *s));
+                }
+            }
+            mine
+        })).collect();
+        hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
+    });
+    (merge_stretches(found), cand.len())
+}
+
+/// Lab clips through the two-step check (K = a number) or through the full scan of the same index
+/// (`full`, for a sample dir built with sample 1) → one line per clip: name · candidates · ms · matches.
+fn twoeval(sample_dir: &str, stop_path: &str, peaks_dir: &str, qpeaks: &str, qnames: &str, out_path: &str, mode: &str) {
+    let t0 = Instant::now();
+    let k = mode.parse().unwrap_or(0);
+    let ts = TwoStep::open(sample_dir, stop_path, peaks_dir, k);
+    let names = read_strings(&format!("{peaks_dir}/names.json"));
+    let (qpk, qn) = (read_peaks(qpeaks), read_strings(qnames));
+    eprintln!("[twoeval] sample 1/{} loaded, {} stop words, {} clips · {:.0} s", ts.r, ts.stop.len(), qpk.len(), t0.elapsed().as_secs_f64());
+    let next = AtomicUsize::new(0);
+    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let mut lines: Vec<(usize, String)> = std::thread::scope(|sc| {
+        let hs: Vec<_> = (0..threads).map(|_| sc.spawn(|| {
+            let mut mine = Vec::new();
+            loop {
+                let q = next.fetch_add(1, Ordering::Relaxed);
+                if q >= qpk.len() { break; }
+                let t = Instant::now();
+                let (found, nc) = if k == 0 { (trip_scan_song(&qpk[q], &ts.sample), 0) } else { two_scan_song(&qpk[q], &ts, 1) };
+                let m: Vec<String> = found.iter().take(5).map(|s| format!("{}:{}:{}", names[s.track as usize], s.votes, s.semis)).collect();
+                mine.push((q, format!("{}\t{}\t{}\t{}", qn[q], nc, t.elapsed().as_millis(), m.join(" "))));
+            }
+            mine
+        })).collect();
+        hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
+    });
+    lines.sort_by_key(|l| l.0);
+    fs::write(out_path, lines.iter().map(|l| l.1.as_str()).collect::<Vec<_>>().join("\n") + "\n").unwrap();
+    eprintln!("[twoeval] {mode}: {} clips in {:.0} s → {out_path}", lines.len(), t0.elapsed().as_secs_f64());
+}
+
+/// serve for the two-step check: the same stdin/stdout protocol as `serve`.
+fn serve2(sample_dir: &str, stop_path: &str, peaks_dir: &str) {
+    use std::io::{BufRead, Write};
+    let t0 = Instant::now();
+    let k = std::env::var("FP_CAND_VOTES").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+    let ts = TwoStep::open(sample_dir, stop_path, peaks_dir, k);
+    let names = read_strings(&format!("{peaks_dir}/names.json"));
+    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    eprintln!("[fp_match] two-step: sample 1/{}, {} tracks loaded in {:.1} s", ts.r, names.len(), t0.elapsed().as_secs_f64());
+    let fr = |f: f64| (f * 256.0 / 11025.0 * 100.0).round() / 100.0;
+    let mut out = std::io::stdout().lock();
+    writeln!(out, "{{\"ready\":true,\"tracks\":{},\"rows\":0}}", names.len()).unwrap();
+    out.flush().unwrap();
+    for line in std::io::stdin().lock().lines() {
+        let line = match line { Ok(l) => l, Err(_) => break };
+        let (id, path) = match line.split_once('\t') { Some(x) => x, None => continue };
+        let t = Instant::now();
+        let reply = match std::panic::catch_unwind(|| read_peaks(path)) {
+            Ok(mut p) if p.len() == 1 => {
+                let pk = p.remove(0);
+                let (found, nc) = two_scan_song(&pk, &ts, threads);
+                let items: Vec<String> = found.iter().take(50).map(|s| format!(
+                    "{{\"file\":{},\"votes\":{},\"semitones\":{:?},\"q_start\":{},\"q_end\":{},\"ref_start\":{}}}",
+                    json_str(names.get(s.track as usize).map(|n| n.as_str()).unwrap_or("")), s.votes, s.semis,
+                    fr(s.q_start as f64), fr(s.q_end as f64), fr(s.q_start as f64 + s.off as f64))).collect();
+                format!("{{\"id\":{},\"ok\":true,\"peaks\":{},\"candidates\":{nc},\"ms\":{},\"matches\":[{}]}}", json_str(id), pk.len(), t.elapsed().as_millis(), items.join(","))
+            }
+            _ => format!("{{\"id\":{},\"ok\":false,\"error\":\"unreadable peaks file\"}}", json_str(id)),
+        };
+        writeln!(out, "{reply}").unwrap();
+        out.flush().unwrap();
+    }
 }
 
 fn diskscan(dir: &str, names_path: &str, memory: bool, files: &[String]) {
@@ -983,8 +1215,17 @@ fn diskscan(dir: &str, names_path: &str, memory: bool, files: &[String]) {
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     if a.get(1).map(|s| s.as_str()) == Some("buildtrip") && a.len() >= 5 { buildtrip(&a[2], &a[3], &a[4]); return; }
+    if a.get(1).map(|s| s.as_str()) == Some("stopwords") && a.len() >= 4 {
+        stopwords(&a[2], &a[3], a.get(4).and_then(|s| s.parse().ok()).unwrap_or_else(stop_postings));
+        return;
+    }
+    if a.get(1).map(|s| s.as_str()) == Some("twoeval") && a.len() >= 8 {
+        twoeval(&a[2], &a[3], &a[4], &a[5], &a[6], &a[7], a.get(8).map(|s| s.as_str()).unwrap_or("2"));
+        return;
+    }
+    if a.get(1).map(|s| s.as_str()) == Some("serve2") && a.len() >= 5 { serve2(&a[2], &a[3], &a[4]); return; }
     if a.get(1).map(|s| s.as_str()) == Some("buildfull") && a.len() >= 4 {
-        buildfull(&a[2], &a[3], a.get(4).and_then(|s| s.parse().ok()).unwrap_or(32));
+        buildfull(&a[2], &a[3], a.get(4).and_then(|s| s.parse().ok()).unwrap_or(32), a.get(5).and_then(|s| s.parse().ok()).unwrap_or(1));
         return;
     }
     if a.get(1).map(|s| s.as_str()) == Some("diskscan") && a.len() >= 6 { diskscan(&a[2], &a[3], a[4] == "memory", &a[5..]); return; }
