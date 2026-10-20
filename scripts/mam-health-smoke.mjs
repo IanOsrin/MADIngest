@@ -8,7 +8,7 @@
  * Afrikaans Version, Part 1/2, Instrumentaal) or two artists on one title.
  * Offline: no FileMaker, no metadata cache.
  */
-import { analyse, cacheDiffer } from '../lib/mam-health.js'
+import { analyse, cacheDiffer, rowsOf } from '../lib/mam-health.js'
 
 let failures = 0
 const check = (name, actual, expected) => {
@@ -23,8 +23,9 @@ const song = (cat, title, over = {}) => ({ id: String(++n), cat, albumId: '', se
 const album = (cat, over = {}) => ({ id: 'A' + cat, cat, ref: cat, albumId: '', title: 'Album', artist: 'Artist',
   upc: '6009555162274', trackCount: '', artwork: true, ...over })
 const run = async (songs, albums) => {
-  const { results } = await analyse({ songs, albums, cacheLoaded: false }, () => [])
-  return (code) => results.get(code)
+  const analysis = await analyse({ songs, albums, cacheLoaded: false }, () => [])
+  const get = (code) => Object.assign(rowsOf(analysis, code), { extra: analysis.results.get(code).extra })
+  return get
 }
 
 console.log('silent on a healthy album')
