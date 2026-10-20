@@ -2762,6 +2762,7 @@ function healthInit() { if (!_healthLoaded) { _healthLoaded = true; healthLoad(f
 function healthProgress(p) {
   if (!p) return ''
   if (p.cache) return 'the server has just started, so the Cache loads first (about two minutes) — the song count appears after that'
+  if (p.checking) return p.checking.total ? `checking albums — ${Number(p.checking.done).toLocaleString()} of ${Number(p.checking.total).toLocaleString()}` : 'all read — running the checks'
   const part =(n, t, what) => t ? `${Number(n).toLocaleString()} of ${Number(t).toLocaleString()} ${what}` : ''
   return [part(p.songs, p.songsTotal, 'songs'), part(p.albums, p.albumsTotal, 'albums')].filter(Boolean).join(' · ')
 }

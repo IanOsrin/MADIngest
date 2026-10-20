@@ -22,14 +22,14 @@ const song = (cat, title, over = {}) => ({ id: String(++n), cat, albumId: '', se
   isrc: '', duration: '0:03:00', sources: 'cat', audio: true, cacheDiff: null, ...over })
 const album = (cat, over = {}) => ({ id: 'A' + cat, cat, ref: cat, albumId: '', title: 'Album', artist: 'Artist',
   upc: '6009555162274', trackCount: '', artwork: true, ...over })
-const run = (songs, albums) => {
-  const { results } = analyse({ songs, albums, cacheLoaded: false }, () => [])
+const run = async (songs, albums) => {
+  const { results } = await analyse({ songs, albums, cacheLoaded: false }, () => [])
   return (code) => results.get(code)
 }
 
 console.log('silent on a healthy album')
 {
-  const r = run([song('OK 1', 'One', { seq: '1', isrc: 'ZAC032300553' }), song('OK 1', 'Two', { seq: '2', isrc: 'ZAC032300554' })],
+  const r = await run([song('OK 1', 'One', { seq: '1', isrc: 'ZAC032300553' }), song('OK 1', 'Two', { seq: '2', isrc: 'ZAC032300554' })],
                 [album('OK 1', { trackCount: '2' })])
   for (const code of ['isrc-shared', 'isrc-missing', 'duplicate-songs', 'album-doubled', 'track-count', 'repeated-sequence', 'songs-without-album', 'catalogue-doubled', 'no-audio'])
     check(`${code} empty`, r(code).length, 0)
@@ -43,7 +43,7 @@ console.log('RPM 5008: every track twice')
     song('RPM 5008', 'Chim Chim Cherree', { seq: '5', duration: '0:02:47', artist: 'Alabama Studentegeselskap' }),
     song('RPM 5008', "Chim Chim Cheree (From 'Mary Poppins')", { seq: '5', isrc: 'ZAC032300557', duration: '0:02:47', artist: 'Alabama Studentegeselskap' }),
   ]
-  const r = run(songs, [album('RPM 5008', { trackCount: '4' })])
+  const r = await run(songs, [album('RPM 5008', { trackCount: '4' })])
   check('album-doubled', r('album-doubled').map((x) => x.catalogue), ['RPM 5008'])
   check('duplicate-songs rows', r('duplicate-songs').length, 4)
   check('repeated-sequence', r('repeated-sequence').length, 1)
@@ -51,7 +51,7 @@ console.log('RPM 5008: every track twice')
 
 console.log('versions are not duplicates')
 {
-  const r = run([
+  const r = await run([
     song('V 1', 'Paloma Blanca (English Version)'), song('V 1', 'Paloma Blanca (Afrikaans Version)'),
     song('V 1', 'Mkudu Special, Pt. 1'), song('V 1', 'Mkudu Special, Pt. 2'),
     song('V 1', 'Die Brief'), song('V 1', 'Die Brief (Instrumentaal)'),
@@ -64,7 +64,7 @@ console.log('versions are not duplicates')
 
 console.log('numbered titles are different tracks (live sweep, 2026-10-20)')
 {
-  const r = run([song('N 1', 'Medley 1'), song('N 1', 'Medley 4:'), song('N 1', 'Kwadril Nr. 1'), song('N 1', 'Kwadril Nr. 3'),
+  const r = await run([song('N 1', 'Medley 1'), song('N 1', 'Medley 4:'), song('N 1', 'Kwadril Nr. 1'), song('N 1', 'Kwadril Nr. 3'),
                  song('N 1', 'GMVF09690'), song('N 1', 'GMVF09692'), song('N 1', 'Title 01'), song('N 1', 'Title 04')],
                 [album('N 1'), album('Penny Penny')])
   check('no duplicates', r('duplicate-songs').length, 0)
@@ -74,7 +74,7 @@ console.log('numbered titles are different tracks (live sweep, 2026-10-20)')
 console.log('singles and albums (2026-10-20)')
 {
   const big = (cat, titles) => titles.map((t, i) => song(cat, t[0], { seq: String(i + 1), isrc: t[1] || '', artist: t[2] || 'Artist' }))
-  const r = run([
+  const r = await run([
     song('BB 1023', 'Mamaile', { isrc: 'ZAC032600198' }),
     ...big('4885-90', [['Mamaile', ''], ['Other A'], ['Other B']]),
     song('P 157', 'Elke Tweede Man', { isrc: 'ZAC032310733' }),
@@ -96,21 +96,21 @@ console.log('singles and albums (2026-10-20)')
 
 console.log('spelling slip is still a duplicate')
 {
-  const r = run([song('BRS 271', 'Die Boemelaar', { isrc: 'USA2P1441524' }), song('BRS 271', 'Die Boomelaar', { isrc: 'USA2P1441524' })], [album('BRS 271')])
+  const r = await run([song('BRS 271', 'Die Boemelaar', { isrc: 'USA2P1441524' }), song('BRS 271', 'Die Boomelaar', { isrc: 'USA2P1441524' })], [album('BRS 271')])
   check('duplicate', r('duplicate-songs').length, 2)
   check('not a shared-ISRC error', r('isrc-shared').length, 0)
 }
 
 console.log('BRS 275: one ISRC on two different songs')
 {
-  const r = run([song('BRS 275', 'Adios, Adios Paloma', { isrc: 'ZAC032310585' }), song('BRS 275', 'Be My Love', { isrc: 'ZAC032310585' })], [album('BRS 275')])
+  const r = await run([song('BRS 275', 'Adios, Adios Paloma', { isrc: 'ZAC032310585' }), song('BRS 275', 'Be My Love', { isrc: 'ZAC032310585' })], [album('BRS 275')])
   check('isrc-shared', r('isrc-shared').length, 2)
   check('not a duplicate', r('duplicate-songs').length, 0)
 }
 
 console.log('album records')
 {
-  const r = run(
+  const r = await run(
     [song('RPM 1006-S RPM 1006-S', 'A'), song('NO ALBUM 1', 'B'), song('TC 1', 'C'), song('TC 1', 'D')],
     [album('RPM 1006-S RPM 1006-S'), album('TC 1', { trackCount: '24' }), album('EMPTY 1'), album('DUP 1', { id: 'x1' }), album('DUP 1', { id: 'x2' }),
      album('NOUPC 1', { upc: '' }), album('JUNK 1', { upc: '#N/A' })])
@@ -125,7 +125,7 @@ console.log('album records')
 
 console.log('ISRC shape')
 {
-  const r = run([song('I 1', 'A', { isrc: 'ZAC032300553' }), song('I 1', 'B', { isrc: 'ZA-C03-2300554' }), song('I 1', 'C', { isrc: 'ZAC0323' }), song('I 1', 'D', { isrc: '#N/A' })], [album('I 1')])
+  const r = await run([song('I 1', 'A', { isrc: 'ZAC032300553' }), song('I 1', 'B', { isrc: 'ZA-C03-2300554' }), song('I 1', 'C', { isrc: 'ZAC0323' }), song('I 1', 'D', { isrc: '#N/A' })], [album('I 1')])
   check('isrc-format', r('isrc-format').map((x) => x.title), ['C'])
   check('code-junk ISRC', r('code-junk').map((x) => x.title), ['D'])
 }
@@ -146,7 +146,7 @@ console.log('against the Cache: near titles, ISRCs, songs the Cache does not lis
   check('song the Cache does not list', differ('BRS 214', fd('Superman', 'ZAC030100420')), { notListed: true })
   check('album not in Cache', differ('NOPE 1', fd('Superman', 'X')), null)
 
-  const r = run([
+  const r = await run([
     song('BRS 214', 'What A wonderful Wold', { isrc: 'ZAC032207666', cacheDiff: { fields: ['ISRC', 'Genre'], by: 'near title', cacheTitle: 'What a Wonderful World', cacheIsrc: 'ZAC032207665' } }),
     song('BRS 214', 'Superman', { isrc: 'ZAC030100420', cacheDiff: { notListed: true } }),
     song('BRS 214', 'Twice', { cacheDiff: { fields: ['ISRC'], by: 'title', cacheTitle: 'Twice', cacheIsrc: 'X' } }),
