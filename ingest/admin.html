@@ -335,7 +335,7 @@
     <nav class="admin-tabs">
       <button class="tab-btn active" data-group="catalogue" data-tab="album" onclick="showTab('album')">MAM</button>
       <button class="tab-btn" data-group="catalogue" data-tab="catalog" onclick="showTab('catalog')">Source</button>
-      <button class="tab-btn" data-group="catalogue" data-tab="health" onclick="showTab('health')">Data Health</button>
+      <button class="tab-btn" data-group="catalogue" data-tab="health" onclick="showTab('health')">MAM Health</button>
       <button class="tab-btn" data-group="catalogue" data-tab="dbsync" onclick="showTab('dbsync')">DB Sync</button>
       <button class="tab-btn" data-group="catalogue" data-tab="excel" onclick="showTab('excel')">Metadata Cache</button>
       <button class="tab-btn" data-group="addmusic" data-tab="addalbum" onclick="showTab('addalbum')" hidden>Add Album</button>
@@ -362,22 +362,22 @@
     </nav>
 
     <!-- ── Catalog tab ──────────────────────────────────────── -->
-    <!-- ── Data Health tab ─────────────────────────────────────
-         Catalogue-wide data faults, read from the MAD website's Postgres
-         mirror. Never touches FileMaker: scanning 67k FM records is slow and
-         once froze logins across all three databases, while the same questions
-         cost seconds here. Everything shown is as of the mirror's last sync. -->
+    <!-- ── MAM Health tab ──────────────────────────────────────
+         Catalogue-wide data faults in Music Arena Master, read live (paced, in
+         pages of 500 — see lib/mam-health.js) and held in memory until Refresh.
+         Replaced the Catalogue health check over the website's mirror
+         (Ian, 2026-10-20). Read-only. -->
     <div id="tab-health" class="tab-panel">
       <div style="display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:6px">
-        <h3 style="margin:0">Catalogue data health</h3>
+        <h3 style="margin:0">MAM health</h3>
         <span id="healthMeta" style="font-size:0.78rem;color:var(--muted)"></span>
         <span style="flex:1"></span>
-        <button class="btn" onclick="healthLoad(true)" title="Re-sweep the catalogue now">↻ Refresh</button>
+        <button class="btn" id="healthRefreshBtn" onclick="healthLoad(true)" title="Read MAM again now (about two minutes)">↻ Refresh</button>
       </div>
       <p style="font-size:0.82rem;color:var(--muted);margin:0 0 14px 0;max-width:760px">
-        What is wrong with the <strong>data</strong>, catalogue-wide. Click any row to see the
-        records and download them. Read from the website's nightly mirror of MadStreamer —
-        no load on FileMaker, and nothing here writes anything.
+        What is wrong with the data in <strong>Music Arena Master</strong>, and where it differs from the Cache.
+        Click any row to see the records and download them. Read straight from MAM —
+        nothing here writes anything.
       </p>
       <div id="healthContent"><div class="empty-state" style="color:var(--muted);padding:40px 0;text-align:center">Loading…</div></div>
       <div id="healthDrill" style="margin-top:18px"></div>
@@ -2745,11 +2745,12 @@ async function ccaImport() {
   } finally { btn.disabled = false }
 }
 
-// ── Data Health tab ──────────────────────────────────────────────────────────
-// Catalogue-wide data faults from the Postgres mirror. The sweep takes ~90s on
-// a cold start, so the endpoint answers 202 while it runs and we poll — a
-// silent minute-and-a-half request is indistinguishable from a hang.
-let _healthLoaded = false, _healthPoll = null
+// ── MAM Health tab ───────────────────────────────────────────────────────────
+// Catalogue-wide data faults in Music Arena Master (lib/mam-health.js). Reading
+// MAM takes about two minutes, so the endpoint answers 202 while it runs and we
+// poll — showing how far it has got, because a silent wait looks like a hang.
+// Read-only: nothing on this tab writes to any database.
+let _healthLoaded = false, _healthPoll = null, _healthWasRefreshing = false
 const _HSEV = {
   error: { c: 'var(--red)',    label: 'Error' },
   warn:  { c: 'var(--amber)',  label: 'Check' },
@@ -2758,15 +2759,23 @@ const _HSEV = {
 
 function healthInit() { if (!_healthLoaded) { _healthLoaded = true; healthLoad(false) } }
 
+function healthProgress(p) {
+  if (!p) return ''
+  if (p.cache) return 'the server has just started, so the Cache loads first (about two minutes) — the song count appears after that'
+  const part =(n, t, what) => t ? `${Number(n).toLocaleString()} of ${Number(t).toLocaleString()} ${what}` : ''
+  return [part(p.songs, p.songsTotal, 'songs'), part(p.albums, p.albumsTotal, 'albums')].filter(Boolean).join(' · ')
+}
+
 async function healthLoad(refresh) {
   const box = $('healthContent')
-  if (refresh) box.innerHTML = '<div class="loading-state"><span class="spin">⟳</span> Re-sweeping the catalogue…</div>'
+  if (refresh) box.innerHTML = '<div class="loading-state"><span class="spin">⟳</span> Reading MAM again…</div>'
   try {
-    const res  = await api(`/api/ingest/health/summary${refresh ? '?refresh=1' : ''}`)
+    const res  = await api(`/api/ingest/mam-health/summary${refresh ? '?refresh=1' : ''}`)
     const data = await res.json()
 
     if (res.status === 202 || data.building) {
-      box.innerHTML = '<div class="loading-state"><span class="spin">⟳</span> Sweeping 67,000 records — about half a minute the first time…</div>'
+      const prog = healthProgress(data.progress)
+      box.innerHTML = `<div class="loading-state"><span class="spin">⟳</span> Reading MAM — about two minutes${prog ? ` · ${esc(prog)}` : ''}…</div>`
       clearTimeout(_healthPoll); _healthPoll = setTimeout(() => healthLoad(false), 4000)
       return
     }
@@ -2775,16 +2784,22 @@ async function healthLoad(refresh) {
       return
     }
     healthRender(data)
+    // A refresh runs behind the last result; keep polling until it lands, and
+    // say so when it does — otherwise the numbers change with no sign of it.
+    const btn = $('healthRefreshBtn')
+    if (btn) { btn.disabled = !!data.refreshing; btn.textContent = data.refreshing ? '⟳ Reading MAM…' : '↻ Refresh' }
+    if (data.refreshing) { clearTimeout(_healthPoll); _healthPoll = setTimeout(() => healthLoad(false), 4000) }
+    else if (_healthWasRefreshing) showToast('MAM Health updated — these are the new numbers')
+    _healthWasRefreshing = !!data.refreshing
   } catch (err) {
     box.innerHTML = `<div class="empty-state" style="color:var(--red);padding:30px 0">${esc(err.message)}</div>`
   }
 }
 
 function healthRender(d) {
-  const synced = d.syncedAt ? new Date(d.syncedAt).toLocaleString() : 'unknown'
   $('healthMeta').innerHTML =
-    `${d.total.toLocaleString()} records · mirror synced ${esc(synced)} · swept in ${(d.tookMs / 1000).toFixed(1)}s` +
-    (d.refreshing ? ' · <span style="color:var(--amber)">refreshing…</span>' : '')
+    `${d.total.toLocaleString()} songs · ${d.albums.toLocaleString()} albums · read ${esc(new Date(d.builtAt).toLocaleString())} in ${Math.round(d.tookMs / 1000)}s` +
+    (d.refreshing ? ` · <span style="color:var(--amber)">reading again… ${esc(healthProgress(d.progress))}</span>` : '')
 
   const groups = []
   for (const c of d.checks) {
@@ -2793,13 +2808,16 @@ function healthRender(d) {
     g.rows.push(c)
   }
 
-  $('healthContent').innerHTML = groups.map(g => `
+  const banner = d.refreshing ? `<div style="margin-bottom:14px;padding:9px 12px;border:1px solid var(--amber);border-radius:6px;font-size:0.82rem">
+      <span class="spin">⟳</span> <strong>Reading MAM again</strong>${healthProgress(d.progress) ? ` — ${esc(healthProgress(d.progress))}` : ''}.
+      The numbers below are from ${esc(new Date(d.builtAt).toLocaleTimeString())}; they update by themselves when the read finishes (about two minutes).</div>` : ''
+  $('healthContent').innerHTML = banner + groups.map(g => `
     <div style="margin-bottom:18px">
       <div style="font-size:0.74rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px">${esc(g.name)}</div>
       <div class="table-wrap"><table>
         <tbody>${g.rows.map(c => {
           const sev = _HSEV[c.severity] || _HSEV.info
-          if (c.error) return `<tr><td colspan="3" style="color:var(--red);font-size:0.8rem">${esc(c.label)} — could not be computed: ${esc(c.error)}</td></tr>`
+          if (c.error) return `<tr><td colspan="3" style="color:var(--amber);font-size:0.8rem">${esc(c.label)} — ${esc(c.error)}</td></tr>`
           const zero = c.count === 0
           return `<tr class="health-row" data-check="${esc(c.code)}"
                       style="cursor:${zero ? 'default' : 'pointer'};opacity:${zero ? '.45' : '1'}"
@@ -2819,41 +2837,30 @@ function healthRender(d) {
     </div>`).join('')
 }
 
-let _healthRows = [], _healthCode = '', _healthHasMore = false
+let _healthRows = [], _healthCode = '', _healthTotal = 0
 async function healthDrill(code) {
   const box = $('healthDrill')
   box.innerHTML = '<div class="loading-state"><span class="spin">⟳</span> Loading records…</div>'
   box.scrollIntoView({ behavior: 'smooth', block: 'start' })
   try {
-    const res = await api(`/api/ingest/health/records?check=${encodeURIComponent(code)}&limit=500`)
+    const res = await api(`/api/ingest/mam-health/records?check=${encodeURIComponent(code)}&limit=500`)
     const d   = await res.json()
     if (!d.ok) throw new Error(d.reason || 'lookup failed')
-    _healthRows = d.rows; _healthCode = code; _healthHasMore = !!d.hasMore
+    _healthRows = d.rows; _healthCode = code; _healthTotal = d.total
     if (!d.rows.length) { box.innerHTML = '<div class="empty-state" style="color:var(--muted)">Nothing to show.</div>'; return }
     const cols = d.columns
-    _healthFix = d.fixFields || []
-    // A row can only be corrected if it carries a record id. The album-level
-    // checks group by catalogue instead, and expand to their tracks.
-    const perRecord = cols.includes('fm_record_id')
-    const catCol    = cols.find(c => /^cat/i.test(c))
     box.innerHTML = `
       <div style="display:flex;gap:10px;align-items:baseline;margin-bottom:8px;flex-wrap:wrap">
         <h3 style="margin:0">${esc(d.label)}</h3>
-        <span style="font-size:0.78rem;color:var(--muted)">showing ${d.rows.length}${d.hasMore ? ' of more — download for the full list' : ''}</span>
+        <span style="font-size:0.78rem;color:var(--muted)">showing ${d.rows.length.toLocaleString()} of ${d.total.toLocaleString()}${d.hasMore ? ' — download for the full list' : ''}</span>
         <span style="flex:1"></span>
         <button class="btn btn-gold" onclick="healthExport(this)">⬇ Excel</button>
         <button class="btn" onclick="$('healthDrill').innerHTML=''">Close</button>
       </div>
-      ${_healthFix.length ? `<div style="font-size:0.8rem;color:var(--muted);margin-bottom:8px;padding:7px 10px;border:1px solid var(--border);border-radius:6px">
-        ✎ ${_healthFix.map(esc).join(' and ')} ${_healthFix.length > 1 ? 'are' : 'is'} editable here — click a value, type, press Enter.
-        Saves to <strong>MadStreamer</strong>. These counts come from the nightly mirror, so they will not drop until the next sync.
-      </div>` : ''}
-      ${!perRecord && catCol ? `<div style="font-size:0.8rem;color:var(--muted);margin-bottom:8px">
-        This check flags a whole catalogue — click one to open its tracks and edit them.</div>` : ''}
+      <div style="font-size:0.8rem;color:var(--muted);margin-bottom:8px">Click a catalogue to see all of that album's songs.</div>
       <div class="table-wrap" style="max-height:520px;overflow:auto"><table>
         <thead><tr>${cols.map(c => `<th>${esc(c.replace(/_/g, ' '))}</th>`).join('')}</tr></thead>
-        <tbody>${d.rows.map((r, ri) => `<tr>${cols.map(c =>
-          healthCellHtml(r, c, ri, perRecord, catCol)).join('')}</tr>`).join('')}</tbody>
+        <tbody>${d.rows.map(r => `<tr>${cols.map(c => healthCellHtml(r, c)).join('')}</tr>`).join('')}</tbody>
       </table></div>
       <div id="healthCatDrill" style="margin-top:12px"></div>`
   } catch (err) {
@@ -2861,106 +2868,66 @@ async function healthDrill(code) {
   }
 }
 
-let _healthFix = []     // fields this check allows editing
-
-/**
- * One drill-in cell. Editable when the check declares the field fixable and the
- * row carries a record id; a catalogue cell on an album-level check becomes the
- * link that expands its tracks.
- */
-function healthCellHtml(r, col, ri, perRecord, catCol) {
-  const mono = /id|isrc|upc|cat|seq/i.test(col) ? ';font-family:monospace;font-size:0.75rem' : ''
+/** One drill-in cell; the catalogue opens that album's songs. */
+function healthCellHtml(r, col) {
+  const mono = /id|isrc|catalogue|seq/i.test(col) ? ';font-family:monospace;font-size:0.75rem' : ''
   const val  = r[col] ?? ''
-
-  // Album-level check: the catalogue is the way in to the tracks.
-  if (!perRecord && col === catCol && val) {
+  if (col === 'catalogue' && val) {
     return `<td style="font-size:0.8rem${mono}">
       <button type="button" style="background:none;border:none;padding:0;color:var(--gold);cursor:pointer;font:inherit;text-decoration:underline"
         onclick="healthOpenCatalogue(${JSON.stringify(String(val)).replace(/"/g, '&quot;')})">${esc(val)}</button></td>`
   }
-
-  // The column aliases are lowercase ("isrc"); fixFields are FileMaker's names.
-  const field = _healthFix.find(f => f.toLowerCase().replace(/[^a-z]/g, '') === String(col).toLowerCase().replace(/[^a-z]/g, ''))
-  if (!perRecord || !field || !r.fm_record_id) {
-    return `<td style="font-size:0.8rem${mono}">${esc(val)}</td>`
-  }
-  return `<td style="font-size:0.8rem${mono};padding:0">
-    <input value="${esc(val)}" data-rec="${esc(r.fm_record_id)}" data-field="${esc(field)}" data-was="${esc(val)}"
-      onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}"
-      onblur="healthSaveCell(this)"
-      style="width:100%;box-sizing:border-box;background:transparent;border:1px solid transparent;border-radius:4px;padding:4px 6px;color:inherit;font:inherit"
-      onfocus="this.style.borderColor='var(--gold)';this.style.background='var(--bg)'"
-      placeholder="—"></td>`
+  return `<td style="font-size:0.8rem${mono}">${esc(val)}</td>`
 }
 
-/** Save one corrected field to MadStreamer. No-ops when nothing changed. */
-async function healthSaveCell(input) {
-  input.style.borderColor = 'transparent'
-  input.style.background  = 'transparent'
-  const value = input.value.trim()
-  if (value === (input.dataset.was ?? '')) return          // untouched
-  input.disabled = true
-  try {
-    const res = await api('/api/ingest/health/record', 'PATCH', {
-      check: _healthCode, recordId: input.dataset.rec, field: input.dataset.field, value })
-    const d = await res.json()
-    if (!d.ok) throw new Error(d.reason || `HTTP ${res.status}`)
-    input.dataset.was = value
-    input.style.borderColor = 'var(--green)'
-    setTimeout(() => { input.style.borderColor = 'transparent' }, 1200)
-    showToast(`${d.field} saved — ${d.note}`)
-  } catch (err) {
-    input.value = input.dataset.was ?? ''                  // put the old value back
-    input.style.borderColor = 'var(--red)'
-    showToast(err.message, 'error')
-  } finally {
-    input.disabled = false
-  }
-}
-
-/** Expand one flagged catalogue into its tracks, editable the same way. */
+/** Expand one catalogue into its songs, in track order. */
 async function healthOpenCatalogue(cat) {
   const box = $('healthCatDrill')
-  box.innerHTML = '<div class="loading-state"><span class="spin">⟳</span> Loading tracks…</div>'
+  box.innerHTML = '<div class="loading-state"><span class="spin">⟳</span> Loading songs…</div>'
+  box.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
   try {
-    const res = await api(`/api/ingest/health/catalogue?cat=${encodeURIComponent(cat)}`)
+    const res = await api(`/api/ingest/mam-health/catalogue?cat=${encodeURIComponent(cat)}`)
     const d   = await res.json()
     if (!d.ok) throw new Error(d.reason || 'lookup failed')
-    if (!d.rows.length) { box.innerHTML = '<div class="empty-state" style="color:var(--muted)">No tracks found.</div>'; return }
-    const cols = d.columns
+    if (!d.rows.length) { box.innerHTML = `<div class="empty-state" style="color:var(--muted)">No songs under ${esc(cat)}.</div>`; return }
+    const cols = d.columns.filter(c => c !== 'catalogue')
     box.innerHTML = `
       <div style="display:flex;gap:10px;align-items:baseline;margin-bottom:6px">
-        <strong style="font-size:0.9rem">${esc(d.catalogue)} — ${d.rows.length} track(s)</strong>
+        <strong style="font-size:0.9rem">${esc(d.catalogue)} — ${d.rows.length} song(s)</strong>
+        <span style="font-size:0.78rem;color:var(--muted)">${esc(d.album || '')}</span>
         <span style="flex:1"></span>
         <button class="btn btn-ghost" style="font-size:0.76rem" onclick="$('healthCatDrill').innerHTML=''">Close</button>
       </div>
       <div class="table-wrap" style="max-height:420px;overflow:auto"><table>
-        <thead><tr>${cols.map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead>
-        <tbody>${d.rows.map((r, ri) => `<tr>${cols.map(c =>
-          healthCellHtml(r, c, ri, true, null)).join('')}</tr>`).join('')}</tbody>
+        <thead><tr>${cols.map(c => `<th>${esc(c.replace(/_/g, ' '))}</th>`).join('')}</tr></thead>
+        <tbody>${d.rows.map(r => `<tr>${cols.map(c => healthCellHtml(r, c)).join('')}</tr>`).join('')}</tbody>
       </table></div>`
   } catch (err) {
     box.innerHTML = `<div class="empty-state" style="color:var(--red)">${esc(err.message)}</div>`
   }
 }
 
-// Built client-side with ExcelJS, same as the Cache Viewer and the XRef export —
-// the server never holds a spreadsheet in memory, which is what OOM-killed the
-// small instance before. Exports the FULL result set, not just the rows on
-// screen, so the download is the worklist rather than a sample.
+// Built client-side with ExcelJS, same as the Cache Viewer — the server never
+// holds a spreadsheet in memory, which is what OOM-killed the small instance
+// before. Fetched in pages of 5,000 so the download is the whole worklist.
 async function healthExport(btn) {
   if (!_healthRows.length) return
   if (btn) { btn.disabled = true; btn.textContent = '⟳ Building…' }
   try {
     let rows = _healthRows
-    if (_healthHasMore) {
-      const res = await api(`/api/ingest/health/records?check=${encodeURIComponent(_healthCode)}&limit=5000`)
-      const d = await res.json()
-      if (d.ok) rows = d.rows
+    if (_healthTotal > rows.length) {
+      rows = []
+      for (let off = 0; off < _healthTotal; off += 5000) {
+        if (btn) btn.textContent = `⟳ ${off.toLocaleString()} / ${_healthTotal.toLocaleString()}`
+        const res = await api(`/api/ingest/mam-health/records?check=${encodeURIComponent(_healthCode)}&limit=5000&offset=${off}`)
+        const d = await res.json()
+        if (!d.ok) throw new Error(d.reason || 'lookup failed')
+        rows.push(...d.rows)
+      }
     }
-    const cols = Object.keys(rows[0])
+    const cols = [...new Set(rows.flatMap(r => Object.keys(r)))]
     const wb = new ExcelJS.Workbook()
-    const ws = wb.addWorksheet('Data health')
+    const ws = wb.addWorksheet('MAM health')
     ws.addRow(cols.map(c => c.replace(/_/g, ' ')))
     ws.getRow(1).font = { bold: true }
     for (const r of rows) ws.addRow(cols.map(c => r[c] ?? null))
@@ -2968,10 +2935,10 @@ async function healthExport(btn) {
     const buf = await wb.xlsx.writeBuffer()
     const url = URL.createObjectURL(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }))
     const a = document.createElement('a')
-    a.href = url; a.download = `MadStreamer_${_healthCode}_${new Date().toISOString().slice(0, 10)}.xlsx`
+    a.href = url; a.download = `MAM_${_healthCode}_${new Date().toISOString().slice(0, 10)}.xlsx`
     a.click()
     URL.revokeObjectURL(url)
-    showToast(`${rows.length} rows exported`)
+    showToast(`${rows.length.toLocaleString()} rows exported`)
   } catch (err) {
     showToast('xlsx build failed: ' + err.message, 'error')
   } finally {

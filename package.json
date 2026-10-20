@@ -15,7 +15,7 @@
     "artwork:smoke": "node scripts/artwork-keys-smoke.mjs",
     "search:smoke": "node scripts/search-merge-smoke.mjs",
     "health:smoke": "node scripts/data-health-smoke.mjs",
-    "health:catalogue-smoke": "node scripts/catalogue-health-smoke.mjs"
+    "health:mam-smoke": "node scripts/mam-health-smoke.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.0.0",
