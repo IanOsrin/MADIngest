@@ -3395,8 +3395,12 @@ async function pkFolderChosen(files) {
       try {
         const ab = await f.arrayBuffer(), info = pkWavInfo(ab)
         const sha = [...new Uint8Array(await crypto.subtle.digest('SHA-256', ab))].map(b => b.toString(16).padStart(2, '0')).join('')
+        // Track = the part just before "NNbpm" (read from the right), so a song name with its own " - " works —
+        // same rule as mad-mixer scripts/packs-folder.mjs parseName.
         const nm = f.name.replace(/\.wav$/i, '').split(' - ')
-        rows.push({ f, file: f.name, song: pkClean(nm[0] || ''), track: pkClean(nm[1] || 'Loop'), bytes: f.size, seconds: Math.round(info.seconds * 1000) / 1000,
+        const bi = nm.findIndex((p, i) => i > 0 && /^\d+(\.\d+)?\s*bpm$/i.test(p.trim()))
+        const song = bi > 1 ? nm.slice(0, bi - 1).join(' - ') : (nm[0] || ''), track = bi > 1 ? nm[bi - 1] : (nm[1] || 'Loop')
+        rows.push({ f, file: f.name, song: pkClean(song), track: pkClean(track), bytes: f.size, seconds: Math.round(info.seconds * 1000) / 1000,
           tempo: info.tempo, beats: info.beats, key: `packs/${id}/${sha.slice(0, 10)}-${pkSafe(f.name)}` })
       } catch (e) { warns.push(`${folder}/${f.name}: ${e.message} — skipped`) }
     }
