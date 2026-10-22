@@ -5897,7 +5897,7 @@ function abRenderPage() {
       <button class="btn btn-ghost" onclick="abLinkAudio()">🔗 Link audio from Vision</button>
       <span style="display:inline-flex;gap:4px;align-items:center">
         <button class="btn btn-ghost" onclick="abDownloadAlbum()" title="Download every track from its Vision master, as one zip">⬇ Download album (zip)</button>
-        <select id="abDlFormat" title="WAV = the Vision master as-is. MP3 = 320k made from that master as it downloads. Also used by each track's ⬇."
+        <select id="abDlFormat" title="WAV = the Vision master as-is. MP3 = the website MP3 from S3 (made from the Vision master only if a track has none). Also used by each track's ⬇."
           onchange="try{localStorage.setItem('abDlFormat',this.value)}catch{}"
           style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 6px;color:var(--text);font-family:inherit;font-size:0.8rem">
           <option value="wav">WAV</option><option value="mp3">MP3</option>
@@ -5932,7 +5932,7 @@ function abAudioCellHtml(t, ti) {
       ⬆<input type="file" accept=".wav,.flac,.aif,.aiff" style="display:none" onchange="abUploadAudio(${ti}, this.files[0])">
     </label>
     <button class="btn btn-ghost" style="padding:0 7px;font-size:0.74rem" title="Pick a file already ON Vision (link by reference — no upload)" onclick="abPickVisionFile(${ti})">🔍</button>
-    <button class="btn btn-ghost" style="padding:0 7px;font-size:0.74rem" title="Download this track from its Vision master — WAV or MP3, as picked beside Download album" onclick="abDownload(${ti})">⬇</button>`
+    <button class="btn btn-ghost" style="padding:0 7px;font-size:0.74rem" title="Download this track — WAV master from Vision, or the website MP3, as picked beside Download album" onclick="abDownload(${ti})">⬇</button>`
 }
 
 // Download from MAM: the Vision masters, one track or the whole album as a zip.
@@ -5942,9 +5942,13 @@ function abAudioCellHtml(t, ti) {
 // album page stays put).
 const abFmtMB = (b) => b >= 1e9 ? `${(b / 1e9).toFixed(2)} GB` : `${Math.round(b / 1e6)} MB`
 const abDlFormat = () => $('abDlFormat')?.value === 'mp3' ? 'mp3' : 'wav'
-// An MP3's size depends on the master (16- or 24-bit, mono or stereo), so only
-// the masters' size is known up front.
-const abDlSize = (wavBytes, fmt) => fmt === 'mp3' ? `from ${abFmtMB(wavBytes)} of masters — the MP3s come out much smaller` : abFmtMB(wavBytes)
+// Where each MP3 comes from: the website MP3 on S3, or (only when a track has
+// none) made from its Vision master while it downloads.
+function abDlMp3Sources(files) {
+  const s3 = files.filter(f => f.source === 's3').length, made = files.length - s3
+  return [s3 ? `${s3} website MP3${s3 === 1 ? '' : 's'} from S3` : '',
+          made ? `${made} made from the Vision master${made === 1 ? '' : 's'} (no website MP3)` : ''].filter(Boolean).join(', ')
+}
 let _abDlPoll = null
 
 function abDlStart(ticket) {
@@ -5965,8 +5969,10 @@ async function abDownload(ti) {
     if (!data.ok) throw new Error(`Can't download #${t.sequence_no ?? '?'} ${t.title || ''}: ${data.missing[0]?.reason || 'no Vision master'}`)
     const f = data.files[0]
     abDlStart(data.ticket)
-    status.textContent = `⬇ ${f.name} (${abDlSize(f.size || 0, fmt)}) — your browser's downloads show the progress`
-      + (fmt === 'mp3' ? '; the MP3 is made as it downloads' : '')
+    status.textContent = `⬇ ${f.name}`
+      + (fmt === 'mp3' && f.source !== 's3' ? ' — no website MP3, so it is made from the Vision master as it downloads'
+         : ` (${abFmtMB(f.size || 0)}${fmt === 'mp3' ? ', the website MP3' : ''})`)
+      + " — your browser's downloads show the progress"
   } catch (err) {
     status.textContent = ''
     showToast(err.message, 'error')
@@ -5994,8 +6000,8 @@ async function abDownloadAlbum() {
       return
     }
     panel.innerHTML = `<div style="border:1px solid var(--border);border-radius:8px;padding:12px">
-      <div><strong>⬇ ${esc(data.zipName)}</strong> — ${data.files.length} track(s) as ${fmt === 'mp3' ? 'MP3 (made from the Vision masters)' : 'WAV'}, ${abDlSize(data.totalBytes, fmt)}</div>
-      <div id="abDlProgress" style="margin-top:6px;font-size:0.82rem;color:var(--muted)">Starting… (Vision reads slowly — roughly a minute per 300 MB)</div>
+      <div><strong>⬇ ${esc(data.zipName)}</strong> — ${data.files.length} track(s) as ${fmt === 'mp3' ? `MP3: ${abDlMp3Sources(data.files)}` : `WAV, ${abFmtMB(data.totalBytes)}`}</div>
+      <div id="abDlProgress" style="margin-top:6px;font-size:0.82rem;color:var(--muted)">Starting…${data.files.some(f => f.source !== 's3') ? ' (Vision reads slowly — roughly a minute per 300 MB)' : ''}</div>
       ${missingHtml}
       <div style="margin-top:8px"><button class="btn btn-ghost" onclick="$('abDlPanel').style.display='none'">Close</button></div></div>`
     abDlStart(data.ticket)
@@ -6012,7 +6018,7 @@ async function abDownloadAlbum() {
         if (p.error) { line.innerHTML = `<span style="color:var(--red)">✗ ${esc(p.error)}</span> — ${p.done} of ${p.files} track(s) had gone through`; clearInterval(_abDlPoll); return }
         if (p.finished) { line.innerHTML = `<span style="color:var(--green,#4a4)">✓ Done</span> — ${p.files} track(s). It's in your Downloads folder.`; clearInterval(_abDlPoll); return }
         const pct = p.total ? Math.min(100, Math.round(p.sent / p.total * 100)) : 0
-        line.textContent = `${pct}% — read ${abFmtMB(p.sent)} of ${abFmtMB(p.total)} from Vision · track ${Math.min(p.done + 1, p.files)} of ${p.files}${p.current ? `: ${p.current}` : ''}`
+        line.textContent = `${pct}% — ${abFmtMB(p.sent)} of ${abFmtMB(p.total)} fetched · track ${Math.min(p.done + 1, p.files)} of ${p.files}${p.current ? `: ${p.current}` : ''}`
       } catch { /* a missed poll is fine; the next one catches up */ }
     }, 2000)
   } catch (err) {

@@ -65,12 +65,12 @@ import { parseIngroovesBuffers, diffAgainstCache } from '../lib/ingrooves-sync.j
 import { readSheet as readClientSheet, diffSheet as diffClientSheet, rowsToAppend as clientRowsToAppend, MATCH_KEYS as SHEET_MATCH_KEYS, UPDATABLE_FIELDS as SHEET_FIELDS } from '../lib/sheet-update.js'
 import { loadVisionIndex, filesForCatalogue, matchTracksToFiles, reindexAfterUpload } from '../lib/gallo-vision-link.js'
 import { visionStat, visionUploadFile, visionList } from '../lib/vision-drive.js'
-import { issueTicket, redeemTicket, ticketProgress, streamVisionZip, streamVisionFile } from '../lib/vision-zip.js'
+import { issueTicket, redeemTicket, ticketProgress, streamVisionZip, streamVisionFile, probeUrls } from '../lib/vision-zip.js'
 import { readVisionWavInfo, buildSoundInfoBlock } from '../lib/wav-info.js'
 import { getXrefStatus, getXrefRows, startXrefRebuild } from '../lib/catalogue-xref.js'
 import { artworkState, artworkImage, copyArtwork } from '../lib/artwork-compare.js'
 import { setAlbumCover } from '../lib/album-cover.js'
-import { fetchCover } from '../lib/cover-url.js'
+import { fetchCover, coverFetchUrls } from '../lib/cover-url.js'
 import { syncMamEdit } from '../lib/mam-streamer-sync.js'
 import { contentDisposition } from '../lib/content-disposition.js'
 import { readTrack, applyFix } from '../lib/track-fix.js'
@@ -2047,12 +2047,12 @@ router.get('/album/track/:recordId/audio', async (req, res) => {
   }
 })
 
-// ── Download from MAM: the album's Vision masters ───────────────────────────
-// One track, or the whole album as a zip; WAV as-is, or MP3 made from the WAV
-// as it streams (Ian, 2026-10-22). Vision
-// is the audio truth, so this reads ONLY the path MAM holds in Audio_Vision_URL
-// — never the S3 MP3 or an old container copy. Read-only: nothing is written to
-// MAM, Vision or anywhere else.
+// ── Download from MAM: WAV masters or website MP3s ──────────────────────────
+// One track, or the whole album as a zip (Ian, 2026-10-22). WAV is the Vision
+// master MAM holds in Audio_Vision_URL — Vision is the audio truth, never an
+// old container copy. MP3 is the website MP3 MAM holds in Audio_S3_URL, made
+// from that Vision WAV only where there is none. Read-only: nothing is written
+// to MAM, Vision, S3 or anywhere else.
 //
 // Two steps, because a download is a browser navigation and cannot carry the
 // admin header: /prepare (admin) checks every track and returns what will and
@@ -2076,7 +2076,11 @@ async function planMamDownload(catalogue, recordId = null, format = 'wav') {
     if (!tracks.length) throw Object.assign(new Error('That song is not on this album in MAM'), { status: 404 })
   }
 
-  // Check every file is really on Vision, four at a time (one small listing each).
+  // Check every file is really there, four at a time (one small request each).
+  // MP3: the website MP3 MAM holds in Audio_S3_URL, fetched through the media
+  // edge first (Amazon Stockholm crawls from the office on a busy line). Only a
+  // track with no website MP3 has one made from its Vision master, and the page
+  // says which (Ian, 2026-10-22: "I assumed it would fetch from S3").
   const checked = new Array(tracks.length)
   let next = 0
   await Promise.all(Array.from({ length: Math.min(4, tracks.length) }, async () => {
@@ -2085,6 +2089,16 @@ async function planMamDownload(catalogue, recordId = null, format = 'wav') {
       const { t, seq } = tracks[i]
       const vision = String(t.audio_url_ref || '').trim()
       const row = { seq, title: t.title || '', recordId: t.fm_record_id, vision: vision || null }
+      row.artist = t.artist_name || albumArtist
+      row.isrc = t.isrc || null
+      checked[i] = row
+      const s3mp3 = String(t.s3_url || '').trim()
+      if (format === 'mp3' && /^https:\/\/.+\.mp3$/i.test(s3mp3)) {
+        const hit = await probeUrls(coverFetchUrls(s3mp3))
+        if (hit) { row.url = hit.url; row.size = hit.size; row.source = 's3'; continue }
+        row.s3Missing = true
+      }
+      row.source = 'vision'
       if (!vision) row.problem = 'no Vision link in MAM (Audio_Vision_URL is empty)'
       else if (/^https?:\/\//i.test(vision)) row.problem = 'MAM points at a web address, not a Vision master'
       else {
@@ -2092,9 +2106,7 @@ async function planMamDownload(catalogue, recordId = null, format = 'wav') {
         if (!st) row.problem = 'the Vision file MAM points at is not there'
         else row.size = st.size
       }
-      row.artist = t.artist_name || albumArtist
-      row.isrc = t.isrc || null
-      checked[i] = row
+      if (row.problem && format === 'mp3') row.problem = `no website MP3${row.s3Missing ? ' (MAM\'s Audio_S3_URL file is not on S3)' : ''}, and ${row.problem}`
     }
   }))
 
@@ -2106,8 +2118,12 @@ async function planMamDownload(catalogue, recordId = null, format = 'wav') {
     let base = dlSafeName(`${String(r.seq).padStart(pad, '0')} ${[r.artist, r.title || 'Untitled'].filter(Boolean).join(' - ')}`).slice(0, 180)
     for (let n = 2; used.has(base.toLowerCase()); n++) base = base.replace(/ \(\d+\)$/, '') + ` (${n})`
     used.add(base.toLowerCase())
-    files.push({ path: r.vision, name: base + ext, size: r.size, seq: r.seq, title: r.title,
-      // MP3s are made from the master as it streams, tagged so a player shows them properly.
+    if (format === 'mp3' && r.source === 's3') {
+      files.push({ url: r.url, name: base + ext, size: r.size, seq: r.seq, title: r.title, source: 's3' })
+      continue
+    }
+    files.push({ path: r.vision, name: base + ext, size: r.size, seq: r.seq, title: r.title, source: 'vision',
+      // An MP3 made from the master as it streams, tagged so a player shows it properly.
       mp3: format === 'mp3' ? { title: r.title, artist: r.artist, album: albumTitle, album_artist: albumArtist,
                                 track: r.seq, TSRC: r.isrc } : null })
   }
@@ -2122,11 +2138,11 @@ router.post('/album/download/prepare', adminAuth, async (req, res) => {
   if (!catalogue) return res.status(400).json({ error: 'catalogue required' })
   if (!['wav', 'mp3'].includes(format)) return res.status(400).json({ error: 'format must be wav or mp3' })
   try {
-    if (format === 'mp3') await ensureFfmpeg()
     const plan = await planMamDownload(catalogue, recordId, format)
+    if (plan.files.some(f => f.mp3)) await ensureFfmpeg()
     const out = {
       ok: true, single: plan.single, format, zipName: plan.zipName,
-      files: plan.files.map(f => ({ seq: f.seq, title: f.title, name: f.name, size: f.size })),
+      files: plan.files.map(f => ({ seq: f.seq, title: f.title, name: f.name, size: f.size, source: f.source })),
       missing: plan.missing,
       totalBytes: plan.files.reduce((n, f) => n + (f.size || 0), 0),
     }
