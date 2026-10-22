@@ -19,17 +19,14 @@
 import os from 'os'
 import path from 'path'
 import fs from 'fs'
-import crypto from 'crypto'
-import { PassThrough } from 'stream'
 import { Router } from 'express'
 import multer from 'multer'
-import archiver from 'archiver'
 import { adminAuth } from '../lib/admin-auth.js'
 import {
   visionStatus, visionList, visionStat, visionListKeys,
-  visionUploadFile, visionDownloadTo, visionDelete, visionRename,
+  visionUploadFile, visionDelete, visionRename,
 } from '../lib/vision-drive.js'
-import { contentDisposition } from '../lib/content-disposition.js'
+import { issueTicket, redeemTicket, streamVisionZip } from '../lib/vision-zip.js'
 import { relinkMamAfterRename } from '../lib/vision-mam-relink.js'
 
 const router = Router()
@@ -130,48 +127,24 @@ router.post('/upload', adminAuth, upload.array('files', 200), async (req, res) =
 })
 
 /**
- * A zip download has to be a plain browser navigation — fetching it instead
- * would hold a multi-GB archive in the tab's memory before saving. But a
- * navigation cannot carry an Authorization header, and putting the admin secret
- * in the query string would write it into browser history, proxies and every
- * access log. So the UI trades the header for a single-use ticket: bound to one
- * path, valid for five minutes, deleted the moment it is redeemed.
+ * A zip download is a plain browser navigation, which cannot carry the admin
+ * header — so the UI trades it for a single-use ticket (lib/vision-zip.js).
  */
-const TICKET_TTL_MS = 5 * 60 * 1000
-const tickets = new Map()   // ticket → { path, expires }
-
-const sweepTickets = () => {
-  const now = Date.now()
-  for (const [t, v] of tickets) if (v.expires < now) tickets.delete(t)
-}
-
 router.post('/download-ticket', adminAuth, (req, res) => {
   if (!guard(req, res)) return
   const rel = String(req.query.path || req.body?.path || '').trim()
   if (!rel || rel.split('/').filter(Boolean).length < 2) {
     return res.status(400).json({ error: 'Pick a folder inside a bucket' })
   }
-  sweepTickets()
-  const ticket = crypto.randomBytes(24).toString('hex')
-  tickets.set(ticket, { path: rel, expires: Date.now() + TICKET_TTL_MS })
-  res.json({ ok: true, ticket, expiresInMs: TICKET_TTL_MS })
+  res.json({ ok: true, ...issueTicket({ kind: 'folder', path: rel }) })
 })
 
-/**
- * Download a whole folder as a zip, streamed. Nothing is buffered: each object
- * is piped from Vision into the archive and out to the browser as it goes, so
- * folder size is bounded by patience rather than by memory.
- *
- * STORE, not deflate — this is overwhelmingly WAV and JPEG, which do not
- * compress meaningfully, and deflating them would just burn CPU on a shared dyno.
- */
+/** Download a whole folder as a zip, streamed (lib/vision-zip.js). */
 router.get('/download-folder', async (req, res) => {
   if (!guard(req, res)) return
-  sweepTickets()
-  const entry = tickets.get(String(req.query.ticket || ''))
-  if (!entry) return res.status(401).json({ error: 'Download link expired or already used — click Download folder again' })
-  tickets.delete(String(req.query.ticket))
-  const rel = entry.path
+  const job = redeemTicket(req.query.ticket)
+  if (job?.kind !== 'folder') return res.status(401).json({ error: 'Download link expired or already used — click Download folder again' })
+  const rel = job.path
   try {
     const keys = await visionListKeys(rel)
     if (!keys.size) return res.status(404).json({ error: 'That folder has no files in it' })
@@ -187,32 +160,14 @@ router.get('/download-folder', async (req, res) => {
     }
 
     const base = rel.replace(/\/$/, '').split('/').filter(Boolean).pop() || 'vision'
-    res.setHeader('Content-Type', 'application/zip')
-    res.setHeader('Content-Disposition', contentDisposition(base + '.zip'))
-
-    const zip = archiver('zip', { store: true })
-    let failed = null
-    zip.on('warning', (e) => console.warn('[vision-util] zip warning:', e.message))
-    zip.on('error', (e) => { failed = e; res.destroy() })
-    zip.pipe(res)
-    // If the user closes the tab, stop pulling objects off Vision.
-    res.on('close', () => { if (!res.writableFinished) zip.abort() })
-
     const prefix = rel.replace(/\/$/, '')
-    for (const fullPath of [...keys.keys()].sort()) {
-      if (failed || res.destroyed) break
-      // Entry names are relative to the folder being zipped, so the archive
-      // opens as that folder rather than a chain of empty parents.
-      const entry = fullPath.startsWith(prefix + '/') ? fullPath.slice(prefix.length + 1) : fullPath.replace(/^\//, '')
-      const pass = new PassThrough()
-      zip.append(pass, { name: entry })
-      // s3DownloadTo pipes with { end: false } and resolves when the source is
-      // spent, so we close the entry ourselves. Backpressure from the archiver
-      // is what paces the whole loop.
-      await visionDownloadTo(fullPath, pass)
-      pass.end()
-    }
-    if (!failed && !res.destroyed) await zip.finalize()
+    // Entry names are relative to the folder being zipped, so the archive
+    // opens as that folder rather than a chain of empty parents.
+    const files = [...keys.keys()].sort().map(fullPath => ({
+      path: fullPath,
+      name: fullPath.startsWith(prefix + '/') ? fullPath.slice(prefix.length + 1) : fullPath.replace(/^\//, ''),
+    }))
+    await streamVisionZip(res, { zipName: base + '.zip', files, log: 'vision-util' })
   } catch (e) {
     console.error('[vision-util] folder download failed:', e.message)
     if (!res.headersSent) res.status(500).json({ error: e.message })

@@ -65,6 +65,7 @@ import { parseIngroovesBuffers, diffAgainstCache } from '../lib/ingrooves-sync.j
 import { readSheet as readClientSheet, diffSheet as diffClientSheet, rowsToAppend as clientRowsToAppend, MATCH_KEYS as SHEET_MATCH_KEYS, UPDATABLE_FIELDS as SHEET_FIELDS } from '../lib/sheet-update.js'
 import { loadVisionIndex, filesForCatalogue, matchTracksToFiles, reindexAfterUpload } from '../lib/gallo-vision-link.js'
 import { visionStat, visionUploadFile, visionList } from '../lib/vision-drive.js'
+import { issueTicket, redeemTicket, ticketProgress, streamVisionZip, streamVisionFile } from '../lib/vision-zip.js'
 import { readVisionWavInfo, buildSoundInfoBlock } from '../lib/wav-info.js'
 import { getXrefStatus, getXrefRows, startXrefRebuild } from '../lib/catalogue-xref.js'
 import { artworkState, artworkImage, copyArtwork } from '../lib/artwork-compare.js'
@@ -2041,6 +2042,124 @@ router.get('/album/track/:recordId/audio', async (req, res) => {
     Readable.fromWeb(obj.Body.transformToWebStream ? obj.Body.transformToWebStream() : obj.Body).pipe(res)
   } catch (err) {
     console.error(`[MAM audio] ${req.params.recordId}:`, err.message)
+    if (!res.headersSent) res.status(502).json({ error: err.message })
+    else res.destroy()
+  }
+})
+
+// ── Download from MAM: the album's Vision masters ───────────────────────────
+// One track, or the whole album as a zip; WAV as-is, or MP3 made from the WAV
+// as it streams (Ian, 2026-10-22). Vision
+// is the audio truth, so this reads ONLY the path MAM holds in Audio_Vision_URL
+// — never the S3 MP3 or an old container copy. Read-only: nothing is written to
+// MAM, Vision or anywhere else.
+//
+// Two steps, because a download is a browser navigation and cannot carry the
+// admin header: /prepare (admin) checks every track and returns what will and
+// will NOT be included plus a single-use ticket; /download?ticket= streams it
+// (lib/vision-zip.js — the same path as the Vision Utility's folder zip).
+
+// Characters a Mac or Windows file name cannot hold, plus control characters.
+const dlSafeName = (s) => String(s || '').replace(/[/\\:*?"<>|\x00-\x1f]/g, ' ').replace(/\s+/g, ' ').trim().replace(/^\.+/, '')
+
+async function planMamDownload(catalogue, recordId = null, format = 'wav') {
+  const found = await getMamAlbumForEdit(catalogue)
+  if (!found) throw Object.assign(new Error(`No album ${catalogue} in Music Arena Master`), { status: 404 })
+  const first = found.tracks[0] || {}
+  const albumTitle  = first.album_title || ''
+  const albumArtist = first.album_artist || first.artist_name || ''
+  const pad = Math.max(2, String(Math.max(...found.tracks.map((t, i) => t.sequence_no ?? i + 1), 1)).length)
+
+  let tracks = found.tracks.map((t, i) => ({ t, seq: t.sequence_no ?? i + 1 }))
+  if (recordId != null) {
+    tracks = tracks.filter(x => String(x.t.fm_record_id) === String(recordId))
+    if (!tracks.length) throw Object.assign(new Error('That song is not on this album in MAM'), { status: 404 })
+  }
+
+  // Check every file is really on Vision, four at a time (one small listing each).
+  const checked = new Array(tracks.length)
+  let next = 0
+  await Promise.all(Array.from({ length: Math.min(4, tracks.length) }, async () => {
+    while (next < tracks.length) {
+      const i = next++
+      const { t, seq } = tracks[i]
+      const vision = String(t.audio_url_ref || '').trim()
+      const row = { seq, title: t.title || '', recordId: t.fm_record_id, vision: vision || null }
+      if (!vision) row.problem = 'no Vision link in MAM (Audio_Vision_URL is empty)'
+      else if (/^https?:\/\//i.test(vision)) row.problem = 'MAM points at a web address, not a Vision master'
+      else {
+        const st = await visionStat(vision)
+        if (!st) row.problem = 'the Vision file MAM points at is not there'
+        else row.size = st.size
+      }
+      row.artist = t.artist_name || albumArtist
+      row.isrc = t.isrc || null
+      checked[i] = row
+    }
+  }))
+
+  const used = new Set()
+  const files = [], missing = []
+  for (const r of checked) {
+    if (r.problem) { missing.push({ seq: r.seq, title: r.title, reason: r.problem, vision: r.vision }); continue }
+    const ext = format === 'mp3' ? '.mp3' : (r.vision.match(/\.([a-z0-9]{2,5})$/i)?.[0] || '.wav').toLowerCase()
+    let base = dlSafeName(`${String(r.seq).padStart(pad, '0')} ${[r.artist, r.title || 'Untitled'].filter(Boolean).join(' - ')}`).slice(0, 180)
+    for (let n = 2; used.has(base.toLowerCase()); n++) base = base.replace(/ \(\d+\)$/, '') + ` (${n})`
+    used.add(base.toLowerCase())
+    files.push({ path: r.vision, name: base + ext, size: r.size, seq: r.seq, title: r.title,
+      // MP3s are made from the master as it streams, tagged so a player shows them properly.
+      mp3: format === 'mp3' ? { title: r.title, artist: r.artist, album: albumTitle, album_artist: albumArtist,
+                                track: r.seq, TSRC: r.isrc } : null })
+  }
+  const zipName = dlSafeName([catalogue, albumArtist, albumTitle, format === 'mp3' ? 'MP3' : ''].filter(Boolean).join(' - ')).slice(0, 180) + '.zip'
+  return { catalogue, single: recordId != null, format, zipName, files, missing }
+}
+
+router.post('/album/download/prepare', adminAuth, async (req, res) => {
+  const catalogue = String(req.body?.catalogue || '').trim()
+  const recordId = req.body?.recordId != null && req.body.recordId !== '' ? String(req.body.recordId) : null
+  const format = String(req.body?.format || 'wav').toLowerCase()
+  if (!catalogue) return res.status(400).json({ error: 'catalogue required' })
+  if (!['wav', 'mp3'].includes(format)) return res.status(400).json({ error: 'format must be wav or mp3' })
+  try {
+    if (format === 'mp3') await ensureFfmpeg()
+    const plan = await planMamDownload(catalogue, recordId, format)
+    const out = {
+      ok: true, single: plan.single, format, zipName: plan.zipName,
+      files: plan.files.map(f => ({ seq: f.seq, title: f.title, name: f.name, size: f.size })),
+      missing: plan.missing,
+      totalBytes: plan.files.reduce((n, f) => n + (f.size || 0), 0),
+    }
+    if (!plan.files.length) return res.json({ ...out, ok: false })
+    res.json({ ...out, ...issueTicket({ kind: 'mam-album', plan }) })
+  } catch (err) {
+    console.error(`[MAM download] prepare ${catalogue}:`, err.message)
+    res.status(err.status || 502).json({ error: err.message })
+  }
+})
+
+router.get('/album/download/progress', adminAuth, (req, res) => {
+  res.json({ ok: true, progress: ticketProgress(req.query.ticket) })
+})
+
+router.get('/album/download', async (req, res) => {
+  const ticket = String(req.query.ticket || '')
+  const job = redeemTicket(ticket)
+  if (job?.kind !== 'mam-album') return res.status(401).json({ error: 'Download link expired or already used — click Download again' })
+  const { plan } = job
+  try {
+    if (plan.single) return await streamVisionFile(res, plan.files[0])
+    // Tracks that could not be included travel inside the zip too, so the gap
+    // is still explained when the zip is opened next week on another machine.
+    const extras = plan.missing.length ? [{
+      name: 'NOT INCLUDED.txt',
+      text: `${plan.catalogue}: ${plan.missing.length} track(s) are not in this zip.\r\n\r\n`
+        + plan.missing.map(m => `${m.seq}  ${m.title || '(no title)'} — ${m.reason}${m.vision ? `\r\n    ${m.vision}` : ''}`).join('\r\n')
+        + '\r\n',
+    }] : []
+    await streamVisionZip(res, { zipName: plan.zipName, files: plan.files, extras, ticket, log: 'MAM download' })
+  } catch (err) {
+    console.error(`[MAM download] ${plan.catalogue}:`, err.message)
     if (!res.headersSent) res.status(502).json({ error: err.message })
     else res.destroy()
   }
