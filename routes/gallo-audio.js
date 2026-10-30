@@ -253,7 +253,9 @@ function visionPathOk(rel) {
     } catch { break }
   }
   if (!clean.startsWith('/')) clean = '/' + clean
-  if (clean.includes('..')) return null
+  // Only a ".." FOLDER climbs out of the bucket. Two dots inside a name are a
+  // real title — "1. F.B.A..wav" (Jimmy Nevis) is "F.B.A." + ".wav".
+  if (clean.split('/').includes('..')) return null
   const bucket = clean.split('/').filter(Boolean)[0]
   return VISION_READ_BUCKETS.includes(bucket) ? clean : null
 }
@@ -350,7 +352,7 @@ router.get('/vision-player', async (req, res) => {
     const why = raw === undefined ? 'no path parameter arrived'
       : Array.isArray(raw) ? 'the path parameter arrived more than once'
       : !String(raw).trim() ? 'the path parameter was empty'
-      : String(raw).includes('..') ? 'the path contains ".."'
+      : /(^|\/|%2F)\.\.(\/|%2F|$)/i.test(String(raw)) ? 'the path contains a ".." folder'
       : `bucket "${String(raw).split('/').filter(Boolean)[0] || '?'}" is not a Vision media bucket`
     console.warn('[vision-player] rejected:', why, '| raw:', JSON.stringify(raw)?.slice(0, 300))
     return res.send(`<!doctype html><meta charset="utf-8"><body style="margin:0;padding:12px;font:12px -apple-system,Segoe UI,sans-serif;color:#777">
