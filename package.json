@@ -14,6 +14,7 @@
     "vision": "node scripts/vision-cli.mjs",
     "artwork:smoke": "node scripts/artwork-keys-smoke.mjs",
     "search:smoke": "node scripts/search-merge-smoke.mjs",
+    "vision-index:smoke": "node scripts/vision-index-save-smoke.mjs",
     "health:smoke": "node scripts/data-health-smoke.mjs",
     "health:mam-smoke": "node scripts/mam-health-smoke.mjs"
   },
