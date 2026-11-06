@@ -214,7 +214,7 @@ const trackMeta = (t, rel) => ({
   title:              t.track_title,
   artist:             t.artist_name,
   featured_artist:    t.featured_artist || null,
-  album_artist:       t.artist_name,
+  album_artist:       t.album_artist || t.artist_name,
   album:              t.album_title,
   catalogue_no:       t.catalogue_no || rel.catalogue,
   isrc:               t.isrc,
@@ -276,7 +276,7 @@ const tapeMeta = (rel) => {
   const f = rel.tracks[0] || {}
   return {
     artwork_url: rel.artworkUrl || null,
-    album_artist: f.artist_name, album: f.album_title,
+    album_artist: f.album_artist || f.artist_name, album: f.album_title,
     catalogue_no: rel.catalogue, barcode: rel.barcode,
     year: (datesFor(f).original_release_date || '').slice(0, 4) || null,
     ...datesFor(f),
