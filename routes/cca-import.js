@@ -212,6 +212,7 @@ const trackMeta = (t, rel) => ({
   artwork_url:        rel.artworkUrl || null,
   title:              t.track_title,
   artist:             t.artist_name,
+  featured_artist:    t.featured_artist || null,
   album_artist:       t.artist_name,
   album:              t.album_title,
   catalogue_no:       t.catalogue_no || rel.catalogue,
