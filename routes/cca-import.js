@@ -22,6 +22,7 @@ import { mamSession, makeIdAllocator, albumIdFor, findMamAlbum, findMamCatalogue
          freeAlbumId, createMamAlbum, createMamSong } from '../lib/fm-mam-write.js'
 import { findMamRecordsByCatalogue } from '../lib/fm-mam.js'
 import { languageParts } from '../lib/language-codes.js'
+import { appendNewTracks } from '../lib/metadata-cache.js'
 
 const router = Router()
 
@@ -254,6 +255,23 @@ const trackMeta = (t, rel) => ({
   technical_resource: t.technical_resource,
 })
 
+// One created track as a metadata-cache row (lib/metadata-cache.js field keys).
+// The cache is what the Cache Viewer, Add Album and Vision Import look tracks
+// up in; CCA imports used to land only in FileMaker, so the cache never knew
+// them. Built from the same values just written to the database.
+const cacheRowOf = (m, t) => ({
+  album_title: m.album, album_artist: m.album_artist,
+  release_date: m.release_date, original_release_date: m.original_release_date,
+  catalogue: m.catalogue_no, barcode: m.barcode,
+  language: m.language || m.language_code, audio_language: m.language || m.language_code,
+  isrc: m.isrc, label: m.label, p_line: m.p_line, c_line: m.c_line,
+  track_name: m.title, track_artist: m.artist, featured_artist: m.featured_artist,
+  seq: m.sequence_no, duration: m.duration, genre: m.genre,
+  composer: m.composers, producer: m.producers, publisher: null,
+  parental: m.parental, rights_territories: m.rights_territories,
+  version: t.version_title || null,
+})
+
 const tapeMeta = (rel) => {
   const f = rel.tracks[0] || {}
   return {
@@ -293,6 +311,7 @@ router.post('/create', adminAuth, async (req, res) => {
     console.log(`[cca-import] MAM ids continue from MAST${ids.startedAt.master} / REC${ids.startedAt.rec}`)
   }
   const out = []
+  const cacheRows = []   // every track actually created, for the metadata cache
 
   try {
   for (const rp of paths) {
@@ -336,12 +355,14 @@ router.post('/create', adminAuth, async (req, res) => {
               master_id: ids.nextMaster(), recording_id: ids.nextRecording(),
               sources: 'cca', match_method: 'ddex' })
             created++
+            cacheRows.push(cacheRowOf({ ...m, catalogue_no: catalogue }, t))
           } catch (e) { failures.push({ title: t.track_title, error: e.message }) }
         }
       } else {
         ;({ tapeRecordId } = await createTapeFileRecord(tapeMeta(rel)))
         for (const t of rel.tracks) {
-          try { await createGalloRecord(trackMeta(t, rel)); created++ }
+          const m = trackMeta(t, rel)
+          try { await createGalloRecord(m); created++; cacheRows.push(cacheRowOf(m, t)) }
           catch (e) { failures.push({ title: t.track_title, error: e.message }) }
         }
       }
@@ -390,8 +411,17 @@ router.post('/create', adminAuth, async (req, res) => {
 
   } finally { if (mam) await mam.logout() }
 
+  // Metadata cache: once per run, never per track — each save rewrites the
+  // whole ~43MB store. A cache failure is reported, not fatal: the records are
+  // already in FileMaker.
+  let cache = null
+  if (apply && cacheRows.length) {
+    cache = await appendNewTracks(cacheRows).catch(e => ({ ok: false, error: e.message }))
+    console.log(`[cca-import] metadata cache: ${cache.ok ? `${cache.added} added, ${cache.skipped} already there` : 'FAILED ' + cache.error}`)
+  }
+
   res.json({
-    ok: true, applied: apply, target, releases: out,
+    ok: true, applied: apply, target, releases: out, cache,
     summary: {
       created: out.filter(r => r.status === 'created').length,
       partial: out.filter(r => r.status === 'partial').length,
@@ -403,3 +433,5 @@ router.post('/create', adminAuth, async (req, res) => {
 })
 
 export default router
+// For checking a release's cache rows without importing it.
+export { trackMeta, cacheRowOf }
