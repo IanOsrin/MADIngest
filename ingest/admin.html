@@ -3153,10 +3153,23 @@ async function fpInit() {
       : m.state === 'loading' ? 'Loading the catalogue fingerprints…'
       : '✓ Ready. The first check loads the catalogue fingerprints (about 30 seconds); after that a song takes a few seconds.'
     for (const id of ['fpDrop', 'fpLink', 'fpLinkBtn']) $(id).style.opacity = j.available ? '' : '0.4'
+    _fpReady = !!j.available
     $('fpDrop').style.pointerEvents = j.available ? '' : 'none'; $('fpLink').disabled = $('fpLinkBtn').disabled = !j.available
     fpServerRow(j.server)
   } catch (e) { $('fpStatus').textContent = 'Could not reach the server.' }
 }
+// A file dropped anywhere on this tab must never make the browser open it, even while the drop box is switched
+// off (Ian, 2026-11-10: "it opens a new window with the song"). Dropped beside the box, it is checked all the same.
+let _fpReady = false, _fpWorking = false
+const fpTabOpen = () => $('tab-fpcheck').classList.contains('active')
+window.addEventListener('dragover', (e) => { if (fpTabOpen()) e.preventDefault() })
+window.addEventListener('drop', (e) => {
+  if (!fpTabOpen() || e.defaultPrevented) return
+  e.preventDefault()
+  if (_fpWorking) return
+  if (!_fpReady) { fpBusy(false, '<span style="color:var(--red)">The checker isn’t ready yet. Wait for “Ready” above (switch the fingerprint server on first), then drop the file again.</span>'); return }
+  fpPick(e.dataTransfer.files)
+})
 // The Azure fingerprint server (2026-11-10): it costs money while on, so it has its own switch.
 let _fpSrvPoll = null
 function fpServerRow(s, note) {
@@ -3186,7 +3199,8 @@ async function fpSwitch(to) {
 function fpBusy(on, text) {
   $('fpProgress').style.display = on || text ? 'block' : 'none'
   $('fpProgress').innerHTML = on ? `<span class="spin">⟳</span> ${esc(text || 'Working…')}` : (text || '')
-  $('fpLinkBtn').disabled = on; $('fpDrop').style.pointerEvents = on ? 'none' : ''
+  _fpWorking = !!on
+  $('fpLinkBtn').disabled = on || !_fpReady; $('fpDrop').style.pointerEvents = on || !_fpReady ? 'none' : ''
 }
 async function fpPick(files) {
   const f = files && files[0]; if (!f) return
