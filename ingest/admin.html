@@ -1398,8 +1398,8 @@
           The whole thing is compared with the fingerprints of the Gallo catalogue, pitched up and down two semitones,
           and every stretch that holds a Gallo recording is listed — where it is in your audio, where it comes from in
           the original, and whether it was pitched. Play both to confirm by ear before acting on a match.
-          Works on the office Mac with the Bandlab drive plugged in (that is where the fingerprints are).
         </p>
+        <div id="fpServer" style="display:none;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:12px;font-size:0.84rem"></div>
         <div id="fpStatus" style="font-size:0.8rem;color:var(--muted);margin-bottom:12px">Checking…</div>
         <div id="fpDrop" onclick="document.getElementById('fpFile').click()"
              ondragover="event.preventDefault();this.style.borderColor='var(--gold)'" ondragleave="this.style.borderColor=''"
@@ -3154,7 +3154,34 @@ async function fpInit() {
       : '✓ Ready. The first check loads the catalogue fingerprints (about 30 seconds); after that a song takes a few seconds.'
     for (const id of ['fpDrop', 'fpLink', 'fpLinkBtn']) $(id).style.opacity = j.available ? '' : '0.4'
     $('fpDrop').style.pointerEvents = j.available ? '' : 'none'; $('fpLink').disabled = $('fpLinkBtn').disabled = !j.available
+    fpServerRow(j.server)
   } catch (e) { $('fpStatus').textContent = 'Could not reach the server.' }
+}
+// The Azure fingerprint server (2026-11-10): it costs money while on, so it has its own switch.
+let _fpSrvPoll = null
+function fpServerRow(s, note) {
+  const el = $('fpServer'); clearTimeout(_fpSrvPoll)
+  if (!s || !s.canSwitch) { el.style.display = 'none'; el.innerHTML = ''; return }
+  const off = s.power === 'off', ready = s.power === 'on' && s.service === 'ready'
+  const busy = s.power === 'starting' || s.power === 'stopping' || (s.power === 'on' && !ready) || s.power === 'unknown'
+  const text = s.power === 'unknown' ? (s.error ? `<span style="color:var(--red)">${esc(s.error)}</span>` : '<span class="spin">⟳</span> Checking…')
+    : ready ? '<strong style="color:#5cb85c">On and ready</strong>'
+    : off ? '<strong>Off</strong>'
+    : s.power === 'stopping' ? '<span class="spin">⟳</span> Switching off…'
+    : '<span class="spin">⟳</span> Starting, about a minute…'
+  const btn = off ? `<button class="btn btn-gold" onclick="fpSwitch('on')">Switch on</button>`
+    : ready ? `<button class="btn btn-ghost" onclick="fpSwitch('off')">Switch off</button>` : ''
+  el.style.display = 'flex'
+  el.innerHTML = `<span>Fingerprint server: ${text}</span>${btn}<span style="color:var(--muted);font-size:0.75rem">About $0.13 an hour while on. Please switch it off when you’re done; it also switches itself off at 11pm.</span>${note ? `<span style="color:var(--red)">${esc(note)}</span>` : ''}`
+  if (busy && $('tab-fpcheck').classList.contains('active')) _fpSrvPoll = setTimeout(fpInit, 4000)
+}
+async function fpSwitch(to) {
+  $('fpServer').querySelectorAll('button').forEach((b) => { b.disabled = true })
+  try {
+    const j = await (await api(`/api/fingerprint/server/${to}`, 'POST', {})).json()
+    if (!j.ok) throw new Error(j.error)
+    fpInit()
+  } catch (e) { const s = await (await api('/api/fingerprint/status')).json().catch(() => ({})); fpServerRow(s.server, e.message) }
 }
 function fpBusy(on, text) {
   $('fpProgress').style.display = on || text ? 'block' : 'none'
