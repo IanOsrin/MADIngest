@@ -1912,7 +1912,7 @@
           <strong style="font-size:0.82rem">Utility</strong>
           <input type="file" id="viUploadInput" multiple style="display:none" onchange="viUpload()">
           <button class="btn" onclick="document.getElementById('viUploadInput').click()" id="viUploadBtn"
-                  title="Pick files on this computer and upload them into the folder you are viewing">&#8593; Upload files here</button>
+                  title="Pick one or more files on this computer and upload them into the folder you are viewing">&#128187; Upload files from this computer</button>
           <input type="file" id="viUploadDirInput" webkitdirectory multiple style="display:none" onchange="viUploadFolder()">
           <button class="btn" onclick="document.getElementById('viUploadDirInput').click()" id="viUploadDirBtn"
                   title="Pick a folder on this computer: everything inside it, sub-folders included, goes into the folder you are viewing">&#128187; Upload a folder from this computer</button>
@@ -10603,7 +10603,7 @@ async function viMakeFolder() {
     const j = await r.json()
     if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
     await viLoad(j.path)
-    status.innerHTML = `<span style="color:var(--gold)">${gfEsc(j.note)} — you are in it now; use ↑ Upload files here.</span>`
+    status.innerHTML = `<span style="color:var(--gold)">${gfEsc(j.note)} — you are in it now; use the 💻 Upload buttons to fill it.</span>`
   } catch (err) {
     status.innerHTML = `<span style="color:var(--red)">Could not make the folder: ${gfEsc(err.message)}</span>`
   }
