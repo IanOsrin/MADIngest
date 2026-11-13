@@ -3570,6 +3570,8 @@ function _removeTab(name) {
     // Delete is off on hosted by default. Hide the buttons rather than let
     // someone type a folder name into a confirm prompt only to be refused.
     if (data && data.visionDeleteEnabled === false) window.viDeleteEnabled = false
+    // …except inside the folders the server allows (Mad Mixer's Samples, Ian 2026-11-13).
+    if (data && Array.isArray(data.visionDeleteAllow)) window.viDeleteAllow = data.visionDeleteAllow
   } catch { /* health unreachable — leave the tabs as-is */ }
 })()
 
@@ -10447,7 +10449,7 @@ async function viLoad(p) {
         <td style="white-space:nowrap">
           ${e.type === 'file' ? `<button class="btn" onclick="viGet(${i})">Download</button>` : ''}
           <button class="btn btn-ghost" onclick="viRename(${i})" title="Rename or move">Rename</button>
-          ${window.viDeleteEnabled === false ? '' :
+          ${!viCanDelete(viJoin(viCurrentPath, e.name)) ? '' :
             `<button class="btn btn-ghost" onclick="viDelete(${i})" title="Delete permanently" style="color:var(--red)">Delete</button>`}
         </td>
         <td style="text-align:left" id="viStat${i}" class="muted"></td>
@@ -10660,8 +10662,8 @@ async function viRename(i) {
     })
     const j = await r.json()
     if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    await viLoad(viCurrentPath)        // refresh first: it rewrites the status line
     status.innerHTML = `<span style="color:var(--gold)">${gfEsc(j.note)}</span>`
-    viLoad(viCurrentPath)
   } catch (err) {
     status.innerHTML = `<span style="color:var(--red)">Rename failed: ${gfEsc(err.message)}</span>`
   }
@@ -10685,14 +10687,20 @@ async function viDelete(i) {
     })
     const j = await r.json()
     if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    await viLoad(viCurrentPath)        // refresh first: it rewrites the status line
     status.innerHTML = `<span style="color:var(--gold)">${gfEsc(j.note)}</span>`
-    viLoad(viCurrentPath)
   } catch (err) {
     status.innerHTML = `<span style="color:var(--red)">Delete failed: ${gfEsc(err.message)}</span>`
   }
 }
 
 function viJoin(base, name) { return (base === '/' ? '' : base) + '/' + name }
+// Delete shows where the server will allow it: everywhere when delete is on, else only inside its allowed folders.
+function viCanDelete(p) {
+  if (window.viDeleteEnabled !== false) return true
+  const norm = '/' + String(p).normalize('NFC').split('/').filter(Boolean).join('/') + '/'
+  return (window.viDeleteAllow || []).some(a => norm.startsWith(a) && norm !== a)
+}
 function viOpen(i) { viLoad(viJoin(viCurrentPath, viEntries[i].name)) }
 function viUp() {
   const parts = viCurrentPath.split('/').filter(Boolean)

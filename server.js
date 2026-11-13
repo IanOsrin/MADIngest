@@ -23,7 +23,7 @@ import visionUploadRouter from './routes/vision-upload.js'
 import visionLinkRouter from './routes/vision-link.js'
 import mamCacheRouter from './routes/mam-cache.js'
 import tagsRouter from './routes/tags.js'
-import visionUtilityRouter, { VISION_DELETE_ENABLED } from './routes/vision-utility.js'
+import visionUtilityRouter, { VISION_DELETE_ENABLED, VISION_DELETE_ALLOW } from './routes/vision-utility.js'
 import galloAudioRouter from './routes/gallo-audio.js'
 import heroBannerRouter from './routes/hero-banner.js'
 import coversRouter from './routes/covers.js'
@@ -203,7 +203,7 @@ app.use('/api/hq-stems', hqStemsRouter)   // Mad Mixer HQ stems: Vision → S3 h
 if (YOUTUBE_ENABLED) app.use('/api/youtube', youtubeRouter)   // local-only — see YOUTUBE_ENABLED above
 
 // Health check — youtubeEnabled lets the admin UI hide the tab on hosted
-app.get('/health', (req, res) => res.json({ ok: true, service: 'gallo-ingest', youtubeEnabled: YOUTUBE_ENABLED, ddexEnabled: DDEX_ENABLED, visionUploadEnabled: VISION_UPLOAD_ENABLED, visionDeleteEnabled: VISION_DELETE_ENABLED }))
+app.get('/health', (req, res) => res.json({ ok: true, service: 'gallo-ingest', youtubeEnabled: YOUTUBE_ENABLED, ddexEnabled: DDEX_ENABLED, visionUploadEnabled: VISION_UPLOAD_ENABLED, visionDeleteEnabled: VISION_DELETE_ENABLED, visionDeleteAllow: VISION_DELETE_ENABLED ? [] : VISION_DELETE_ALLOW }))
 
 // Root + shorthand redirects
 app.get('/', (req, res) => res.redirect('/ingest/admin'))

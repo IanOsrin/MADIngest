@@ -47,6 +47,22 @@ export const VISION_DELETE_ENABLED =
   process.env.VISION_DELETE_ENABLED === 'true' ||
   (process.env.VISION_DELETE_ENABLED !== 'false' && process.env.NODE_ENV !== 'production')
 
+/**
+ * Folders where delete works even while it is off (Ian, 2026-11-13: "I need to be able to delete files in this
+ * tab" — chose "only inside Samples" so the masters stay protected). Mad Mixer's one-shot library is curated by
+ * hand, so a file there must be removable from the hosted tab. Comma-separated Vision paths; only things INSIDE
+ * them can go, never the folder itself. VISION_DELETE_ALLOW="" turns it off.
+ */
+export const VISION_DELETE_ALLOW = String(process.env.VISION_DELETE_ALLOW ?? '/gallo-music-files-wavs/Samples/')
+  .split(',').map((s) => s.trim().replace(/^\/+|\/+$/g, '')).filter(Boolean).map((s) => `/${s.normalize('NFC')}/`)
+export function deleteAllowedAt(rel) {
+  if (VISION_DELETE_ENABLED) return true
+  const parts = String(rel || '').normalize('NFC').split('/').filter(Boolean)
+  if (!parts.length || parts.includes('..') || parts.includes('.')) return false
+  const p = `/${parts.join('/')}/`
+  return VISION_DELETE_ALLOW.some((a) => p.startsWith(a) && p !== a)
+}
+
 // Spooled to disk, not memory: these are masters, not thumbnails — a couple of
 // WAVs held in a Render dyno's RAM is an OOM, on disk it is a temp file.
 const upload = multer({
@@ -200,13 +216,13 @@ router.get('/download-folder', async (req, res) => {
  */
 router.post('/delete', adminAuth, async (req, res) => {
   if (!guard(req, res)) return
-  if (!VISION_DELETE_ENABLED) {
+  const rel = String(req.query.path || req.body?.path || '').trim()
+  if (!deleteAllowedAt(rel)) {
     return res.status(403).json({
-      error: 'Deleting from Vision is switched off on this instance. Do it from local GalloIngest, or set VISION_DELETE_ENABLED=true.',
+      error: `Deleting from Vision is switched off here${VISION_DELETE_ALLOW.length ? ` except inside ${VISION_DELETE_ALLOW.join(', ')}` : ''}. Do it from local GalloIngest, or set VISION_DELETE_ENABLED=true.`,
     })
   }
   try {
-    const rel = String(req.query.path || req.body?.path || '').trim()
     const confirm = String(req.query.confirm ?? req.body?.confirm ?? '')
     if (!rel) return res.status(400).json({ error: 'No path given' })
     const parts = rel.split('/').filter(Boolean)
