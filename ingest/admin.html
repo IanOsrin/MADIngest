@@ -1709,6 +1709,30 @@
       </div>
 
       <div class="card" style="margin-top:14px">
+        <h3>Change history — every Genre Fix re-tag</h3>
+        <p class="muted" style="margin:6px 0 14px">
+          Every Apply is saved permanently (local and hosted share one history), unlike the Status
+          column above which clears on reload. History starts from when this log was added.
+        </p>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+          <button class="btn" onclick="gfLogLoad()">Load history</button>
+          <button class="btn" onclick="gfLogCsv()">Download CSV</button>
+          <input id="gfLogFilter" placeholder="filter artist / genre…" oninput="gfLogRender()" style="min-width:200px">
+          <span id="gfLogStatus" class="muted"></span>
+        </div>
+        <div class="table-wrap">
+          <table id="gfLogTable" style="width:100%">
+            <thead><tr>
+              <th style="text-align:left">When</th><th style="text-align:left">Artist</th>
+              <th style="text-align:left">From</th><th style="text-align:left">To</th>
+              <th style="text-align:left">Sub genre</th><th>Scope</th><th>Tracks</th>
+            </tr></thead>
+            <tbody id="gfLogBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:14px">
         <h3>Audio problems — flagged for repair</h3>
         <p class="muted" style="margin:6px 0 14px">
           Tracks flagged from the audition player above (any operator, any genre) —
@@ -9788,6 +9812,54 @@ async function gfLoad() {
   }
 }
 
+// ── Genre Fix: change history ───────────────────────────────────────────────
+let gfLog = null
+const gfFrom = e => Object.entries(e.fromGenres || {}).map(([g, n]) => `${g} (${n})`).join(', ')
+const gfWhen = iso => new Date(iso).toLocaleString('en-ZA', { dateStyle: 'medium', timeStyle: 'short' })
+function gfLogRows() {
+  const q = (document.getElementById('gfLogFilter')?.value || '').trim().toLowerCase()
+  return (gfLog || []).filter(e => !q ||
+    [e.artist, e.toGenre, e.subGenre, ...Object.keys(e.fromGenres || {})].join(' ').toLowerCase().includes(q))
+}
+async function gfLogLoad() {
+  const status = document.getElementById('gfLogStatus')
+  status.textContent = 'Loading…'
+  try {
+    const r = await fetch('/api/genre-fix/log', { headers: { Authorization: `Bearer ${adminToken}` } })
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    gfLog = j.entries || []
+    gfLogRender()
+  } catch (e) { status.textContent = `Failed: ${e.message}` }
+}
+function gfLogRender() {
+  if (!gfLog) return
+  const rows = gfLogRows()
+  const tracks = rows.reduce((s, e) => s + (e.updated || 0), 0)
+  document.getElementById('gfLogStatus').textContent =
+    `${rows.length} change(s), ${tracks} track(s) re-tagged${rows.length !== gfLog.length ? ` (filtered from ${gfLog.length})` : ''}.`
+  document.getElementById('gfLogBody').innerHTML = rows.map(e => `
+    <tr>
+      <td style="text-align:left;white-space:nowrap">${gfEsc(gfWhen(e.at))}</td>
+      <td style="text-align:left">${gfEsc(e.artist || '—')}</td>
+      <td style="text-align:left">${gfEsc(gfFrom(e) || '—')}</td>
+      <td style="text-align:left">${gfEsc(e.toGenre)}</td>
+      <td style="text-align:left">${gfEsc(e.subGenre || '')}</td>
+      <td style="text-align:center">${e.scope === 'all' ? 'all artist tracks' : 'loaded genre'}</td>
+      <td style="text-align:center">${e.updated}${e.failed ? ` <span style="color:#e66">(${e.failed} failed)</span>` : ''}</td>
+    </tr>`).join('') || '<tr><td colspan="7" class="muted">No changes logged yet.</td></tr>'
+}
+async function gfLogCsv() {
+  if (!gfLog) await gfLogLoad()
+  if (!gfLog) return
+  const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`
+  const lines = [['When (UTC)', 'Artist', 'From', 'To', 'Sub genre', 'Scope', 'Requested', 'Updated', 'Failed'].map(q).join(',')]
+  for (const e of gfLogRows()) lines.push([e.at, e.artist, gfFrom(e), e.toGenre, e.subGenre, e.scope, e.requested, e.updated, e.failed].map(q).join(','))
+  const url = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/csv' }))
+  const link = Object.assign(document.createElement('a'), { href: url, download: `genre-fix-history-${new Date().toISOString().slice(0, 10)}.csv` })
+  link.click(); URL.revokeObjectURL(url)
+}
+
 // ── Genre Fix: audio-problem flagging ────────────────────────────────────────
 // The operator flags the SAMPLE track they just auditioned. Two independent
 // categories, each a dated FM field: '⚠ bad' → Bad_Audio, '⚡ faulty' →
@@ -9987,6 +10059,7 @@ async function gfApply(i) {
   if (!to) { stat.textContent = 'pick a genre first'; return }
 
   let ids = a.recordIds
+  let fromGenres = { [gfLoadedGenre || '(blank)']: a.recordIds.length }
   if (allTracks) {
     // Widen to every track by this artist — but show what ELSE gets swept up
     // first. Artists cross genres legitimately, and silently dragging an
@@ -10000,6 +10073,7 @@ async function gfApply(i) {
       if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
       const moving = j.genres.filter(g => g.genre !== to)
       ids = moving.flatMap(g => g.recordIds)
+      fromGenres = Object.fromEntries(moving.map(g => [g.genre || '(blank)', g.count]))
       const staying = j.genres.filter(g => g.genre === to).reduce((s, g) => s + g.count, 0)
       const breakdown = moving.map(g => `   ${g.count}  ${g.genre}`).join('\n')
       if (!confirm(
@@ -10018,12 +10092,14 @@ async function gfApply(i) {
     const r = await fetch('/api/genre-fix/apply', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
-      body: JSON.stringify({ recordIds: ids, toGenre: to, ...(sub ? { subGenre: sub } : {}) }),
+      body: JSON.stringify({ recordIds: ids, toGenre: to, ...(sub ? { subGenre: sub } : {}),
+        artist: a.artist, fromGenres, scope: allTracks ? 'all' : 'genre' }),
     })
     const j = await r.json()
     if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
-    stat.innerHTML = `<span style="color:var(--gold)">✔ ${j.updated} re-tagged → ${gfEsc(to)}${sub ? ' / ' + gfEsc(sub) : ''}</span>${j.failed?.length ? ` <span style="color:#e66">(${j.failed.length} failed)</span>` : ''}`
+    stat.innerHTML = `<span style="color:var(--gold)">✔ ${j.updated} re-tagged → ${gfEsc(to)}${sub ? ' / ' + gfEsc(sub) : ''}</span>${j.failed?.length ? ` <span style="color:#e66">(${j.failed.length} failed)</span>` : ''}${j.logged === false ? ' <span style="color:#e66">(not saved to change history)</span>' : ''}`
     document.getElementById(`gfRow${i}`).style.opacity = '0.45'
+    if (gfLog) gfLogLoad()
   } catch (e) {
     stat.textContent = `failed: ${e.message}`
   }

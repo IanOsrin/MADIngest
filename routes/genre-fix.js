@@ -9,6 +9,7 @@
 import { Router } from 'express'
 import { adminAuth } from '../lib/admin-auth.js'
 import { findSongsByLocalGenre, findSongsByArtist, setLocalGenre, setAudioFlag, findAudioFlaggedSongs, AUDIO_FLAG_FIELDS } from '../lib/madstreamer.js'
+import { logGenreFix, listGenreFixLog } from '../lib/genre-fix-log.js'
 
 const router = Router()
 
@@ -71,7 +72,9 @@ router.get('/artist-tracks', adminAuth, async (req, res) => {
 
 router.post('/apply', adminAuth, async (req, res) => {
   try {
-    const { recordIds, toGenre, subGenre } = req.body || {}
+    // artist / fromGenres / scope are only for the change log — the client
+    // knows what it loaded (fromGenres = { "<old genre>": trackCount, … }).
+    const { recordIds, toGenre, subGenre, artist, fromGenres, scope } = req.body || {}
     const target = String(toGenre || '').trim()
     // Sub genre rides along with a re-tag: only written when the operator
     // typed one (undefined = leave the records' existing Sub Genre alone).
@@ -86,9 +89,42 @@ router.post('/apply', adminAuth, async (req, res) => {
       catch (e) { failed.push({ id, error: e.message }) }
     }
     console.log(`[genre-fix] re-tagged ${updated}/${recordIds.length} records → "${target}"${sub ? ` (sub: "${sub}")` : ''}${failed.length ? ` (${failed.length} failed)` : ''}`)
-    res.json({ updated, failed })
+    // Permanent history. A logging failure must not undo or hide the re-tag
+    // (it already happened in FM) — the client just shows a warning.
+    let logged = false
+    try {
+      await logGenreFix({
+        artist: typeof artist === 'string' ? artist : '',
+        fromGenres: fromGenres && typeof fromGenres === 'object' ? fromGenres : {},
+        toGenre: target,
+        subGenre: sub || '',
+        scope: scope === 'all' ? 'all' : 'genre',
+        requested: recordIds.length,
+        updated,
+        failed: failed.length,
+        recordIds: recordIds.map(String),
+        failedIds: failed.map(f => String(f.id)),
+        via: req.get('host') || '',
+      })
+      logged = true
+    } catch (e) { console.error('[genre-fix] change log write failed:', e.message) }
+    res.json({ updated, failed, logged })
   } catch (e) {
     console.error('[genre-fix] apply failed:', e.message)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+/**
+ * GET /log — every logged Apply, newest first (record ids left out; ?ids=1 keeps them).
+ */
+router.get('/log', adminAuth, async (req, res) => {
+  try {
+    const all = await listGenreFixLog()
+    const entries = req.query.ids ? all : all.map(({ recordIds, failedIds, ...e }) => e)
+    res.json({ total: entries.length, entries })
+  } catch (e) {
+    console.error('[genre-fix] log read failed:', e.message)
     res.status(500).json({ error: e.message })
   }
 })
