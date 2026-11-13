@@ -50,10 +50,10 @@ export const VISION_DELETE_ENABLED =
 /**
  * Folders where delete works even while it is off (Ian, 2026-11-13: "I need to be able to delete files in this
  * tab" — chose "only inside Samples" so the masters stay protected). Mad Mixer's one-shot library is curated by
- * hand, so a file there must be removable from the hosted tab. Comma-separated Vision paths; only things INSIDE
+ * hand, so a file there must be removable from the hosted tab; its Loops folder too (2026-11-13). Comma-separated Vision paths; only things INSIDE
  * them can go, never the folder itself. VISION_DELETE_ALLOW="" turns it off.
  */
-export const VISION_DELETE_ALLOW = String(process.env.VISION_DELETE_ALLOW ?? '/gallo-music-files-wavs/Samples/')
+export const VISION_DELETE_ALLOW = String(process.env.VISION_DELETE_ALLOW ?? '/gallo-music-files-wavs/Samples/,/gallo-music-files-wavs/Loops/')
   .split(',').map((s) => s.trim().replace(/^\/+|\/+$/g, '')).filter(Boolean).map((s) => `/${s.normalize('NFC')}/`)
 export function deleteAllowedAt(rel) {
   if (VISION_DELETE_ENABLED) return true
