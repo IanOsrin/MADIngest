@@ -12,6 +12,7 @@ import { findSongsByLocalGenre, findSongsByArtist, setLocalGenre, setAudioFlag, 
 import { logGenreFix, listGenreFixLog } from '../lib/genre-fix-log.js'
 
 const router = Router()
+const GENRE_FLAG_ORDER = ['Local Genre', 'Sub Genre', 'Genre']
 
 router.get('/list', adminAuth, async (req, res) => {
   try {
@@ -22,15 +23,18 @@ router.get('/list', adminAuth, async (req, res) => {
     const byArtist = new Map()
     for (const s of songs) {
       let a = byArtist.get(s.artist)
-      if (!a) byArtist.set(s.artist, (a = { artist: s.artist, recordIds: [], sample: null, albums: new Set() }))
+      if (!a) byArtist.set(s.artist, (a = { artist: s.artist, recordIds: [], sample: null, albums: new Set(), changed: 0, changedKinds: {}, flags: {} }))
       a.recordIds.push(s.recordId)
       if (s.album) a.albums.add(s.album)
+      if (s.genreChanged) { a.flags[s.recordId] = s.genreChanged; a.changed++; a.changedKinds[s.genreChanged] = (a.changedKinds[s.genreChanged] || 0) + 1 }
       if (!a.sample && s.s3url) a.sample = { recordId: s.recordId, title: s.title, album: s.album, year: s.year, url: s.s3url, badAudio: s.badAudio || '', faultyAudio: s.faultyAudio || '' }
     }
     const artists = [...byArtist.values()]
-      .map(a => ({ artist: a.artist, count: a.recordIds.length, albumCount: a.albums.size, sample: a.sample, recordIds: a.recordIds }))
+      .map(a => ({ artist: a.artist, count: a.recordIds.length, albumCount: a.albums.size, sample: a.sample, recordIds: a.recordIds,
+        genreChanged: { count: a.changed, kinds: a.changedKinds, flags: a.flags } }))
       .sort((x, y) => y.count - x.count)
-    res.json({ genre, totalTracks: songs.length, artists })
+    const changedTracks = artists.reduce((n, a) => n + a.genreChanged.count, 0)
+    res.json({ genre, totalTracks: songs.length, changedTracks, artists })
   } catch (e) {
     console.error('[genre-fix] list failed:', e.message)
     res.status(500).json({ error: e.message })
@@ -52,7 +56,9 @@ router.get('/artist-tracks', adminAuth, async (req, res) => {
     if (artist.length < 2) return res.status(400).json({ error: 'artist required (2+ chars)' })
     const songs = await findSongsByArtist(artist)
     const byGenre = new Map()
+    const flags = {}          // recordId → current Genre_Changed, flagged tracks only
     for (const s of songs) {
+      if (s.genreChanged) flags[s.recordId] = s.genreChanged
       const g = s.localGenre || '(no genre)'
       if (!byGenre.has(g)) byGenre.set(g, [])
       byGenre.get(g).push(s.recordId)
@@ -60,6 +66,7 @@ router.get('/artist-tracks', adminAuth, async (req, res) => {
     res.json({
       artist,
       total: songs.length,
+      flags,
       genres: [...byGenre.entries()]
         .map(([genre, recordIds]) => ({ genre, count: recordIds.length, recordIds }))
         .sort((a, b) => b.count - a.count),
@@ -74,7 +81,7 @@ router.post('/apply', adminAuth, async (req, res) => {
   try {
     // artist / fromGenres / scope are only for the change log — the client
     // knows what it loaded (fromGenres = { "<old genre>": trackCount, … }).
-    const { recordIds, toGenre, subGenre, artist, fromGenres, scope } = req.body || {}
+    const { recordIds, toGenre, subGenre, artist, fromGenres, scope, markLocal, flags } = req.body || {}
     const target = String(toGenre || '').trim()
     // Sub genre rides along with a re-tag: only written when the operator
     // typed one (undefined = leave the records' existing Sub Genre alone).
@@ -82,10 +89,20 @@ router.post('/apply', adminAuth, async (req, res) => {
     if (!Array.isArray(recordIds) || !recordIds.length) return res.status(400).json({ error: 'recordIds required' })
     if (!target) return res.status(400).json({ error: 'toGenre required' })
     if (recordIds.length > 2000) return res.status(400).json({ error: 'too many records in one apply (max 2000)' })
+    // Genre_Changed: add this apply's fields to whatever the track already
+    // carries (client sends the current values it loaded), in the same PATCH.
+    // markLocal is false when the "new" Local Genre equals the old one.
+    const adds = [markLocal !== false && 'Local Genre', sub && 'Sub Genre'].filter(Boolean)
+    const flagFor = (id) => {
+      if (!adds.length) return undefined                     // nothing changed — leave the flag alone
+      const have = new Set(String((flags && flags[id]) || '').split(',').map(x => x.trim()).filter(Boolean))
+      adds.forEach(x => have.add(x))
+      return GENRE_FLAG_ORDER.filter(x => have.has(x)).join(', ')
+    }
     let updated = 0
     const failed = []
     for (const id of recordIds) {
-      try { await setLocalGenre(String(id), target, sub); updated++ }
+      try { await setLocalGenre(String(id), target, sub, flagFor(String(id))); updated++ }
       catch (e) { failed.push({ id, error: e.message }) }
     }
     console.log(`[genre-fix] re-tagged ${updated}/${recordIds.length} records → "${target}"${sub ? ` (sub: "${sub}")` : ''}${failed.length ? ` (${failed.length} failed)` : ''}`)

@@ -1700,6 +1700,7 @@
           <table id="gfTable" style="width:100%">
             <thead><tr>
               <th style="text-align:left">Artist</th><th>Tracks</th><th>Albums</th>
+              <th style="text-align:left" title="Genre_Changed in MADStreamer: tracks whose genre fields differed from MAM after an edit since 1 Jul 2026 (snapshot taken 13 Nov 2026)">Genre changed</th>
               <th style="text-align:left;min-width:260px">Audition (one sample)</th>
               <th style="text-align:left">New Local Genre</th><th></th><th style="text-align:left">Status</th>
             </tr></thead>
@@ -9772,6 +9773,16 @@ gfInitGenres()
 
 function gfEsc(s){ return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') }
 
+// Genre_Changed summary for one artist row: "12 / 30" plus which fields.
+function gfChangedCell(a) {
+  const g = a.genreChanged || { count: 0, kinds: {} }
+  if (!g.count) return '<span class="muted">—</span>'
+  const kinds = Object.entries(g.kinds).sort((x, y) => y[1] - x[1])
+    .map(([k, n]) => `<div class="muted">${gfEsc(k)}${kinds_n(n, g.count)}</div>`).join('')
+  return `<strong style="color:var(--gold)">${g.count} / ${a.count}</strong>${kinds}`
+}
+const kinds_n = (n, total) => n === total ? '' : ` (${n})`
+
 async function gfLoad() {
   const genre = document.getElementById('gfGenre').value.trim()
   const status = document.getElementById('gfStatus')
@@ -9786,12 +9797,14 @@ async function gfLoad() {
     if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
     gfArtists = j.artists || []
     gfLoadedGenre = j.genre
-    status.textContent = `${j.totalTracks} tracks across ${gfArtists.length} artists in “${j.genre}”.`
+    status.textContent = `${j.totalTracks} tracks across ${gfArtists.length} artists in “${j.genre}”` +
+      (j.changedTracks ? ` — ${j.changedTracks} flagged Genre_Changed.` : '.')
     body.innerHTML = gfArtists.map((a, i) => `
       <tr id="gfRow${i}">
         <td style="text-align:left">${gfEsc(a.artist)}</td>
         <td style="text-align:center">${a.count}</td>
         <td style="text-align:center">${a.albumCount}</td>
+        <td style="text-align:left;font-size:12px">${gfChangedCell(a)}</td>
         <td style="text-align:left">${a.sample
           ? `<div class="muted" style="font-size:12px;margin-bottom:3px">${gfEsc(a.sample.title)}${a.sample.year ? ' · ' + gfEsc(a.sample.year) : ''}</div>
              <audio controls preload="none" style="width:250px;height:30px" src="${gfEsc(a.sample.url)}"></audio>
@@ -10067,6 +10080,9 @@ async function gfApply(i) {
 
   let ids = a.recordIds
   let fromGenres = { [gfLoadedGenre || '(blank)']: a.recordIds.length }
+  let flags = a.genreChanged?.flags || {}
+  // Only count Local Genre as changed when it actually differs from what was loaded.
+  let markLocal = to.toLowerCase() !== String(gfLoadedGenre || '').toLowerCase()
   if (allTracks) {
     // Widen to every track by this artist — but show what ELSE gets swept up
     // first. Artists cross genres legitimately, and silently dragging an
@@ -10081,6 +10097,8 @@ async function gfApply(i) {
       const moving = j.genres.filter(g => g.genre !== to)
       ids = moving.flatMap(g => g.recordIds)
       fromGenres = Object.fromEntries(moving.map(g => [g.genre || '(blank)', g.count]))
+      flags = j.flags || {}
+      markLocal = true   // the moving tracks are, by construction, in a different genre
       const staying = j.genres.filter(g => g.genre === to).reduce((s, g) => s + g.count, 0)
       const breakdown = moving.map(g => `   ${g.count}  ${g.genre}`).join('\n')
       if (!confirm(
@@ -10100,7 +10118,8 @@ async function gfApply(i) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
       body: JSON.stringify({ recordIds: ids, toGenre: to, ...(sub ? { subGenre: sub } : {}),
-        artist: a.artist, fromGenres, scope: allTracks ? 'all' : 'genre' }),
+        artist: a.artist, fromGenres, scope: allTracks ? 'all' : 'genre',
+        markLocal, flags: Object.fromEntries(ids.filter(id => flags[id]).map(id => [id, flags[id]])) }),
     })
     const j = await r.json()
     if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
