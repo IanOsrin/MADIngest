@@ -1916,6 +1916,8 @@
           <label style="font-size:0.78rem;color:var(--muted);display:flex;align-items:center;gap:4px">
             <input type="checkbox" id="viOverwrite"> overwrite existing
           </label>
+          <button class="btn" onclick="viMakeFolder()" id="viMkdirBtn"
+                  title="Make a new empty folder inside the folder you are viewing">&#128193; New folder</button>
           <button class="btn btn-ghost" onclick="viZipFolder()" id="viZipBtn"
                   title="Download every file in this folder as a single zip">&#8595; Download folder (zip)</button>
           <span class="muted" style="font-size:0.75rem">Uploads replace nothing unless you tick overwrite. Deletes are permanent — Vision has no trash.</span>
@@ -10515,6 +10517,29 @@ function viUpload() {
   }
   xhr.onerror = () => { btn.disabled = false; status.textContent = 'Upload failed: connection lost' }
   xhr.send(fd)
+}
+
+// New empty folder in the folder in view, then open it so files can go straight in (Ian, 2026-11-13).
+async function viMakeFolder() {
+  const status = document.getElementById('viStatus')
+  if (viCurrentPath === '/') { status.textContent = 'Open a bucket first (e.g. gallo-music-files-wavs).'; return }
+  const name = prompt(`New folder inside\n${viCurrentPath}\n\nFolder name:`)
+  if (name === null || !name.trim()) return
+  if (/[\/\\]/.test(name)) { status.textContent = 'Use a plain name — make one folder at a time.'; return }
+  status.textContent = 'Making folder…'
+  try {
+    const r = await fetch('/api/vision-util/mkdir', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: viCurrentPath, name: name.trim() }),
+    })
+    const j = await r.json()
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    await viLoad(j.path)
+    status.innerHTML = `<span style="color:var(--gold)">${gfEsc(j.note)} — you are in it now; use ↑ Upload files here.</span>`
+  } catch (err) {
+    status.innerHTML = `<span style="color:var(--red)">Could not make the folder: ${gfEsc(err.message)}</span>`
+  }
 }
 
 // Zip is streamed by the server, so this is a plain navigation rather than a

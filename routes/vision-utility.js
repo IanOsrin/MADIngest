@@ -24,7 +24,7 @@ import multer from 'multer'
 import { adminAuth } from '../lib/admin-auth.js'
 import {
   visionStatus, visionList, visionStat, visionListKeys,
-  visionUploadFile, visionDelete, visionRename,
+  visionUploadFile, visionDelete, visionRename, visionMakeFolder,
 } from '../lib/vision-drive.js'
 import { issueTicket, redeemTicket, streamVisionZip } from '../lib/vision-zip.js'
 import { relinkMamAfterRename } from '../lib/vision-mam-relink.js'
@@ -212,6 +212,25 @@ router.post('/delete', adminAuth, async (req, res) => {
 })
 
 /** Rename a file or folder in place (same parent), or move it to another path. */
+/**
+ * New empty folder inside the folder in view. Adds only — it never replaces or moves anything, so like upload it
+ * is allowed on the hosted instance.
+ */
+router.post('/mkdir', adminAuth, async (req, res) => {
+  if (!guard(req, res)) return
+  try {
+    const parent = String(req.query.path || req.body?.path || '').trim()
+    const name = String(req.query.name || req.body?.name || '').trim()
+    if (!parent || parent === '/') return res.status(400).json({ error: 'Open a bucket first — new buckets are not made from here' })
+    const made = await visionMakeFolder(parent, name)
+    console.log(`[vision-util] made folder ${made}`)
+    res.json({ ok: true, path: made, note: `Made ${made}` })
+  } catch (e) {
+    console.error('[vision-util] mkdir failed:', e.message)
+    res.status(400).json({ error: e.message })
+  }
+})
+
 router.post('/rename', adminAuth, async (req, res) => {
   if (!guard(req, res)) return
   try {
