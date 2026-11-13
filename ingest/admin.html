@@ -1912,7 +1912,10 @@
           <strong style="font-size:0.82rem">Utility</strong>
           <input type="file" id="viUploadInput" multiple style="display:none" onchange="viUpload()">
           <button class="btn" onclick="document.getElementById('viUploadInput').click()" id="viUploadBtn"
-                  title="Upload files of any type into the folder you are viewing">&#8593; Upload files here</button>
+                  title="Pick files on this computer and upload them into the folder you are viewing">&#8593; Upload files here</button>
+          <input type="file" id="viUploadDirInput" webkitdirectory multiple style="display:none" onchange="viUploadFolder()">
+          <button class="btn" onclick="document.getElementById('viUploadDirInput').click()" id="viUploadDirBtn"
+                  title="Pick a folder on this computer: everything inside it, sub-folders included, goes into the folder you are viewing">&#128187; Upload a folder from this computer</button>
           <label style="font-size:0.78rem;color:var(--muted);display:flex;align-items:center;gap:4px">
             <input type="checkbox" id="viOverwrite"> overwrite existing
           </label>
@@ -10504,19 +10507,83 @@ function viUpload() {
     if (!e.lengthComputable) return
     status.textContent = `Uploading… ${Math.round((e.loaded / e.total) * 100)}% of ${viSize(total)}`
   }
-  xhr.onload = () => {
+  xhr.onload = async () => {
     btn.disabled = false
     input.value = ''
     let j = {}
     try { j = JSON.parse(xhr.responseText) } catch {}
     if (xhr.status >= 400) { status.textContent = `Upload failed: ${j.error || xhr.status}`; return }
     const bad = (j.results || []).filter(r => !r.ok)
+    await viLoad(viCurrentPath)        // refresh first: it rewrites the status line, which hid this result
     status.innerHTML = `<span style="color:${j.failed ? 'var(--red)' : 'var(--gold)'}">${gfEsc(j.note || 'Done')}</span>`
     if (bad.length) status.innerHTML += `<br><span style="font-size:0.75rem">${bad.map(b => gfEsc(`${b.name}: ${b.error}`)).join('<br>')}</span>`
-    viLoad(viCurrentPath)
   }
   xhr.onerror = () => { btn.disabled = false; status.textContent = 'Upload failed: connection lost' }
   xhr.send(fd)
+}
+
+// A whole folder from this computer (Ian, 2026-11-13: "we need a browse computer button"). What is INSIDE the picked
+// folder goes into the folder in view, sub-folders kept: pick "One Shots" (holding Kick/, Snare/…) while viewing
+// Samples and you get Samples/Kick/…, Samples/Snare/…. Sent in batches so a big library is not one huge request.
+async function viUploadFolder(picked) {
+  const input = document.getElementById('viUploadDirInput')
+  const status = document.getElementById('viStatus')
+  const btn = document.getElementById('viUploadDirBtn')
+  const all = picked || [...(input.files || [])]
+  input.value = ''
+  if (!all.length) return
+  if (viCurrentPath.split('/').filter(Boolean).length < 2) { status.textContent = 'Open a folder inside a bucket first.'; return }
+  const items = all.map(f => ({ f, rel: (f.webkitRelativePath || f.name).split('/').slice(1).join('/') || f.name }))
+  const top = (all[0].webkitRelativePath || '').split('/')[0] || 'that folder'
+  const subs = [...new Set(items.map(x => x.rel.split('/').slice(0, -1).join('/')).filter(Boolean))]
+  const total = items.reduce((a, x) => a + x.f.size, 0)
+  if (!confirm(`Upload everything inside "${top}" into\n${viCurrentPath}?\n\n${items.length} file${items.length === 1 ? '' : 's'}, ${viSize(total)}` +
+    (subs.length ? `\nSub-folders kept: ${subs.slice(0, 8).join(', ')}${subs.length > 8 ? ` and ${subs.length - 8} more` : ''}` : '') +
+    `\n\nFiles already on Vision are skipped unless "overwrite existing" is ticked.`)) return
+
+  const overwrite = document.getElementById('viOverwrite').checked
+  const batches = []
+  let cur = [], curBytes = 0
+  for (const x of items) {
+    if (cur.length && (cur.length >= 100 || curBytes + x.f.size > 400e6)) { batches.push(cur); cur = []; curBytes = 0 }
+    cur.push(x); curBytes += x.f.size
+  }
+  if (cur.length) batches.push(cur)
+
+  btn.disabled = true
+  let done = 0, sent = 0, summary = ''
+  const tally = { uploaded: 0, skipped: 0, failed: 0, problems: [] }
+  try {
+    for (const batch of batches) {
+      const fd = new FormData()
+      fd.append('relpaths', JSON.stringify(batch.map(x => x.rel)))   // before the files, so the server has it first
+      batch.forEach(x => fd.append('files', x.f))
+      const bytes = batch.reduce((a, x) => a + x.f.size, 0)
+      const j = await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest()
+        xhr.open('POST', `/api/vision-util/upload?path=${encodeURIComponent(viCurrentPath)}${overwrite ? '&overwrite=1' : ''}`)
+        xhr.setRequestHeader('Authorization', `Bearer ${adminToken}`)
+        xhr.upload.onprogress = (e) => { if (e.lengthComputable) status.textContent = `Uploading… ${Math.round(((sent + e.loaded / e.total * bytes) / total) * 100)}% (${done} of ${items.length} files done)` }
+        xhr.onload = () => { let r = {}; try { r = JSON.parse(xhr.responseText) } catch {} ; xhr.status >= 400 ? reject(new Error(r.error || xhr.status)) : resolve(r) }
+        xhr.onerror = () => reject(new Error('connection lost'))
+        xhr.send(fd)
+      })
+      sent += bytes; done += batch.length
+      tally.uploaded += j.uploaded || 0; tally.failed += j.failed || 0
+      for (const r of j.results || []) {
+        if (r.skipped && !r.hidden) tally.skipped++
+        if (!r.ok && !r.skipped) tally.problems.push(`${r.name}: ${r.error}`)
+      }
+    }
+    summary = `<span style="color:${tally.failed ? 'var(--red)' : 'var(--gold)'}">${tally.uploaded} uploaded${tally.skipped ? `, ${tally.skipped} already there` : ''}${tally.failed ? `, ${tally.failed} failed` : ''}.</span>` +
+      (tally.problems.length ? `<br><span style="font-size:0.75rem">${tally.problems.slice(0, 20).map(gfEsc).join('<br>')}</span>` : '')
+  } catch (err) {
+    summary = `<span style="color:var(--red)">Upload stopped after ${done} of ${items.length} files: ${gfEsc(err.message)}. Run it again — files already up are skipped.</span>`
+  } finally {
+    btn.disabled = false
+    await viLoad(viCurrentPath)        // refresh first: it rewrites the status line
+    status.innerHTML = summary
+  }
 }
 
 // New empty folder in the folder in view, then open it so files can go straight in (Ian, 2026-11-13).

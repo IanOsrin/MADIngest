@@ -89,11 +89,28 @@ router.post('/upload', adminAuth, upload.array('files', 200), async (req, res) =
     }
     if (!files.length) return res.status(400).json({ error: 'No files received' })
 
+    // A whole folder picked on the computer (Ian, 2026-11-13: "we need a browse computer button") sends each
+    // file's place inside that folder as `relpaths` (a JSON list, same order as the files, sent before them),
+    // so its sub-folders are kept. Each part must be a plain name; hidden files (.DS_Store) are skipped.
+    let relpaths = null
+    if (req.body?.relpaths) {
+      try { relpaths = JSON.parse(req.body.relpaths) } catch { return res.status(400).json({ error: 'Bad folder list' }) }
+      if (!Array.isArray(relpaths) || relpaths.length !== files.length) return res.status(400).json({ error: 'Folder list does not match the files' })
+    }
+
     const results = []
-    for (const f of files) {
+    for (const [i, f] of files.entries()) {
       // multer gives the browser's filename in originalname; normalise to NFC so
       // it matches how the drive and the index store accented names.
-      const name = path.basename(f.originalname).normalize('NFC')
+      let name = path.basename(f.originalname).normalize('NFC')
+      if (relpaths) {
+        const parts = String(relpaths[i] || '').normalize('NFC').split('/').filter(Boolean)
+        if (!parts.length || parts.some(p => p === '..' || p.includes('\\') || p.length > 200)) {
+          results.push({ name, ok: false, error: 'Unusable folder path' }); continue
+        }
+        if (parts.some(p => p.startsWith('.'))) { results.push({ name: parts.join('/'), ok: false, skipped: true, hidden: true, error: 'Hidden file — skipped' }); continue }
+        name = parts.join('/')
+      }
       const rel = `${dest.replace(/\/$/, '')}/${name}`
       try {
         if (!overwrite && await visionStat(rel)) {
@@ -108,6 +125,7 @@ router.post('/upload', adminAuth, upload.array('files', 200), async (req, res) =
     }
     const ok = results.filter(r => r.ok).length
     const skipped = results.filter(r => r.skipped).length
+    const hidden = results.filter(r => r.hidden).length
     const failed = results.length - ok - skipped
     // Only mention indexing when it actually applies: the index holds audio
     // only, so saying it after a batch of artwork is noise that trains people
@@ -115,7 +133,7 @@ router.post('/upload', adminAuth, upload.array('files', 200), async (req, res) =
     const audioUploaded = results.some(r => r.ok && /\.(wav|flac|aiff?|mp3|m4a|aac|ogg)$/i.test(r.name))
     res.json({
       ok: failed === 0, uploaded: ok, skipped, failed, results,
-      note: `${ok} uploaded${skipped ? `, ${skipped} already there` : ''}${failed ? `, ${failed} failed` : ''}.`
+      note: `${ok} uploaded${skipped - hidden ? `, ${skipped - hidden} already there` : ''}${hidden ? `, ${hidden} hidden file${hidden === 1 ? '' : 's'} left out` : ''}${failed ? `, ${failed} failed` : ''}.`
           + (audioUploaded ? ' Not searchable until indexed — use "Index this folder".' : ''),
     })
   } catch (e) {
