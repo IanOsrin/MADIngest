@@ -1915,7 +1915,7 @@
                   title="Pick one or more files on this computer and upload them into the folder you are viewing">&#128187; Upload files from this computer</button>
           <input type="file" id="viUploadDirInput" webkitdirectory multiple style="display:none" onchange="viUploadFolder()">
           <button class="btn" onclick="document.getElementById('viUploadDirInput').click()" id="viUploadDirBtn"
-                  title="Pick a folder on this computer: everything inside it, sub-folders included, goes into the folder you are viewing">&#128187; Upload a folder from this computer</button>
+                  title="Pick a folder on this computer: it goes into the folder you are viewing as a folder of its own, with everything in it">&#128187; Upload a folder from this computer</button>
           <label style="font-size:0.78rem;color:var(--muted);display:flex;align-items:center;gap:4px">
             <input type="checkbox" id="viOverwrite"> overwrite existing
           </label>
@@ -10522,9 +10522,10 @@ function viUpload() {
   xhr.send(fd)
 }
 
-// A whole folder from this computer (Ian, 2026-11-13: "we need a browse computer button"). What is INSIDE the picked
-// folder goes into the folder in view, sub-folders kept: pick "One Shots" (holding Kick/, Snare/…) while viewing
-// Samples and you get Samples/Kick/…, Samples/Snare/…. Sent in batches so a big library is not one huge request.
+// A whole folder from this computer (Ian, 2026-11-13: "we need a browse computer button"). The picked folder itself
+// goes into the folder in view, like dragging it in Finder, with its own folders kept (Ian: "if I upload the folder
+// Kick it should retain its folder structure in Samples"): pick Kick while viewing Samples → Samples/Kick/….
+// Sent in batches so a big library is not one huge request.
 async function viUploadFolder(picked) {
   const input = document.getElementById('viUploadDirInput')
   const status = document.getElementById('viStatus')
@@ -10533,12 +10534,12 @@ async function viUploadFolder(picked) {
   input.value = ''
   if (!all.length) return
   if (viCurrentPath.split('/').filter(Boolean).length < 2) { status.textContent = 'Open a folder inside a bucket first.'; return }
-  const items = all.map(f => ({ f, rel: (f.webkitRelativePath || f.name).split('/').slice(1).join('/') || f.name }))
+  const items = all.map(f => ({ f, rel: f.webkitRelativePath || f.name }))
   const top = (all[0].webkitRelativePath || '').split('/')[0] || 'that folder'
-  const subs = [...new Set(items.map(x => x.rel.split('/').slice(0, -1).join('/')).filter(Boolean))]
+  const subs = [...new Set(items.map(x => x.rel.split('/').slice(1, -1).join('/')).filter(Boolean))]
   const total = items.reduce((a, x) => a + x.f.size, 0)
-  if (!confirm(`Upload everything inside "${top}" into\n${viCurrentPath}?\n\n${items.length} file${items.length === 1 ? '' : 's'}, ${viSize(total)}` +
-    (subs.length ? `\nSub-folders kept: ${subs.slice(0, 8).join(', ')}${subs.length > 8 ? ` and ${subs.length - 8} more` : ''}` : '') +
+  if (!confirm(`Upload the folder "${top}" into\n${viCurrentPath}?\n\nIt becomes ${viCurrentPath.replace(/\/$/, '')}/${top}/\n${items.length} file${items.length === 1 ? '' : 's'}, ${viSize(total)}` +
+    (subs.length ? `\nFolders inside it, kept: ${subs.slice(0, 8).join(', ')}${subs.length > 8 ? ` and ${subs.length - 8} more` : ''}` : '') +
     `\n\nFiles already on Vision are skipped unless "overwrite existing" is ticked.`)) return
 
   const overwrite = document.getElementById('viOverwrite').checked
