@@ -3074,7 +3074,7 @@ async function mcBlock(i, block) {
 // ── Make Cover tab (2026-10-15): a generated cover for one album, saved through the cover pipeline ─────
 // routes/covers.js → lib/cover-maker.js → lib/album-cover.js setAlbumCover (MAM + MADStreamer + Vision), then
 // MAM Comment "Artwork Done" — the same steps as the batch runner, one album at a time.
-const MK_STYLES = { vinyl: 'Vinyl', jazz: 'Jazz', gospel: 'Gospel', vintage: 'Vintage' }
+const MK_STYLES = { vinyl: 'Vinyl', jazz: 'Jazz', gospel: 'Gospel', vintage: 'Vintage', groove: 'Groove', modern: 'Modern', cassette: 'Cassette', minimal: 'Minimal' }
 let _mkAlbums = [], _mkAlbum = null, _mkStyle = null, _mkPreviewUrl = null, _mkFonts = { ok: true }
 async function mkInit() {
   try {
