@@ -1701,6 +1701,7 @@
             <thead><tr>
               <th style="text-align:left">Artist</th><th>Tracks</th><th>Albums</th>
               <th style="text-align:left" title="Genre_Changed in MADStreamer: tracks whose genre fields differed from MAM after an edit since 1 Jul 2026 (snapshot taken 13 Nov 2026)">Genre changed</th>
+              <th style="text-align:left" title="Genre_Done in MADStreamer: ticked by hand by the capturer once the artist's genre is right. Apply never sets it.">Genre done</th>
               <th style="text-align:left;min-width:260px">Audition (one sample)</th>
               <th style="text-align:left">New Local Genre</th><th></th><th style="text-align:left">Status</th>
             </tr></thead>
@@ -9783,6 +9784,51 @@ function gfChangedCell(a) {
 }
 const kinds_n = (n, total) => n === total ? '' : ` (${n})`
 
+// Genre_Done for one artist row: a checkbox the capturer ticks by hand. Ticked
+// only when every listed track is done; a part-done artist shows "n / total".
+let gfDoneOk = true, gfDoneField = 'Genre_Done'
+function gfDoneCell(a, i) {
+  if (!gfDoneOk) return `<span class="muted" title="Add ${gfEsc(gfDoneField)} to the API_Album_Songs layout in MADStreamer">not on API_Album_Songs yet</span>`
+  const d = a.genreDone || { count: 0, latest: '', ids: [] }
+  const all = d.count >= a.count && a.count > 0
+  const part = d.count && !all ? `<div style="color:var(--gold)">${d.count} / ${a.count}</div>` : ''
+  return `<label style="display:flex;gap:6px;align-items:center;cursor:pointer;white-space:nowrap">
+      <input type="checkbox" id="gfDoneBox${i}" ${all ? 'checked' : ''} onchange="gfMarkDone(${i}, this.checked)"> Genre done
+    </label>${part}${d.latest ? `<div class="muted">${gfEsc(d.latest)}</div>` : ''}`
+}
+function gfDoneRefresh(i) { const c = document.getElementById(`gfDone${i}`); if (c) c.innerHTML = gfDoneCell(gfArtists[i], i) }
+
+async function gfMarkDone(i, done) {
+  const a = gfArtists[i], stat = document.getElementById(`gfStat${i}`)
+  if (!done && !confirm(`Untick Genre Done on ${a.count} “${gfLoadedGenre}” track(s) by ${a.artist}?`)) { gfDoneRefresh(i); return }
+  const box = document.getElementById(`gfDoneBox${i}`)
+  if (box) box.disabled = true   // keep the click visible while FileMaker saves
+  stat.textContent = done ? `ticking ${a.count} track(s) done — saving to FileMaker…` : 'unticking — saving to FileMaker…'
+  try {
+    const r = await fetch('/api/genre-fix/done', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ recordIds: a.recordIds, done, artist: a.artist }),
+    })
+    // A server started before this feature answers 404 with an HTML page, not JSON.
+    const j = await r.json().catch(() => ({ error: r.status === 404
+      ? 'this Gallo ingest server is older than the Genre done box — restart it (npm start) and try again'
+      : `HTTP ${r.status}` }))
+    if (r.status === 409) { gfDoneOk = false; gfArtists.forEach((_, k) => gfDoneRefresh(k)) }
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
+    const okIds = new Set(a.recordIds.map(String)); (j.failed || []).forEach(f => okIds.delete(String(f.id)))
+    const ids = new Set((a.genreDone?.ids || []).map(String))
+    okIds.forEach(id => done ? ids.add(id) : ids.delete(id))
+    a.genreDone = { count: ids.size, latest: done ? j.value : (ids.size ? a.genreDone.latest : ''), ids: [...ids] }
+    gfDoneRefresh(i)
+    stat.innerHTML = `<span style="color:var(--gold)">Genre done ${done ? 'ticked' : 'unticked'}: ${j.updated} track(s)</span>${j.failed?.length ? ` <span style="color:#e66">(${j.failed.length} failed)</span>` : ''}`
+  } catch (e) {
+    stat.innerHTML = `<span style="color:#e66">Genre done NOT saved: ${gfEsc(e.message)}</span>`
+    gfDoneRefresh(i)
+    alert(`Genre done was not saved for ${a.artist}:\n\n${e.message}`)
+  }
+}
+
 async function gfLoad() {
   const genre = document.getElementById('gfGenre').value.trim()
   const status = document.getElementById('gfStatus')
@@ -9797,14 +9843,18 @@ async function gfLoad() {
     if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`)
     gfArtists = j.artists || []
     gfLoadedGenre = j.genre
+    gfDoneOk = j.doneAvailable !== false
+    gfDoneField = j.doneField || 'Genre_Done'
     status.textContent = `${j.totalTracks} tracks across ${gfArtists.length} artists in “${j.genre}”` +
-      (j.changedTracks ? ` — ${j.changedTracks} flagged Genre_Changed.` : '.')
+      (j.changedTracks ? ` — ${j.changedTracks} flagged Genre_Changed` : '') +
+      (gfDoneOk ? (j.doneTracks ? ` — ${j.doneTracks} Genre Done.` : '.') : ` — ${gfDoneField} is not on the API_Album_Songs layout yet, so it can't be shown or ticked here.`)
     body.innerHTML = gfArtists.map((a, i) => `
       <tr id="gfRow${i}">
         <td style="text-align:left">${gfEsc(a.artist)}</td>
         <td style="text-align:center">${a.count}</td>
         <td style="text-align:center">${a.albumCount}</td>
         <td style="text-align:left;font-size:12px">${gfChangedCell(a)}</td>
+        <td style="text-align:left;font-size:12px" id="gfDone${i}">${gfDoneCell(a, i)}</td>
         <td style="text-align:left">${a.sample
           ? `<div class="muted" style="font-size:12px;margin-bottom:3px">${gfEsc(a.sample.title)}${a.sample.year ? ' · ' + gfEsc(a.sample.year) : ''}</div>
              <audio controls preload="none" style="width:250px;height:30px" src="${gfEsc(a.sample.url)}"></audio>

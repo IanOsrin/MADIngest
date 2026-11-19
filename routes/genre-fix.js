@@ -8,7 +8,7 @@
 // why apply works on explicit recordIds captured at list time).
 import { Router } from 'express'
 import { adminAuth } from '../lib/admin-auth.js'
-import { findSongsByLocalGenre, findSongsByArtist, setLocalGenre, setAudioFlag, findAudioFlaggedSongs, AUDIO_FLAG_FIELDS } from '../lib/madstreamer.js'
+import { findSongsByLocalGenre, findSongsByArtist, setLocalGenre, setGenreDone, setAudioFlag, findAudioFlaggedSongs, AUDIO_FLAG_FIELDS, GENRE_DONE_FIELD, genreDoneAvailable } from '../lib/madstreamer.js'
 import { logGenreFix, listGenreFixLog } from '../lib/genre-fix-log.js'
 
 const router = Router()
@@ -23,18 +23,23 @@ router.get('/list', adminAuth, async (req, res) => {
     const byArtist = new Map()
     for (const s of songs) {
       let a = byArtist.get(s.artist)
-      if (!a) byArtist.set(s.artist, (a = { artist: s.artist, recordIds: [], sample: null, albums: new Set(), changed: 0, changedKinds: {}, flags: {} }))
+      if (!a) byArtist.set(s.artist, (a = { artist: s.artist, recordIds: [], sample: null, albums: new Set(), changed: 0, changedKinds: {}, flags: {}, doneIds: [], doneLatest: '' }))
       a.recordIds.push(s.recordId)
+      if (s.genreDone) { a.doneIds.push(s.recordId); if (s.genreDone > a.doneLatest) a.doneLatest = s.genreDone }
       if (s.album) a.albums.add(s.album)
       if (s.genreChanged) { a.flags[s.recordId] = s.genreChanged; a.changed++; a.changedKinds[s.genreChanged] = (a.changedKinds[s.genreChanged] || 0) + 1 }
       if (!a.sample && s.s3url) a.sample = { recordId: s.recordId, title: s.title, album: s.album, year: s.year, url: s.s3url, badAudio: s.badAudio || '', faultyAudio: s.faultyAudio || '' }
     }
     const artists = [...byArtist.values()]
       .map(a => ({ artist: a.artist, count: a.recordIds.length, albumCount: a.albums.size, sample: a.sample, recordIds: a.recordIds,
-        genreChanged: { count: a.changed, kinds: a.changedKinds, flags: a.flags } }))
+        genreChanged: { count: a.changed, kinds: a.changedKinds, flags: a.flags },
+        genreDone: { count: a.doneIds.length, latest: a.doneLatest, ids: a.doneIds } }))
       .sort((x, y) => y.count - x.count)
     const changedTracks = artists.reduce((n, a) => n + a.genreChanged.count, 0)
-    res.json({ genre, totalTracks: songs.length, changedTracks, artists })
+    const doneTracks = artists.reduce((n, a) => n + a.genreDone.count, 0)
+    res.json({ genre, totalTracks: songs.length, changedTracks, doneTracks, doneField: GENRE_DONE_FIELD,
+      // the field is on the layout iff FM returned it; with no rows, fall back to the last write
+      doneAvailable: songs.length ? songs[0].genreDone !== null : genreDoneAvailable(), artists })
   } catch (e) {
     console.error('[genre-fix] list failed:', e.message)
     res.status(500).json({ error: e.message })
@@ -99,6 +104,7 @@ router.post('/apply', adminAuth, async (req, res) => {
       adds.forEach(x => have.add(x))
       return GENRE_FLAG_ORDER.filter(x => have.has(x)).join(', ')
     }
+    // Apply never touches Genre_Done: the capturer ticks it by hand (POST /done).
     let updated = 0
     const failed = []
     for (const id of recordIds) {
@@ -128,6 +134,35 @@ router.post('/apply', adminAuth, async (req, res) => {
     res.json({ updated, failed, logged })
   } catch (e) {
     console.error('[genre-fix] apply failed:', e.message)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+/**
+ * POST /done { recordIds, done, artist } — the capturer's manual sign-off of an
+ * artist's tracks as genre-reviewed (the ONLY thing that sets Genre_Done), or clear it.
+ * Writes Genre_Done = today's date, or '' to clear.
+ */
+router.post('/done', adminAuth, async (req, res) => {
+  try {
+    const { recordIds, artist } = req.body || {}
+    const done = req.body?.done !== false
+    if (!Array.isArray(recordIds) || !recordIds.length) return res.status(400).json({ error: 'recordIds required' })
+    if (recordIds.length > 2000) return res.status(400).json({ error: 'too many records in one go (max 2000)' })
+    let updated = 0, value = ''
+    const failed = []
+    for (const id of recordIds) {
+      try { value = await setGenreDone(String(id), done); updated++ }
+      catch (e) {
+        failed.push({ id, error: e.message })
+        // Field missing → every other record fails the same way; stop and say so.
+        if (/is the .* field on/.test(e.message)) return res.status(409).json({ error: e.message, updated, failed })
+      }
+    }
+    console.log(`[genre-fix] ${GENRE_DONE_FIELD} ${done ? 'set' : 'cleared'} on ${updated}/${recordIds.length}${artist ? ` (${artist})` : ''}${failed.length ? ` (${failed.length} failed)` : ''}`)
+    res.json({ updated, failed, value })
+  } catch (e) {
+    console.error('[genre-fix] done failed:', e.message)
     res.status(500).json({ error: e.message })
   }
 })
