@@ -74,6 +74,7 @@ import { fetchCover, coverFetchUrls } from '../lib/cover-url.js'
 import { syncMamEdit } from '../lib/mam-streamer-sync.js'
 import { contentDisposition } from '../lib/content-disposition.js'
 import { readTrack, applyFix } from '../lib/track-fix.js'
+import { songLengthToFmTime } from '../lib/song-length.js'
 
 // Load metadata on startup (non-blocking — portal works even if file is missing)
 loadMetadata()
@@ -314,35 +315,8 @@ function _streamerTapeMetadataFromCms(first, catalogueNo) {
 // ISO 8601 ("PT4M10S") and bare seconds ("270"). _durationForFm coerces every
 // known input shape — number of seconds, ISO 8601, MM:SS, HH:MM:SS — into a
 // safe "HH:MM:SS" string. Returns null for empty input so the caller can skip
-// the field entirely.
-function _durationForFm(v) {
-  if (v == null || v === '') return null
-  let sec = null
-  if (typeof v === 'number' && !isNaN(v)) {
-    sec = Math.round(v)
-  } else {
-    const s = String(v).trim()
-    if (/^\d+(\.\d+)?$/.test(s)) {
-      sec = Math.round(parseFloat(s))
-    } else {
-      const iso = s.match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$/i)
-      if (iso) {
-        sec = Math.round((+iso[1]||0)*3600 + (+iso[2]||0)*60 + (+iso[3]||0))
-      } else {
-        const parts = s.split(':').map(p => parseFloat(p))
-        if (parts.every(n => !isNaN(n))) {
-          if (parts.length === 3) sec = Math.round(parts[0]*3600 + parts[1]*60 + parts[2])
-          else if (parts.length === 2) sec = Math.round(parts[0]*60 + parts[1])
-        }
-      }
-    }
-  }
-  if (sec == null) return null
-  const h  = Math.floor(sec / 3600); sec %= 3600
-  const m  = Math.floor(sec / 60);   sec %= 60
-  const pad = n => String(n).padStart(2, '0')
-  return `${pad(h)}:${pad(m)}:${pad(sec)}`
-}
+// the field entirely. One rule for every write path — see lib/song-length.js.
+const _durationForFm = songLengthToFmTime
 
 // ── Catalog live search — queries FileMaker directly ─────────────────────────
 router.get('/catalog/search', adminAuth, async (req, res) => {
@@ -2995,7 +2969,9 @@ router.post('/catalogue/:cat/enrich', adminAuth, express.json(), async (req, res
     if (row.rights_territories) f['Rights Territories']  = row.rights_territories
     if (row.parental && lf.parentalName) f[lf.parentalName] = row.parental
     if (row.bpm)          f['BPM']                        = String(row.bpm)
-    if (row.duration_sec != null) f['Duration']           = String(row.duration_sec)
+    // Not String(seconds): a time field reads a bare "207" as 207 HOURS.
+    if (row.duration_sec != null && _durationForFm(row.duration_sec))
+                          f['Duration']                   = _durationForFm(row.duration_sec)
     if (row.explicit !== undefined && row.explicit !== null)
                           f['Explicit']                   = row.explicit ? 'Explicit' : 'No'
     if (row.composer)     f['Composers']                  = row.composer

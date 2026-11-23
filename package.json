@@ -16,7 +16,8 @@
     "search:smoke": "node scripts/search-merge-smoke.mjs",
     "vision-index:smoke": "node scripts/vision-index-save-smoke.mjs",
     "health:smoke": "node scripts/data-health-smoke.mjs",
-    "health:mam-smoke": "node scripts/mam-health-smoke.mjs"
+    "health:mam-smoke": "node scripts/mam-health-smoke.mjs",
+    "song-length:smoke": "node scripts/song-length-smoke.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.0.0",
