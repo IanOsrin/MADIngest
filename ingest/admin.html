@@ -9774,27 +9774,27 @@ gfInitGenres()
 
 function gfEsc(s){ return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') }
 
-// Genre_Changed summary for one artist row: "12 / 30" plus which fields.
+// Genre_Changed summary for one artist row: the changed-track count plus which fields.
 function gfChangedCell(a) {
   const g = a.genreChanged || { count: 0, kinds: {} }
   if (!g.count) return '<span class="muted">—</span>'
   const kinds = Object.entries(g.kinds).sort((x, y) => y[1] - x[1])
     .map(([k, n]) => `<div class="muted">${gfEsc(k)}${kinds_n(n, g.count)}</div>`).join('')
-  return `<strong style="color:var(--gold)">${g.count} / ${a.count}</strong>${kinds}`
+  return `<strong style="color:var(--gold)" title="${g.count} of ${a.count} tracks changed">${g.count}</strong>${kinds}`
 }
 const kinds_n = (n, total) => n === total ? '' : ` (${n})`
 
 // Genre_Done for one artist row: a checkbox the capturer ticks by hand. Ticked
-// only when every listed track is done; a part-done artist shows "n / total".
+// only when every listed track is done; a part-done count shows only on hover.
 let gfDoneOk = true, gfDoneField = 'Genre_Done'
 function gfDoneCell(a, i) {
   if (!gfDoneOk) return `<span class="muted" title="Add ${gfEsc(gfDoneField)} to the API_Album_Songs layout in MADStreamer">not on API_Album_Songs yet</span>`
   const d = a.genreDone || { count: 0, latest: '', ids: [] }
   const all = d.count >= a.count && a.count > 0
-  const part = d.count && !all ? `<div style="color:var(--gold)">${d.count} / ${a.count}</div>` : ''
-  return `<label style="display:flex;gap:6px;align-items:center;cursor:pointer;white-space:nowrap">
+  const tip = d.count && !all ? ` title="${d.count} of ${a.count} tracks ticked"` : ''
+  return `<label${tip} style="display:flex;gap:6px;align-items:center;cursor:pointer;white-space:nowrap">
       <input type="checkbox" id="gfDoneBox${i}" ${all ? 'checked' : ''} onchange="gfMarkDone(${i}, this.checked)"> Genre done
-    </label>${part}${d.latest ? `<div class="muted">${gfEsc(d.latest)}</div>` : ''}`
+    </label>${d.latest ? `<div class="muted">${gfEsc(d.latest)}</div>` : ''}`
 }
 function gfDoneRefresh(i) { const c = document.getElementById(`gfDone${i}`); if (c) c.innerHTML = gfDoneCell(gfArtists[i], i) }
 
