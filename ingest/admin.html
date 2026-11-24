@@ -660,9 +660,9 @@
           <label style="display:flex;gap:8px;align-items:flex-start;font-size:0.82rem;cursor:pointer">
             <input type="checkbox" id="ddexBackfillCb" style="margin-top:3px">
             <span>
-              <strong>Auto-replicate missing records</strong> to Gallo Catalogue &amp; MadStreamer
+              <strong>Auto-replicate missing records</strong> to Music Arena Master &amp; MadStreamer
               before generating DDEX. Creates per-track records on each DB plus the
-              album-level Tape Files entry. Only runs against DBs that have zero
+              album-level record (MAM Albums / Streamer Tape Files). Only runs against DBs that have zero
               tracks for this catalogue — existing records are left alone.
             </span>
           </label>
@@ -764,7 +764,7 @@
           catalogue, barcode, language) save to every track of the album — bulk edits touching
           several albums ask first. Saves land in the cache immediately and queue up on the
           <strong>⇪ Push changes to databases</strong> button — click it when you're done editing
-          to review old → new per matched record and push to Gallo Catalogue, CMS 2024 and
+          to review old → new per matched record and push to Music Arena Master, CMS 2024 and
           MadStreamer in one go. For bulk corrections:
           <strong>⬇ Download xlsx → edit in Excel → ⬆ Replace from xlsx</strong> (a timestamped
           S3 backup is written before every replace). Edits persist to the shared S3 copy, so
@@ -2269,6 +2269,16 @@ function fmtDur(sec) {
 function esc(s) {
   if (s == null) return ''
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
+}
+
+// Replication reports its album-level record differently per database: MAM
+// creates an Albums row (r.album), MadStreamer a Tape Files row (r.tape).
+function albumNote(r) {
+  const a = r.album || r.tape
+  if (!a) return ''
+  if (a.error) return ` (album record error: ${a.error})`
+  if (a.action === 'exists') return `, album ${a.albumID || ''} already there`.replace(' ,', ',')
+  return a.albumID ? `, album ${a.albumID} created` : ', album record created'
 }
 function badge(status) {
   return `<span class="badge badge-${status}">${esc(status)}</span>`
@@ -5672,7 +5682,7 @@ async function buildIngroovesFolder() {
         if (r.action === 'skipped') {
           repLines.push(`  ${label}: skipped (already present — ${r.count} tracks)`)
         } else if (r.action === 'replicated') {
-          repLines.push(`  ${label}: created ${r.succeeded}/${r.total} tracks${r.failed ? `, ${r.failed} failed` : ''}${r.tape?.error ? ` (tape error: ${r.tape.error})` : (r.tape ? ', tape created' : '')}`)
+          repLines.push(`  ${label}: created ${r.succeeded}/${r.total} tracks${r.failed ? `, ${r.failed} failed` : ''}${albumNote(r)}`)
           if (r.failed && Array.isArray(r.results)) {
             r.results.filter(x => !x.ok).slice(0, 5).forEach(x => {
               repLines.push(`      • seq ${x.sequence_no ?? '?'} (${x.isrc || 'no ISRC'}): ${x.error}`)
@@ -5681,8 +5691,8 @@ async function buildIngroovesFolder() {
           }
         }
       }
-      summarise('Gallo Catalogue', repData.gallo)
-      summarise('MadStreamer',     repData.streamer)
+      summarise('Music Arena Master', repData.mam)
+      summarise('MadStreamer',        repData.streamer)
       status.textContent = repLines.join('\n') + '\n\nStarting DDEX build…\n'
     } catch (e) {
       status.textContent = '✗ Replication error: ' + e.message
@@ -9355,11 +9365,11 @@ function dbSyncReplicate() {
         if (r.action === 'skipped') {
           lines.push(`  ${label}: skipped (already present — ${r.count} tracks)`)
         } else if (r.action === 'replicated') {
-          lines.push(`  ${label}: ${r.succeeded}/${r.total} tracks${r.failed ? `, ${r.failed} failed` : ''}${r.tape?.error ? ` (tape error: ${r.tape.error})` : (r.tape ? ', tape created' : '')}`)
+          lines.push(`  ${label}: ${r.succeeded}/${r.total} tracks${r.failed ? `, ${r.failed} failed` : ''}${albumNote(r)}`)
         }
       }
-      summarise('Gallo Catalogue', data.gallo)
-      summarise('MadStreamer',     data.streamer)
+      summarise('Music Arena Master', data.mam)
+      summarise('MadStreamer',        data.streamer)
       // Refresh the matrix once the replication settles
       setTimeout(checkDbSyncStatus, 500)
       return lines.join('\n')

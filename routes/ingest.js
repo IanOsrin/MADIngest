@@ -50,9 +50,11 @@ import {
 } from '../lib/fm-cms2024.js'
 import { searchMamRecords, searchMamAlbums, findMamTracksByCatalogue, getMamAlbumForEdit, findMamAlbumByCatalogue,
          getMamLayoutFieldSet, updateMamRecord, updateMamSong, updateMamAlbum,
-         getMamFieldData } from '../lib/fm-mam.js'
-// The album tab creates in MAM as well as editing it.
-import { mamSession, findMamAlbum, makeIdAllocator, createMamAlbum, createMamSong, albumIdFor } from '../lib/fm-mam-write.js'
+         findMamRecordsByCatalogue, getMamFieldData } from '../lib/fm-mam.js'
+// The album tab creates in MAM as well as editing it, and CMS 2024 replication
+// now lands there instead of Gallo Catalogue.
+import { mamSession, findMamAlbum, makeIdAllocator, createMamAlbum, createMamSong,
+         freeAlbumId, albumIdFor } from '../lib/fm-mam-write.js'
 import { wavBufferToMp3, ensureFfmpeg } from '../lib/audio-convert.js'
 import { languageNameToCode } from '../lib/language-codes.js'
 import { generateDDEX382 } from '../lib/ddex-generate.js'
@@ -266,6 +268,58 @@ function _galloTapeMetadataFromCms(first, catalogueNo) {
     p_line:                first.p_line,
     c_line:                first.c_line,
     publishers:            _flatten(first.publishers),
+  }
+}
+
+/**
+ * Translate a CMS 2024 mapped track into the shapes `createMamSong` /
+ * `createMamAlbum` expect. MAM splits an album across two tables, so a
+ * replication is one album record plus a song record per track — unlike the
+ * Gallo/Streamer shape, where album fields ride on every song row.
+ * `album_id`, `master_id` and `recording_id` are supplied by the caller,
+ * which owns the allocators.
+ */
+function _mamSongFromCms(c, catalogueNo, { album_id, master_id, recording_id }) {
+  return {
+    master_id, recording_id, album_id,
+    sources:               'CMS 2024',
+    match_method:          'replicated-from-cms2024',
+    catalogue_no:          catalogueNo || c.catalogue_no,
+    wav_filename:          c.wav_filename || c.filename,
+    isrc:                  c.isrc,
+    title:                 c.title,
+    artist:                c.artist_name,
+    featured_artist:       c.featured_artist,
+    sequence_no:           c.sequence_no,
+    duration:              _durationForFm(c.duration_sec ?? c.duration),
+    genre:                 c.genre,
+    sub_genre:             c.sub_genre,
+    language:              c.language,
+    composers:             _flatten(c.composers),
+    producers:             _flatten(c.producers),
+    publishers:            _flatten(c.publishers),
+    parental:              c.parental,
+    c_line:                c.c_line,
+    p_line:                c.p_line,
+    rights_territories:    c.rights_territories,
+    original_release_date: c.original_release_date,
+    audio_hash_md5:        c.audio_hash_md5,
+  }
+}
+
+function _mamAlbumFromCms(first, catalogueNo, { album_id, track_count }) {
+  return {
+    album_id,
+    catalogue_no: catalogueNo,
+    album:        first.album_title,
+    album_artist: first.album_artist || first.artist_name,
+    year:         first.year,
+    release_date: first.release_date,
+    barcode:      first.barcode,
+    label:        first.label,
+    genre:        first.genre,
+    country:      first.country,
+    track_count,
   }
 }
 
@@ -4888,20 +4942,21 @@ router.get('/cms2024/push-catalogue-to-streamer-stream', (req, res) => {
 
 /**
  * POST /api/ingest/cms2024/ensure-catalogue-replicated
- * Body: { catalogue_no, replicate_to?: ['gallo','streamer'], force?: false }
+ * Body: { catalogue_no, replicate_to?: ['mam','streamer'], force?: false }
  *
- * High-level wrapper: makes sure the catalogue exists on whichever of Gallo
- * Catalogue / MadStreamer is missing, using CMS 2024 as the source. Used by
+ * High-level wrapper: makes sure the catalogue exists on whichever of Music
+ * Arena Master / MadStreamer is missing, using CMS 2024 as the source. Used by
  * the Generate-DDEX-from-2024 flow so we never generate a DDEX for a
  * catalogue that the other DBs don't know about.
  *
  *   • If `force=false` (default), each DB is only replicated to when it
  *     currently has ZERO tracks for the catalogue. Existing tracks are left
- *     alone (use /pull-catalogue-to-gallo or /push-catalogue-to-streamer
+ *     alone (use /pull-catalogue-to-mam or /push-catalogue-to-streamer
  *     directly for incremental sync).
- *   • `replicate_to` lets the caller restrict the operation, e.g. `['gallo']`.
+ *   • `replicate_to` lets the caller restrict the operation, e.g. `['mam']`.
+ *     'gallo' is accepted for old callers and treated as 'mam'.
  *
- * Returns a per-DB summary: { gallo: {action,...}, streamer: {action,...} }.
+ * Returns a per-DB summary: { mam: {action,...}, streamer: {action,...} }.
  */
 /**
  * Core ensure-catalogue-replicated logic, shared by POST + SSE endpoints.
@@ -4912,10 +4967,16 @@ async function _runEnsureReplicated({ catalogue_no, replicate_to, force = false,
   if (!catalogue_no) {
     throw Object.assign(new Error('catalogue_no required'), { status: 400 })
   }
+  // 'gallo' is accepted and ignored — Gallo Catalogue is read-only as of
+  // 2026-11-24, and old callers/bookmarks still name it.
   const targets = new Set(
-    (Array.isArray(replicate_to) && replicate_to.length ? replicate_to : ['gallo', 'streamer'])
+    (Array.isArray(replicate_to) && replicate_to.length ? replicate_to : ['mam', 'streamer'])
       .map(s => String(s).toLowerCase())
   )
+  if (targets.delete('gallo')) {
+    warn('Gallo Catalogue is read-only — replicating to Music Arena Master instead')
+    targets.add('mam')
+  }
 
   log(`Looking up CMS 2024 tracks for ${catalogue_no}…`)
   const cmsTracks = await findCms2024RecordsByCatalogue(catalogue_no, { layout })
@@ -4925,60 +4986,68 @@ async function _runEnsureReplicated({ catalogue_no, replicate_to, force = false,
   log(`Source: ${cmsTracks.length} tracks on CMS 2024`)
   const first = cmsTracks[0]
 
-  const [galloExisting, streamerExisting] = await Promise.all([
-    targets.has('gallo')    ? findGalloRecordsByCatalogue(catalogue_no).catch(e => { throw new Error('Gallo lookup: ' + e.message) })    : Promise.resolve([]),
+  // MAM keeps songs and albums in separate tables, so "already present" is
+  // asked of the Songs side — the same question the Gallo lookup answered.
+  const [mamExisting, streamerExisting] = await Promise.all([
+    targets.has('mam')      ? findMamRecordsByCatalogue(catalogue_no).catch(e => { throw new Error('MAM lookup: ' + e.message) })         : Promise.resolve([]),
     targets.has('streamer') ? findStreamerRecordsByCatalogue(catalogue_no).catch(e => { throw new Error('Streamer lookup: ' + e.message) }) : Promise.resolve([]),
   ])
-  if (targets.has('gallo'))    log(`Gallo Catalogue currently has ${galloExisting.length} records for ${catalogue_no}`)
+  if (targets.has('mam'))      log(`Music Arena Master currently has ${mamExisting.length} records for ${catalogue_no}`)
   if (targets.has('streamer')) log(`MadStreamer currently has ${streamerExisting.length} records for ${catalogue_no}`)
 
-  const result = { catalogue_no, source: 'cms2024', cms2024: { count: cmsTracks.length }, gallo: null, streamer: null }
+  const result = { catalogue_no, source: 'cms2024', cms2024: { count: cmsTracks.length }, mam: null, streamer: null }
 
-  // Gallo Catalogue replication
-  if (targets.has('gallo')) {
-    if (galloExisting.length && !force) {
-      log(`Gallo: skipping (already present — ${galloExisting.length} tracks)`)
-      result.gallo = { action: 'skipped', reason: 'already_present', count: galloExisting.length }
+  // Music Arena Master replication (canonical since 2026-11-24)
+  if (targets.has('mam')) {
+    if (mamExisting.length && !force) {
+      log(`MAM: skipping (already present — ${mamExisting.length} tracks)`)
+      result.mam = { action: 'skipped', reason: 'already_present', count: mamExisting.length }
     } else {
-      log(`Gallo: replicating ${cmsTracks.length} tracks…`)
-      const trackResults = []
-      let succeeded = 0, failed = 0
-      for (const c of cmsTracks) {
-        const label = `seq ${c.sequence_no ?? '?'} "${c.title || '(no title)'}"`
-        try {
-          // Same recording may exist under a different catalogue (re-issues) —
-          // creating would trip unique-ISRC validation. Check by ISRC first.
-          const elsewhere = c.isrc ? await getGalloTrack({ isrc: c.isrc }).catch(() => null) : null
-          if (elsewhere) {
-            succeeded++
-            log(`  ↷ Gallo ${label}: already exists as rec ${elsewhere.fm_record_id} under catalogue "${elsewhere.catalogue_no || '?'}" — skipped`)
-            trackResults.push({ ok: true, isrc: c.isrc, sequence_no: c.sequence_no, action: 'exists-other-catalogue',
-                                gallo_record_id: elsewhere.fm_record_id, gallo_catalogue_no: elsewhere.catalogue_no || null })
-            continue
-          }
-          const created = await createGalloRecord(_galloMetadataFromCms(c, catalogue_no))
-          succeeded++
-          log(`  ✓ Gallo ${label} → rec ${created.fmRecordId}`)
-          trackResults.push({ ok: true, isrc: c.isrc, sequence_no: c.sequence_no, action: 'created', gallo_record_id: created.fmRecordId })
-        } catch (err) {
-          failed++
-          warn(`Gallo ${label} failed: ${err.message}`)
-          trackResults.push({ ok: false, isrc: c.isrc, sequence_no: c.sequence_no, error: err.message })
-        }
-      }
-      let tape = null
-      if (trackResults.some(r => r.action === 'created')) {
-        try {
-          tape = await createTapeFileRecord(_galloTapeMetadataFromCms(first, catalogue_no))
-          log(`  ✓ Gallo Tape Files Master record created`)
-        } catch (err) {
-          warn(`Gallo Tape Files create failed: ${err.message}`)
-          tape = { error: err.message }
-        }
+      log(`MAM: replicating ${cmsTracks.length} tracks…`)
+      const db = await mamSession()
+      // The album record comes FIRST: its AlbumID is the key every song hangs
+      // off, so a song created before it would point at nothing.
+      const existingAlbum = await findMamAlbum(db, catalogue_no)
+      const albumId = existingAlbum
+        ? (existingAlbum.fieldData?.['AlbumID'] || existingAlbum['AlbumID'])
+        : await freeAlbumId(db, catalogue_no)
+      let album = null
+      if (existingAlbum) {
+        log(`  ↷ MAM album ${albumId} already exists — songs will attach to it`)
+        album = { action: 'exists', albumID: albumId }
       } else {
-        log(`  ↷ Gallo Tape Files record NOT created — no new tracks (album exists under another catalogue)`)
+        try {
+          await createMamAlbum(db, _mamAlbumFromCms(first, catalogue_no, { album_id: albumId, track_count: cmsTracks.length }))
+          log(`  ✓ MAM Albums record created — ${albumId}`)
+          album = { action: 'created', albumID: albumId }
+        } catch (err) {
+          // Without an album the songs would be orphans, so stop here.
+          warn(`MAM album create failed: ${err.message}`)
+          result.mam = { action: 'failed', error: err.message }
+          album = null
+        }
       }
-      result.gallo = { action: 'replicated', total: cmsTracks.length, succeeded, failed, tape, results: trackResults }
+      if (album) {
+        const ids = await makeIdAllocator(db)
+        const trackResults = []
+        let succeeded = 0, failed = 0
+        for (const c of cmsTracks) {
+          const label = `seq ${c.sequence_no ?? '?'} "${c.title || '(no title)'}"`
+          try {
+            const recordId = await createMamSong(db, _mamSongFromCms(c, catalogue_no, {
+              album_id: albumId, master_id: ids.nextMaster(), recording_id: ids.nextRecording(),
+            }))
+            succeeded++
+            log(`  ✓ MAM ${label} → rec ${recordId}`)
+            trackResults.push({ ok: true, isrc: c.isrc, sequence_no: c.sequence_no, action: 'created', mam_record_id: recordId })
+          } catch (err) {
+            failed++
+            warn(`MAM ${label} failed: ${err.message}`)
+            trackResults.push({ ok: false, isrc: c.isrc, sequence_no: c.sequence_no, error: err.message })
+          }
+        }
+        result.mam = { action: 'replicated', total: cmsTracks.length, succeeded, failed, album, results: trackResults }
+      }
     }
   }
 
