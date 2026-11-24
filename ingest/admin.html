@@ -1111,7 +1111,7 @@
         </div>
 
         <div class="import-actions" style="flex-wrap:wrap;gap:10px;align-items:center">
-          <button class="btn btn-ghost" onclick="dbSyncCopy('pull-catalogue-to-gallo')">⤴ CMS 2024 → Gallo</button>
+          <button class="btn btn-ghost" onclick="dbSyncCopy('pull-catalogue-to-mam')">⤴ CMS 2024 → MAM</button>
           <button class="btn btn-ghost" onclick="dbSyncCopy('push-catalogue-to-streamer')">⤴ CMS 2024 → MadStreamer</button>
           <button class="btn btn-ghost" id="dbSyncG2SBtn" onclick="dbSyncGalloToStreamer()">⤴ Gallo → MadStreamer</button>
           <label style="font-size:0.78rem;color:var(--muted)">
@@ -9387,8 +9387,10 @@ function dbSyncCopy(endpoint) {
     statusEl: status,
     onDone: (data) => {
       const lines = ['', `✓ ${endpoint}: ${data.succeeded}/${data.total} succeeded${data.failed ? `, ${data.failed} failed` : ''}`]
-      if (data.tape?.error)  lines.push(`  Tape Files: ✗ ${data.tape.error}`)
-      else if (data.tape)    lines.push(`  Tape Files: ${data.tape.action || 'created'}`)
+      // MAM reports an Albums record, MadStreamer a Tape Files record.
+      const alb = data.album || data.tape
+      if (alb?.error)   lines.push(`  Album record: ✗ ${alb.error}`)
+      else if (alb)     lines.push(`  Album record: ${alb.action || 'created'}${alb.albumID ? ` (${alb.albumID})` : ''}`)
       return lines.join('\n')
     },
     onErrorColour: 'var(--gold)',

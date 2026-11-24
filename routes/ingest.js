@@ -55,6 +55,8 @@ import { searchMamRecords, searchMamAlbums, findMamTracksByCatalogue, getMamAlbu
 // now lands there instead of Gallo Catalogue.
 import { mamSession, findMamAlbum, makeIdAllocator, createMamAlbum, createMamSong,
          freeAlbumId, albumIdFor } from '../lib/fm-mam-write.js'
+// MAM keeps credits in a plural field AND numbered slots; this fills both.
+import { mamComposerFields } from '../lib/credits.js'
 import { wavBufferToMp3, ensureFfmpeg } from '../lib/audio-convert.js'
 import { languageNameToCode } from '../lib/language-codes.js'
 import { generateDDEX382 } from '../lib/ddex-generate.js'
@@ -4293,82 +4295,15 @@ router.post('/cms2024/push-catalogue-from-gallo', adminAuth, express.json(), asy
   }
 })
 
-// Pull from CMS 2024 → Gallo Catalogue. Looks up a track on CMS 2024 by
-// ISRC / catalogue+sequence, then PATCHes the corresponding Gallo record.
-// Body: { isrc?, catalogue_no?, sequence_no?, fields?: string[], layout? }
-//   fields  — optional whitelist of CMS 2024 field names to copy over.
-//             If omitted, copies a sensible default set.
-router.post('/cms2024/pull-to-gallo', adminAuth, express.json(), async (req, res) => {
-  const { isrc, catalogue_no, sequence_no, fields, layout } = req.body || {}
-  if (!isrc && !catalogue_no) {
-    return res.status(400).json({ error: 'Provide isrc, or catalogue_no (and ideally sequence_no)' })
-  }
-  try {
-    // 1. Find on CMS 2024.
-    const query = isrc
-      ? { 'ISRC': `==${isrc}` }
-      : (sequence_no != null
-          ? { 'Album Catalogue Number': `==${catalogue_no}`, 'Sequence Number': `==${sequence_no}` }
-          : { 'Album Catalogue Number': `==${catalogue_no}` })
-    const cmsRec = await findCms2024Record(query, { layout })
-    if (!cmsRec) return res.status(404).json({ error: 'No matching CMS 2024 record' })
-    const mapped = mapCms2024Record(cmsRec)
-
-    // 2. Find the Gallo Catalogue record — prefer ISRC, fall back to cat+seq.
-    const galloTrack = await getGalloTrack({
-      catalogue_no: catalogue_no   || mapped.catalogue_no,
-      sequence_no:  sequence_no    ?? mapped.sequence_no,
-      isrc:         isrc           || mapped.isrc,
-    })
-    if (!galloTrack) return res.status(404).json({ error: 'No matching Gallo Catalogue record' })
-
-    // 3. Decide which Gallo fields to write. The keys here are *Gallo* field
-    //    names — translating from mapped CMS 2024 values.
-    const defaultMap = {
-      'Track Name':              mapped.title,
-      'Track Artist':            mapped.artist_name,
-      'Album Title':             mapped.album_title,
-      'ISRC':                    mapped.isrc,
-      'Barcode':                 mapped.barcode,
-      'Sequence Number':         mapped.sequence_no != null ? String(mapped.sequence_no) : null,
-      'Year of Release':         mapped.year,
-      'Release Date':            mapped.release_date,
-      'Genre':                   mapped.genre,
-      'Language':                mapped.language,
-      'Duration':                _durationForFm(mapped.duration_sec ?? mapped.duration),
-      'Composers':               _flatten(mapped.composers),
-      'Producers':               _flatten(mapped.producers),
-      'Publishers':              _flatten(mapped.publishers),
-      'Label':                   mapped.label,
-      'pLine':                   mapped.p_line,
-      'cLine':                   mapped.c_line,
-    }
-
-    const writePayload = {}
-    if (Array.isArray(fields) && fields.length) {
-      for (const f of fields) {
-        if (defaultMap[f] != null && defaultMap[f] !== '') writePayload[f] = defaultMap[f]
-      }
-    } else {
-      for (const [k, v] of Object.entries(defaultMap)) {
-        if (v != null && v !== '') writePayload[k] = v
-      }
-    }
-    if (!Object.keys(writePayload).length) {
-      return res.status(400).json({ error: 'Nothing to write — all source values were empty' })
-    }
-
-    await updateGalloRecord(galloTrack.fm_record_id, writePayload)
-    res.json({
-      ok: true,
-      gallo_record_id: galloTrack.fm_record_id,
-      cms2024_record_id: cmsRec.recordId,
-      fields_written: Object.keys(writePayload),
-    })
-  } catch (err) {
-    console.error('[CMS 2024 pull-to-gallo]', err)
-    res.status(502).json({ error: err.message })
-  }
+// Single-track pull from CMS 2024 → Gallo Catalogue. RETIRED 2026-11-24:
+// Gallo Catalogue is read-only. Nothing in the admin UI called this one (the
+// tab uses the whole-catalogue pull), so rather than quietly re-point a
+// single-record write it refuses and names the replacement.
+router.post('/cms2024/pull-to-gallo', adminAuth, express.json(), (req, res) => {
+  res.status(410).json({
+    error: 'Gallo Catalogue is read-only. Use /api/ingest/cms2024/pull-catalogue-to-mam ' +
+           'to pull a catalogue from CMS 2024 into Music Arena Master.',
+  })
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4718,21 +4653,26 @@ router.post('/catalogue/:catNo/track-fix/apply', adminAuth, express.json(), asyn
 })
 
 /**
- * POST /api/ingest/cms2024/pull-catalogue-to-gallo
+ * POST /api/ingest/cms2024/pull-catalogue-to-mam
  * Body: { catalogue_no, fields?, layout? }
  *
  * For every CMS 2024 track on this catalogue:
- *   • Look up the matching Gallo Catalogue record (by ISRC, then cat+seq).
- *   • If found → PATCH the listed Gallo fields with values from CMS 2024.
- *   • If not found → CREATE a new Gallo record (createGalloRecord) using the
- *     CMS 2024 values.
+ *   • Look up the matching Music Arena Master song (by ISRC, then seq).
+ *   • If found → PATCH the listed fields with values from CMS 2024.
+ *   • If not found → CREATE the song under the album's AlbumID.
+ * Album-level values (title, artist, year, UPC, label …) go to MAM's Albums
+ * record once, not onto every song — that is the shape MAM keeps, unlike
+ * Gallo/Streamer where album fields ride on each song row.
+ *
+ * Until 2026-11-24 this pulled into Gallo Catalogue; Gallo is read-only now.
+ * The old /pull-catalogue-to-gallo paths still answer, and do this.
  *
  * Returns per-track results with action ∈ { 'updated', 'created', 'skipped' }.
  */
 /**
- * Core pull-catalogue-to-gallo logic, shared by POST + SSE endpoints.
+ * Core pull-catalogue-to-MAM logic, shared by POST + SSE endpoints.
  */
-async function _runPullCatalogueToGallo({ catalogue_no, fields, layout, log, warn }) {
+async function _runPullCatalogueToMam({ catalogue_no, fields, layout, log, warn }) {
   if (!catalogue_no) throw Object.assign(new Error('catalogue_no required'), { status: 400 })
 
   log(`Looking up CMS 2024 tracks for ${catalogue_no}…`)
@@ -4742,80 +4682,100 @@ async function _runPullCatalogueToGallo({ catalogue_no, fields, layout, log, war
   }
   log(`Found ${cmsTracks.length} tracks on CMS 2024`)
 
-  const galloExisting = await findGalloRecordsByCatalogue(catalogue_no)
-  log(`Gallo Catalogue has ${galloExisting.length} matching records (will UPDATE; missing tracks will be CREATED)`)
-  const byIsrc = new Map(galloExisting.filter(t => t.isrc).map(t => [t.isrc, t]))
-  const bySeq  = new Map(galloExisting.filter(t => t.sequence_no != null).map(t => [t.sequence_no, t]))
+  const mam = await findMamTracksByCatalogue(catalogue_no)
+  const mamTracks = mam?.tracks || []
+  log(`Music Arena Master has ${mamTracks.length} matching songs (will UPDATE; missing tracks will be CREATED)`)
+  const byIsrc = new Map(mamTracks.filter(t => t.isrc).map(t => [t.isrc, t]))
+  const bySeq  = new Map(mamTracks.filter(t => t.sequence_no != null).map(t => [t.sequence_no, t]))
+
+  // Creating needs the album to exist first — its AlbumID is what a song hangs
+  // off. An album MAM has never seen is created once, up front.
+  const allow = Array.isArray(fields) && fields.length ? new Set(fields) : null
+  let db = null, albumId = mam?.album?.fieldData?.['AlbumID'] || null
+  let albumCreated = false
+  const needCreate = cmsTracks.some(c =>
+    !((c.isrc && byIsrc.get(c.isrc)) || (c.sequence_no != null && bySeq.get(c.sequence_no))))
+  let ids = null
+  if (needCreate) {
+    db = await mamSession()
+    if (!albumId) {
+      albumId = await freeAlbumId(db, catalogue_no)
+      try {
+        await createMamAlbum(db, _mamAlbumFromCms(cmsTracks[0], catalogue_no,
+          { album_id: albumId, track_count: cmsTracks.length }))
+        albumCreated = true
+        log(`  ✓ MAM Albums record created — ${albumId}`)
+      } catch (err) {
+        warn(`MAM album create failed: ${err.message} — songs cannot be created without it`)
+        albumId = null
+      }
+    }
+    if (albumId) ids = await makeIdAllocator(db)
+  }
 
   let succeeded = 0, failed = 0
   const results = []
   for (const c of cmsTracks) {
     const label = `seq ${c.sequence_no ?? '?'} "${c.title || '(no title)'}"`
     try {
+      // Song-level fields only. 'Barcode' is MAM's album-level 'UPC', so the
+      // allowlist the UI sends (Gallo field names) is honoured by name below.
       const fullMap = {
-        'Track Name':              c.title,
-        'Track Artist':            c.artist_name,
-        'Album Artist':            c.album_artist,
-        'Album Title':             c.album_title,
-        'ISRC':                    c.isrc,
-        'Barcode':                 c.barcode,
-        'Sequence Number':         c.sequence_no != null ? String(c.sequence_no) : null,
-        'Year of Release':         c.year,
-        'Release Date':            c.release_date,
-        'Genre':                   c.genre,
-        'Language':                c.language,
-        'Duration':                _durationForFm(c.duration_sec ?? c.duration),
-        'Composers':               _flatten(c.composers),
-        'Producers':               _flatten(c.producers),
-        'Publishers':              _flatten(c.publishers),
-        'Label':                   c.label,
-        'pLine':                   c.p_line,
-        'cLine':                   c.c_line,
+        'Track Name':            c.title,
+        'Track Artist':          c.artist_name,
+        'Featured Artist':       c.featured_artist,
+        'ISRC':                  c.isrc,
+        'Sequence Number':       c.sequence_no != null ? String(c.sequence_no) : null,
+        'Genre':                 c.genre,
+        'Sub Genre':             c.sub_genre,
+        'Language':              c.language,
+        'Duration':              _durationForFm(c.duration_sec ?? c.duration),
+        'Producers':             _flatten(c.producers),
+        'Producer':              _flatten(c.producers),
+        'Publishers':            _flatten(c.publishers),
+        'pLine':                 c.p_line,
+        'cLine':                 c.c_line,
+        'Rights Territories':    c.rights_territories,
+        'Original Release Date': c.original_release_date,
       }
       const writePayload = {}
-      const allow = Array.isArray(fields) && fields.length ? new Set(fields) : null
       for (const [k, v] of Object.entries(fullMap)) {
         if (v == null || v === '') continue
         if (allow && !allow.has(k)) continue
         writePayload[k] = v
       }
+      // Composers fill the plural field AND the numbered slots together.
+      const composers = _flatten(c.composers)
+      if (composers && (!allow || allow.has('Composers'))) Object.assign(writePayload, mamComposerFields(composers))
 
-      const galloMatch = (c.isrc && byIsrc.get(c.isrc))
-                      || (c.sequence_no != null && bySeq.get(c.sequence_no))
-                      || null
+      const match = (c.isrc && byIsrc.get(c.isrc))
+                 || (c.sequence_no != null && bySeq.get(c.sequence_no))
+                 || null
 
-      if (galloMatch) {
+      if (match) {
         if (!Object.keys(writePayload).length) {
           log(`  ↷ ${label}: nothing-to-write (already up to date)`)
           results.push({ ok: true, isrc: c.isrc, sequence_no: c.sequence_no, action: 'skipped',
-                         gallo_record_id: galloMatch.fm_record_id, reason: 'nothing-to-write' })
+                         mam_record_id: match.recordId, reason: 'nothing-to-write' })
           succeeded++
           continue
         }
-        await updateGalloRecord(galloMatch.fm_record_id, writePayload)
+        await updateMamSong(match.recordId, writePayload)
         succeeded++
-        log(`  ✓ ${label}: updated Gallo rec ${galloMatch.fm_record_id} (${Object.keys(writePayload).length} fields)`)
+        log(`  ✓ ${label}: updated MAM song ${match.recordId} (${Object.keys(writePayload).length} fields)`)
         results.push({ ok: true, isrc: c.isrc, sequence_no: c.sequence_no, action: 'updated',
-                       gallo_record_id: galloMatch.fm_record_id,
-                       fields_written: Object.keys(writePayload) })
+                       mam_record_id: match.recordId, fields_written: Object.keys(writePayload) })
+      } else if (!albumId) {
+        failed++
+        warn(`${label}: no MAM album for ${catalogue_no} — cannot create the song`)
+        results.push({ ok: false, isrc: c.isrc, sequence_no: c.sequence_no, error: 'no MAM album to attach to' })
       } else {
-        // Not under this catalogue — but the SAME recording may live in Gallo
-        // under a different catalogue number (re-issues: CMS "ASF 1631" vs
-        // Gallo "ABC 1685-6"). Creating would trip Gallo's unique-ISRC
-        // validation with a cryptic 504 — check by ISRC first and say so.
-        const elsewhere = c.isrc ? await getGalloTrack({ isrc: c.isrc }).catch(() => null) : null
-        if (elsewhere) {
-          succeeded++
-          log(`  ↷ ${label}: already in Gallo as rec ${elsewhere.fm_record_id} under catalogue "${elsewhere.catalogue_no || '?'}" — skipped, not re-created`)
-          results.push({ ok: true, isrc: c.isrc, sequence_no: c.sequence_no, action: 'exists-other-catalogue',
-                         gallo_record_id: elsewhere.fm_record_id, gallo_catalogue_no: elsewhere.catalogue_no || null })
-        } else {
-          const created = await createGalloRecord(_galloMetadataFromCms(c, catalogue_no))
-          succeeded++
-          log(`  ✓ ${label}: created Gallo rec ${created.fmRecordId}`)
-          results.push({ ok: true, isrc: c.isrc, sequence_no: c.sequence_no, action: 'created',
-                         gallo_record_id: created.fmRecordId })
-        }
+        const recordId = await createMamSong(db, _mamSongFromCms(c, catalogue_no, {
+          album_id: albumId, master_id: ids.nextMaster(), recording_id: ids.nextRecording(),
+        }))
+        succeeded++
+        log(`  ✓ ${label}: created MAM song ${recordId}`)
+        results.push({ ok: true, isrc: c.isrc, sequence_no: c.sequence_no, action: 'created', mam_record_id: recordId })
       }
     } catch (err) {
       failed++
@@ -4824,43 +4784,63 @@ async function _runPullCatalogueToGallo({ catalogue_no, fields, layout, log, war
     }
   }
 
-  let tape = null
-  // Only create an album (Tape) record when this run actually created tracks —
-  // an album that fully exists under another catalogue must not get a shell.
-  const anyCreated = results.some(r => r.action === 'created')
-  if (galloExisting.length === 0 && cmsTracks.length && anyCreated) {
-    try {
-      tape = await createTapeFileRecord(_galloTapeMetadataFromCms(cmsTracks[0], catalogue_no))
-      log(`  ✓ Gallo Tape Files Master record created (album was new)`)
-    } catch (err) {
-      warn(`Gallo Tape Files create failed: ${err.message}`)
-      tape = { error: err.message }
+  // Album-level values are one record in MAM, written once — and only onto an
+  // album that already existed (a freshly created one carries them already).
+  let album = albumCreated ? { action: 'created', albumID: albumId } : null
+  if (!albumCreated && mam?.album?.recordId) {
+    const albumMap = {
+      'Album Title':     cmsTracks[0].album_title,
+      'Album Artist':    cmsTracks[0].album_artist || cmsTracks[0].artist_name,
+      'Year of Release': cmsTracks[0].year,
+      'Release Date':    cmsTracks[0].release_date,
+      'UPC':             cmsTracks[0].barcode,
+      'Label':           cmsTracks[0].label,
+      'Country':         cmsTracks[0].country,
+    }
+    // The UI's allowlist speaks Gallo's names: Barcode is MAM's UPC.
+    const albumPayload = {}
+    for (const [k, v] of Object.entries(albumMap)) {
+      if (v == null || v === '') continue
+      if (allow && !allow.has(k === 'UPC' ? 'Barcode' : k)) continue
+      albumPayload[k] = v
+    }
+    if (Object.keys(albumPayload).length) {
+      try {
+        await updateMamAlbum(mam.album.recordId, albumPayload)
+        album = { action: 'updated', albumID: albumId, fields_written: Object.keys(albumPayload) }
+        log(`  ✓ MAM Albums record updated (${Object.keys(albumPayload).length} fields)`)
+      } catch (err) {
+        warn(`MAM album update failed: ${err.message}`)
+        album = { error: err.message }
+      }
     }
   }
   log(`✓ Pull complete — ${succeeded}/${cmsTracks.length} succeeded${failed ? `, ${failed} failed` : ''}`)
-  return { ok: true, catalogue_no, total: cmsTracks.length, succeeded, failed, tape, results }
+  return { ok: true, catalogue_no, total: cmsTracks.length, succeeded, failed, album, results }
 }
 
-router.post('/cms2024/pull-catalogue-to-gallo', adminAuth, express.json(), async (req, res) => {
+// Both names answer: '-to-mam' is what it does, '-to-gallo' is what callers
+// and bookmarks still say. Same handler.
+router.post(['/cms2024/pull-catalogue-to-mam', '/cms2024/pull-catalogue-to-gallo'], adminAuth, express.json(), async (req, res) => {
   const { catalogue_no, fields, layout } = req.body || {}
   const noop = () => {}
   try {
-    const result = await _runPullCatalogueToGallo({ catalogue_no, fields, layout, log: noop, warn: noop })
+    const result = await _runPullCatalogueToMam({ catalogue_no, fields, layout, log: noop, warn: noop })
     res.json(result)
   } catch (err) {
-    console.error('[CMS 2024 pull-catalogue-to-gallo]', err)
+    console.error('[CMS 2024 pull-catalogue-to-mam]', err)
     res.status(err.status || 502).json({ error: err.message })
   }
 })
 
-router.get('/cms2024/pull-catalogue-to-gallo-stream', (req, res) => {
+router.get(['/cms2024/pull-catalogue-to-mam-stream', '/cms2024/pull-catalogue-to-gallo-stream'], (req, res) => {
   const catalogue_no = (req.query.catalogue_no || '').toString().trim()
   const layout = req.query.layout
   let fields
   if (req.query.fields) { try { fields = JSON.parse(req.query.fields) } catch { /* ignore */ } }
   if (!catalogue_no) return res.status(400).end('catalogue_no required')
   _sseStreamRunner({ req, res, runner: ({ log, warn }) =>
-    _runPullCatalogueToGallo({ catalogue_no, fields, layout, log, warn })
+    _runPullCatalogueToMam({ catalogue_no, fields, layout, log, warn })
   })
 })
 
