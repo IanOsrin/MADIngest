@@ -10,7 +10,7 @@
 import express, { Router } from 'express'
 import sharp from 'sharp'
 import { Readable } from 'node:stream'
-import { getGalloFieldData, getGalloLayoutFieldSet, updateGalloRecord, reloadGalloLayoutFields } from '../lib/fm-gallo.js'
+import { getGalloFieldData, getGalloLayoutFieldSet, reloadGalloLayoutFields } from '../lib/fm-gallo.js'
 import { resolveGalloAudio, resolveGalloAudioLive } from '../lib/gallo-vision.js'
 import { visionOpen, visionStat, visionUploadFile } from '../lib/vision-drive.js'
 import { mkdtemp, writeFile, rm } from 'node:fs/promises'
@@ -94,14 +94,11 @@ router.get('/audio/:recordId/info', async (req, res) => {
     // ?write=1 — store the block in the record's "Audio details" field, the
     // same home the Media_GetSoundInfo plugin filled. Field name varies by
     // capitalisation; write whichever variant the layout actually has.
+    // ?write=1 is retired (2026-11-24): Gallo Catalogue is read-only. The
+    // block is still computed and returned — only storing it is refused.
     let wrote = null
     if (String(req.query.write || '') === '1') {
-      reloadGalloLayoutFields() // pick up fields added in FM since boot
-      const known = await getGalloLayoutFieldSet()
-      const fieldName = ['Audio details', 'Audio Details', 'Audio_Details'].find(n => known.has(n))
-      if (!fieldName) return res.status(422).json({ error: 'No "Audio details" field on the layout — add it in FileMaker first (same as Audio_URL)' })
-      await updateGalloRecord(req.params.recordId, { [fieldName]: block })
-      wrote = fieldName
+      return res.status(410).json({ error: 'Gallo Catalogue is read-only — the audio details are returned but no longer written back' })
     }
 
     const info = {

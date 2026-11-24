@@ -139,27 +139,15 @@ async function resolveGalloLineFields() {
   }
 }
 
-// PATCH wrapper for the enrich routes. On FM error 102 ("Field is missing")
-// we refresh the layout metadata, identify exactly which payload keys the
-// layout doesn't have, log + surface them, and retry the update without them
-// so the remaining fields still land. updateGalloRecord itself stays
-// unfiltered by design — this only kicks in after a 102.
+// PATCH wrapper for the enrich / filename routes. RETIRED 2026-11-24: Gallo
+// Catalogue is read-only, so the three tools that used it (Filename lookup,
+// Bulk filename update, Catalogue enrich) refuse rather than write. They are
+// Gallo-shaped tools — re-aiming them at Music Arena Master is a deliberate
+// job, not a rename, so they say so instead of guessing.
 async function updateGalloWithDiagnosis(fmRecordId, f) {
-  try {
-    await updateGalloRecord(fmRecordId, f)
-    return { skipped: [] }
-  } catch (e) {
-    if (!/field is missing/i.test(e.message)) throw e
-    reloadGalloLayoutFields()                       // layout may have changed in FM
-    const known   = await getGalloLayoutFieldSet()
-    const unknown = Object.keys(f).filter(k => !known.has(k))
-    if (!unknown.length) throw e                    // 102 but names all valid — rethrow
-    const slim = {}
-    for (const [k, v] of Object.entries(f)) if (known.has(k)) slim[k] = v
-    console.warn(`[Enrich] Layout is missing field(s): ${unknown.join(', ')} — retried without them`)
-    await updateGalloRecord(fmRecordId, slim)
-    return { skipped: unknown }
-  }
+  throw Object.assign(
+    new Error('Gallo Catalogue is read-only — this tool wrote to it and has not been re-aimed at Music Arena Master yet'),
+    { status: 410 })
 }
 
 // Mutates fieldData in place. row needs .label_name / .p_line / .c_line.
@@ -2401,6 +2389,13 @@ router.post('/metadata/lookup-filename', adminAuth, express.json(), async (req, 
   const row = lookupByFilename(filename)
   if (!row) return res.json({ ok: false, found: false, filename })
 
+  // Gallo Catalogue is read-only (2026-11-24) — this wrote the matched cache
+  // row back onto the Gallo record. The lookup itself still works.
+  return res.status(410).json({
+    ok: false, found: true, filename,
+    error: 'Gallo Catalogue is read-only — the match is shown but cannot be written back',
+  })
+  // eslint-disable-next-line no-unreachable
   try {
     const { updateGalloRecord } = await import('../lib/fm-gallo.js')
     await updateGalloRecord(fmRecordId, {
@@ -2633,9 +2628,8 @@ router.post('/metadata/bulk-filename-update', adminAuth, express.json({ limit: '
           c_line:                first.c_line,
           publishers:            first.publisher,
         }
-        const t = await createTapeFileRecord(tapeMeta)
-        tapeResults.push({ catalogue_no, ok: true, tapeRecordId: t.tapeRecordId })
-        console.log(`[BFU] Tape Files Master created for ${catalogue_no}: ${t.tapeRecordId}`)
+        // Gallo Catalogue is read-only (2026-11-24).
+        throw new Error('Gallo Catalogue is read-only — no Tape Files record created')
       } catch (e) {
         tapeResults.push({ catalogue_no, ok: false, error: e.message })
         console.warn(`[BFU] Tape Files Master failed for ${catalogue_no}: ${e.message}`)
@@ -2929,9 +2923,8 @@ router.post('/catalogue/:cat/enrich', adminAuth, express.json(), async (req, res
           album:         firstRow.album_title,
           catalogue_no:  firstRow.catalogue || cat,
         }
-        createTapeFileRecord(tapeMeta)
-          .then(t  => console.log(`[Enrich] Tape Files Master record created: ${t.tapeRecordId}`))
-          .catch(e => console.warn(`[Enrich] Tape Files Master create failed: ${e.message}`))
+        // Gallo Catalogue is read-only (2026-11-24) — no Tape Files record.
+        console.warn('[Enrich] Tape Files Master NOT created — Gallo Catalogue is read-only')
       }
     }
 
