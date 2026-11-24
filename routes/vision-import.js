@@ -10,10 +10,10 @@
 //                   tracks in the metadata cache, matches rows ↔ files by
 //                   normalised title, and reports what WOULD be created.
 //                   Blocked (409-shaped payload) if the catalogue already has
-//                   Gallo records — this tab never appends to an existing album.
+//                   MAM records — this tab never appends to an existing album.
 //   POST /create  — re-runs the same plan server-side (never trusts a stale
 //                   browser payload), then writes: Tape Files Master first,
-//                   then each song record sequentially. createGalloRecord's
+//                   then each song record sequentially. createMamSong's
 //                   read-back verify covers Audio_URL.
 import { Router } from 'express'
 import express from 'express'
@@ -22,9 +22,8 @@ import { visionStatus, visionList } from '../lib/vision-drive.js'
 import { loadMetadata, lookupAlbumTracks, getStatus } from '../lib/metadata-cache.js'
 import { normTitle } from '../lib/gallo-vision-link.js'
 import { fuzzyScore } from '../lib/fuzzy-match.js'
-import { findGalloRecordsByCatalogue, createGalloRecord, createTapeFileRecord, reloadGalloLayoutFields } from '../lib/fm-gallo.js'
-// MAM is the canonical catalogue, so this tab creates there by default. Gallo
-// stays reachable with target:'gallo' rather than being removed.
+// MAM is the canonical catalogue and the only write target: Gallo Catalogue
+// was reachable with target:'gallo' until 2026-11-24, and is read-only now.
 import { mamSession, makeIdAllocator, freeAlbumId, findMamAlbum, createMamAlbum, createMamSong } from '../lib/fm-mam-write.js'
 import { findMamRecordsByCatalogue } from '../lib/fm-mam.js'
 import { languageParts } from '../lib/language-codes.js'
@@ -185,7 +184,7 @@ function matchTracksToFiles(rows, files) {
 
 /** Build the full import plan. Throws {status, message} on bad input. */
 async function buildPlan({ folder, folders, catalogue, artist, album, target = 'mam' }) {
-  target = target === 'gallo' ? 'gallo' : 'mam'
+  target = 'mam'   // Gallo Catalogue is read-only (2026-11-24)
   const fail = (status, message) => { throw Object.assign(new Error(message), { status }) }
 
   // One or several folders (vinyl A/B sides often live in separate folders,
@@ -329,11 +328,9 @@ async function buildPlan({ folder, folders, catalogue, artist, album, target = '
   if (!rows.length) fail(404, `Catalogue "${catalogue}" not found in the metadata cache — add it via the Cache Viewer first`)
 
   // 3. Duplicate guard — this tab only creates brand-new albums. Ask the
-  // database we are about to WRITE to: checking Gallo while creating in MAM
+  // database we are about to WRITE to: checking a different one while creating
   // would happily import everything twice.
-  const existing = await (target === 'gallo'
-    ? findGalloRecordsByCatalogue(catalogue)
-    : findMamRecordsByCatalogue(catalogue)
+  const existing = await (findMamRecordsByCatalogue(catalogue)
   ).catch(e => fail(502, `FM duplicate check failed: ${e.message}`))
   if (existing.length) {
     return {
@@ -449,7 +446,7 @@ router.post('/create', adminAuth, express.json(), async (req, res) => {
   try {
     const plan = await buildPlan(req.body || {})
     if (plan.blocked) {
-      const where = plan.target === 'gallo' ? 'Gallo' : 'Music Arena Master'
+      const where = 'Music Arena Master'
       return res.status(409).json({ error: `Catalogue "${req.body?.catalogue}" already has ${plan.existingCount} record(s) in ${where} — refusing to create duplicates`, existing: plan.existing })
     }
 
@@ -479,16 +476,9 @@ router.post('/create', adminAuth, express.json(), async (req, res) => {
       })
       console.log(`[vision-import] MAM album created: ${albumID} (record ${tapeRecordId}), ids from MAST${ids.startedAt.master}`)
     } else {
-      // Re-introspect the layout once per run — fields like "Audio details" are
-      // often added in FileMaker mid-session and the in-process cache would
-      // silently drop writes to them otherwise (same pattern as the enrich flow).
-      reloadGalloLayoutFields()
-
-      // Tape Files Master first — album-level fields cascade onto songs via the
-      // FM relationship. A tape failure aborts the whole import (nothing else
-      // written yet), rather than leaving songs with no album record.
-      ;({ tapeRecordId } = await createTapeFileRecord(plan.tapeMeta))
-      console.log(`[vision-import] Tape Files Master created: ${tapeRecordId}`)
+      // Unreachable: target is pinned to 'mam'. Left as a loud failure so a
+      // future change cannot quietly start writing to Gallo again.
+      throw new Error('Gallo Catalogue is read-only — Vision imports land in Music Arena Master')
     }
 
     // Song records sequentially — keeps FM Data API load sane and the log readable.
@@ -531,7 +521,7 @@ router.post('/create', adminAuth, express.json(), async (req, res) => {
             language: lang.name, language_code: lang.code,
           })
         } else {
-          ;({ fmRecordId } = await createGalloRecord(t.metadata))
+          throw new Error('Gallo Catalogue is read-only')
         }
         results.push({ ...publicTrack(t), fmRecordId, ok: true, audioDetails: !!t.metadata.audio_details, audioHash: t.metadata.audio_hash_md5 || null })
       } catch (e) {

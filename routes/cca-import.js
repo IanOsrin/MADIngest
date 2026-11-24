@@ -6,18 +6,15 @@
 // references and P/C lines that the Ingrooves extract does not cover at all
 // (the CCA_ prefix is absent from that export entirely).
 //
-// Target: MAM is the canonical catalogue, so imports land there by default.
-// Gallo Catalogue remains reachable with target:'gallo' rather than being
-// deleted — the code was working and losing it would be a one-way door.
+// Target: Music Arena Master, always. Gallo Catalogue was reachable with
+// target:'gallo' until 2026-11-24; it is read-only now, so that request is
+// accepted and ignored rather than rejected, for old callers' sake.
 //
 // Read-only endpoints here. Creation is separate and deliberate.
 
 import { Router } from 'express'
 import { adminAuth } from '../lib/admin-auth.js'
 import { listBatches, listReleases, loadRelease } from '../lib/cca-ddex.js'
-import { findGalloRecordsByCatalogue, findGalloCataloguesPresent, createGalloRecord, createTapeFileRecord,
-         reloadGalloLayoutFields, createArtworkRecord, findArtworkByCatalogue } from '../lib/fm-gallo.js'
-import { visionOpen } from '../lib/vision-drive.js'
 import { mamSession, makeIdAllocator, albumIdFor, findMamAlbum, findMamCataloguesPresent,
          freeAlbumId, createMamAlbum, createMamSong } from '../lib/fm-mam-write.js'
 import { findMamRecordsByCatalogue } from '../lib/fm-mam.js'
@@ -40,10 +37,10 @@ router.get('/releases', adminAuth, async (req, res) => {
 
 /**
  * Plan one release: parse its ERN, pair resources with audio, and check whether
- * the catalogue already exists in Gallo.
+ * the catalogue already exists in Music Arena Master.
  *
  * `status` is the thing the caller acts on:
- *   ready   — nothing in Gallo yet, safe to create
+ *   ready   — nothing in MAM yet, safe to create
  *   exists  — already imported; skipped, not an error
  *   error   — unreadable delivery (empty folders do occur — 193483268613 in
  *             batch 20260408110014377 has no XML and no audio at all)
@@ -58,13 +55,11 @@ async function planRelease(releasePath, target = 'mam') {
 
   const first     = d.tracks[0] || {}
   const catalogue = first.catalogue_no || null
-  // "Already imported?" has to be asked of the database we are about to write
-  // to — asking Gallo while writing MAM would happily import everything twice.
+  // "Already imported?" is asked of the database we are about to write to —
+  // asking a different one would happily import everything twice.
   let existing = []
   if (catalogue) {
-    existing = target === 'gallo'
-      ? await findGalloRecordsByCatalogue(catalogue).catch(() => [])
-      : await findMamRecordsByCatalogue(catalogue).catch(() => [])
+    existing = await findMamRecordsByCatalogue(catalogue).catch(() => [])
   }
 
   return {
@@ -89,7 +84,7 @@ async function planRelease(releasePath, target = 'mam') {
 /** Preview a single release — full track detail. */
 router.post('/preview', adminAuth, async (req, res) => {
   const release = String(req.body?.release || '').trim()
-  const target = req.body?.target === 'gallo' ? 'gallo' : 'mam'
+  const target = 'mam'   // Gallo Catalogue is read-only (2026-11-24)
   if (!release) return res.status(400).json({ error: 'release path required' })
   try { res.json({ ok: true, ...(await planRelease(release, target)) }) }
   catch (e) { res.status(500).json({ error: e.message }) }
@@ -102,7 +97,7 @@ router.post('/preview', adminAuth, async (req, res) => {
  */
 router.post('/scan', adminAuth, async (req, res) => {
   const batch  = String(req.body?.batch || '').trim()
-  const target = req.body?.target === 'gallo' ? 'gallo' : 'mam'
+  const target = 'mam'   // Gallo Catalogue is read-only (2026-11-24)
   const limit  = Math.min(parseInt(req.body?.limit, 10) || 25, 200)
   const offset = parseInt(req.body?.offset, 10) || 0
   if (!batch) return res.status(400).json({ error: 'batch path required' })
@@ -129,9 +124,7 @@ router.post('/scan', adminAuth, async (req, res) => {
     }))
 
     const catalogues = loaded.filter(x => x.ok).map(x => x.d.tracks[0]?.catalogue_no).filter(Boolean)
-    const present = target === 'gallo'
-      ? await findGalloCataloguesPresent(catalogues).catch(() => new Map())
-      : await findMamCataloguesPresent(catalogues).catch(() => new Map())
+    const present = await findMamCataloguesPresent(catalogues).catch(() => new Map())
 
     const results = slice.map((r, i) => {
       const L = loaded[i]
@@ -165,10 +158,10 @@ router.post('/scan', adminAuth, async (req, res) => {
   } catch (e) { res.status(502).json({ error: e.message }) }
 })
 
-// ── DDEX track -> Gallo record ───────────────────────────────────────────────
-// createGalloRecord already accepts every one of these keys, including
-// audio_hash_md5, resource_reference and technical_resource — the Gallo writer
-// was built for them, they simply had no source until the ERN was parsed.
+// ── DDEX track -> MAM song ──────────────────────────────────────────────────
+// createMamSong accepts every one of these keys, including audio_hash_md5,
+// resource_reference and technical_resource — they simply had no source until
+// the ERN was parsed.
 const hhmmss = (sec) => {
   const n = Number(sec)
   if (!Number.isFinite(n) || n <= 0) return null
@@ -297,10 +290,9 @@ const tapeMeta = (rel) => {
 router.post('/create', adminAuth, async (req, res) => {
   const paths = Array.isArray(req.body?.releases) ? req.body.releases : []
   const apply = req.body?.apply === true
-  const target = req.body?.target === 'gallo' ? 'gallo' : 'mam'
+  const target = 'mam'   // Gallo Catalogue is read-only (2026-11-24)
   if (!paths.length) return res.status(400).json({ error: 'releases array required' })
 
-  if (apply && target === 'gallo') reloadGalloLayoutFields()
 
   // One MAM session and ONE id allocation for the whole run. Re-reading the max
   // per release would race against itself and hand two songs the same MasterID.
@@ -346,8 +338,10 @@ router.post('/create', adminAuth, async (req, res) => {
         // leaves the tracks orphaned from an album that looks correct.
         const catalogue = String(rel.catalogue).trim()
         const tm = tapeMeta(rel)
+        // album_id matters: freeAlbumId may have had to dodge a collision, and
+        // without it createMamAlbum would re-derive the taken id.
         tapeRecordId = await createMamAlbum(mam,
-          { ...tm, catalogue_no: catalogue, track_count: rel.tracks.length })
+          { ...tm, catalogue_no: catalogue, album_id: albumID, track_count: rel.tracks.length })
         for (const t of rel.tracks) {
           const m = trackMeta(t, rel)
           try {
@@ -359,12 +353,9 @@ router.post('/create', adminAuth, async (req, res) => {
           } catch (e) { failures.push({ title: t.track_title, error: e.message }) }
         }
       } else {
-        ;({ tapeRecordId } = await createTapeFileRecord(tapeMeta(rel)))
-        for (const t of rel.tracks) {
-          const m = trackMeta(t, rel)
-          try { await createGalloRecord(m); created++; cacheRows.push(cacheRowOf(m, t)) }
-          catch (e) { failures.push({ title: t.track_title, error: e.message }) }
-        }
+        // Unreachable: target is pinned to 'mam'. Left as a loud failure so a
+        // future change that reintroduces a Gallo target cannot write silently.
+        throw new Error('Gallo Catalogue is read-only — CCA imports land in Music Arena Master')
       }
       // Artwork record — Ian's manual flow: new record on the Artwork layout,
       // catalogue number in, image dragged into the Picture container. Send
@@ -373,31 +364,9 @@ router.post('/create', adminAuth, async (req, res) => {
       // override. Skipped when the catalogue already has one, so re-running a
       // batch cannot duplicate them.
       // MAM has no Artwork table — the album row carries Artwork_Vision_URL,
-      // already written above. The container/serial dance below is Gallo's.
-      let artwork = null
-      if (target === 'mam') {
-        artwork = rel.artworkUrl ? { visionUrl: rel.artworkUrl } : null
-      } else if (rel.artworkUrl) {
-        try {
-          const existingArt = await findArtworkByCatalogue(rel.catalogue)
-          if (existingArt.length) {
-            artwork = { skipped: true, existing: existingArt[0].recordId }
-          } else {
-            const img = Buffer.from(await (await visionOpen(rel.artworkUrl)).Body.transformToByteArray())
-            const a = await createArtworkRecord({
-              catalogue_no: rel.catalogue,
-              image: img,
-              filename: rel.artworkUrl.split('/').pop(),
-              contentType: /\.png$/i.test(rel.artworkUrl) ? 'image/png' : 'image/jpeg',
-            })
-            artwork = { recordId: a.recordId, bytes: a.bytes }
-          }
-        } catch (e) {
-          // Never fatal: the release and its audio are already in by this point.
-          artwork = { error: e.message }
-          console.warn(`[cca-import] ${rel.catalogue} artwork failed: ${e.message}`)
-        }
-      }
+      // already written above. (Gallo's container/serial dance lived here
+      // until 2026-11-24; it went with the Gallo target.)
+      const artwork = rel.artworkUrl ? { visionUrl: rel.artworkUrl } : null
 
       out.push({ barcode: rel.barcode, catalogue: rel.catalogue, status: failures.length ? 'partial' : 'created',
                  target, albumID, tapeRecordId, created, failed: failures.length, failures, artwork })
