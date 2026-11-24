@@ -75,14 +75,17 @@ const BIG_JSON_PATHS = [
 app.use((req, res, next) =>
   BIG_JSON_PATHS.includes(req.path) ? next() : express.json()(req, res, next))
 
-// Redirect bare /ingest (submission form) to admin
+// The Submit Tracks form (ingest/index.html) was retired 2026-11-24 — albums
+// are added on the admin Album tab, which writes to Music Arena Master. Its
+// paths redirect there rather than 404.
 app.get('/ingest', (req, res) => res.redirect('/ingest/admin'))
 app.get('/ingest/', (req, res) => res.redirect('/ingest/admin'))
+app.get(['/ingest/index', '/ingest/index.html'], (req, res) => res.redirect('/ingest/admin'))
 
 // Serve ingest portal static files.
 // HTML files are never cached so browsers always pick up code changes.
 // Extensionless paths (/ingest/admin) serve the same file as *.html paths.
-for (const page of ['admin', 'podcasts', 'index']) {
+for (const page of ['admin', 'podcasts']) {
   app.get([`/ingest/${page}`, `/ingest/${page}.html`], (req, res) => {
     res.set('Cache-Control', 'no-store')
     res.sendFile(path.join(__dirname, 'ingest', `${page}.html`))

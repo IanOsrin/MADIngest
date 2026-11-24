@@ -18,7 +18,7 @@ import { resolveGalloAudio } from '../lib/gallo-vision.js'
 import { visionOpen } from '../lib/vision-drive.js'
 import { adminAuth } from '../lib/admin-auth.js'
 import { fuzzyScore, normForFuzzy } from '../lib/fuzzy-match.js'
-import { extractAudioMeta, detectAudioFormat, generateWarnings, titleFromFilename } from '../lib/audio-meta.js'
+import { extractAudioMeta, detectAudioFormat, generateWarnings } from '../lib/audio-meta.js'
 import { parseTrackSheet } from '../lib/excel-ingest.js'
 import { uploadImport, presignImport, presignAudioDownload, downloadImport,
          uploadMp3ByGcat, uploadWavByGcat, uploadPlaylistArt, downloadAnyKey, keyFromS3Url, downloadByUrl,
@@ -685,165 +685,20 @@ router.get('/presign-artwork', async (_req, res) => {
   })
 })
 
-// ── Register — create FM record after browser has uploaded to S3 ──────────────
-router.post('/register', express.json(), async (req, res) => {
-  const body = req.body
-  const metadata = {
-    title:           body.title,
-    artist:          body.artist,
-    album_artist:    body.album_artist || body.artist || null,
-    album:           body.album,
-    year:            body.year,
-    release_date:          body.release_date || null,
-    original_release_date: body.original_release_date || null,
-    parental:              body.parental || null,
-    rights_territories:    body.rights_territories || null,
-    genre:           body.genre,
-    isrc:            body.isrc,
-    barcode:         body.barcode,
-    catalogue_no:    body.catalogue_no,
-    sequence_no:     body.sequence_no ? parseInt(body.sequence_no, 10) : null,
-    language:        body.language || 'en',
-    bpm:             body.bpm,
-    explicit:        body.explicit === true || body.explicit === 'true',
-    notes:           body.notes,
-    submitter_name:  body.submitter_name,
-    submitter_email: body.submitter_email,
-    org:             body.org,
-    duration:        body.duration,
-    format:          body.format,
-    format_flag:     body.format && !['wav','flac'].includes(body.format) ? body.format : null,
-    s3_key:          body.key,
-    s3_url:          body.url,
-    filename:        body.key ? body.key.split('/').pop() : null,
-    artwork_url:     body.artwork_url,
-    fm_path:         body.fm_path || null
-  }
-
-  // Respond immediately — FM record creation runs in the background
-  res.json({ ok: true, s3_key: body.key, s3_url: body.url,
-             format: metadata.format, format_flag: metadata.format_flag })
-
-  console.log('[Register] metadata →', JSON.stringify({
-    title: metadata.title, artist: metadata.artist, album_artist: metadata.album_artist,
-    album: metadata.album, isrc: metadata.isrc, catalogue_no: metadata.catalogue_no,
-    year: metadata.year, create_tape_record: body.create_tape_record
-  }))
-  console.log('[Register] extended fields →', JSON.stringify({
-    language: metadata.language,
-    original_release_date: metadata.original_release_date,
-    parental: metadata.parental,
-    rights_territories: metadata.rights_territories
-  }))
-  console.log('[Register] fm_path →', body.fm_path || '(none — Pending Audio Path will be blank)')
-  console.log('[Register] pending audio path →', metadata.fm_path || '(none)')
-
-  enqueueFm(() => createGalloRecord(metadata))
-    .then(fm => {
-      console.log('[FM] Gallo Catalogue record created:', fm.fmRecordId)
-      if (body.create_tape_record !== false) {
-        enqueueFm(() => createTapeFileRecord(metadata))
-          .then(t => console.log('[FM] Tape Files Master record created:', t.tapeRecordId))
-          .catch(e => console.warn('[FM] Tape Files Master create failed:', e.message))
-      }
-    })
-    .catch(e => console.warn('[FM] Gallo Catalogue create failed:', e.message))
+// ── Track Submission page — RETIRED 2026-11-24 ────────────────────────────────
+// `/register` and `/submit` belonged to ingest/index.html, the old "Submit
+// Tracks" form. They created Gallo Catalogue song + Tape Files records, and
+// Gallo is read-only now. Ian confirmed the form is no longer used — albums
+// are added on the Album tab, which writes to Music Arena Master
+// (POST /album/new, POST /album/track). The page itself is gone and /ingest
+// redirects to the admin tabs; these answer 410 for anything still pointed
+// at them rather than failing obscurely.
+const _submissionRetired = (req, res) => res.status(410).json({
+  error: 'The Submit Tracks form has been retired. Add albums on the Album tab, ' +
+         'which writes to Music Arena Master.',
 })
-
-// ── Submit single track ───────────────────────────────────────────────────────
-router.post('/submit',
-  upload.fields([
-    { name: 'audio',   maxCount: 1 },
-    { name: 'artwork', maxCount: 1 }
-  ]),
-  async (req, res) => {
-    const audioFile   = req.files?.audio?.[0]
-    const artworkFile = req.files?.artwork?.[0]
-    if (!audioFile) return res.status(400).json({ error: 'Audio file required' })
-
-    try {
-      const buffer = await readFile(audioFile.path)
-      const format = detectAudioFormat(buffer)
-      const { meta: fileMeta, technical } = await extractAudioMeta(buffer, audioFile.mimetype)
-      const body   = req.body
-
-      // Merge form fields with embedded metadata (form takes priority)
-      const metadata = {
-        title:           body.title    || fileMeta.title  || titleFromFilename(audioFile.originalname),
-        artist:          body.artist   || fileMeta.artist || 'Unknown Artist',
-        album:           body.album    || fileMeta.album  || null,
-        year:            body.year     || fileMeta.year   || null,
-        genre:           body.genre    || fileMeta.genre  || null,
-        isrc:            body.isrc     || fileMeta.isrc   || null,
-        barcode:         body.barcode      || null,
-        catalogue_no:    body.catalogue_no || null,
-        language:        body.language || fileMeta.language || 'en',
-        bpm:             body.bpm      || fileMeta.bpm    || null,
-        explicit:        body.explicit === 'true',
-        notes:           body.notes    || null,
-        submitter_name:  body.submitter_name  || null,
-        submitter_email: body.submitter_email || null,
-        org:             body.org      || null,
-        duration:        technical?.duration_sec || null,
-        format,
-        format_flag:     !['wav','flac'].includes(format) ? format : null
-      }
-
-      // Upload audio to S3 AudioImports/
-      const { key, url } = await uploadImport(buffer, audioFile.originalname, audioFile.mimetype, { artist: metadata.artist, album: metadata.album, title: metadata.title })
-      metadata.s3_key = key
-      metadata.s3_url = url
-
-      // Upload artwork if provided
-      let artworkUrl = null
-      if (artworkFile) {
-        try {
-          const artBuf = await readFile(artworkFile.path)
-          // Through the pipeline, like every cover: GMVi JPEG + derivatives, MAM and
-          // MADStreamer updated if they hold the album. This path used to upload
-          // the raw file to AudioImports/ — the same bypass as the MAM tab's.
-          if (!metadata.catalogue_no) throw new Error('no catalogue number, so the cover has no album to belong to')
-          const art    = await setAlbumCover(metadata.catalogue_no, artBuf, { label: artworkFile.originalname })
-          artworkUrl   = art.url
-          metadata.artwork_url = artworkUrl
-        } catch(artErr) {
-          console.warn('[Ingest] Artwork NOT set (the track is still ingested):', artErr.message)
-        }
-        await unlink(artworkFile.path).catch(() => {})
-      }
-
-      // Create FileMaker record in Gallo Catalogue
-      let fmRecordId = null
-      try {
-        const fm = await createGalloRecord(metadata)
-        fmRecordId = fm.fmRecordId
-        console.log('[FM] Gallo Catalogue record created:', fmRecordId)
-      } catch(fmErr) {
-        console.warn('[FM] Gallo Catalogue create failed:', fmErr.message)
-      }
-
-      await unlink(audioFile.path).catch(() => {})
-
-      // Send response immediately — post-submit FM tasks run after
-      res.json({
-        ok:           true,
-        s3_url:       url,
-        s3_key:       key,
-        fm_record_id: fmRecordId,
-        format,
-        format_flag:  metadata.format_flag
-      })
-
-      // Tape Files Master disabled — revisit later
-
-    } catch(err) {
-      await unlink(audioFile?.path).catch(() => {})
-      await unlink(artworkFile?.path).catch(() => {})
-      console.error('[Ingest] Submit error:', err.message)
-      res.status(500).json({ error: err.message })
-    }
-  }
-)
+router.post('/register', express.json(), _submissionRetired)
+router.post('/submit', _submissionRetired)
 
 // ── DDEX export — generate + ZIP ─────────────────────────────────────────────
 router.post('/ddex/export', adminAuth, express.json(), async (req, res) => {
